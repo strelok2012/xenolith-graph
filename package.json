@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "Open-source embeddable node-graph editor with Unreal Engine Blueprint aesthetic.",
+  "description": "Open-source embeddable node-graph editor with a polished, opinionated design system (Xen) out of the box.",
   "license": "MIT",
   "packageManager": "pnpm@10.0.0",
   "engines": {

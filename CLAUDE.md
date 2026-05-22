@@ -1,8 +1,36 @@
 # XenolithGraph
 
-Open-source embeddable node-graph editor for the web with **Unreal Engine Blueprint-style aesthetic and UX as first-class**, not a theme on top of a generic flowchart library.
+Open-source embeddable node-graph editor for the web with **a polished, opinionated node-editor design system as first-class** — not a theme layered on top of a generic flowchart library. The default theme is **Xen**, an original dark/gold design language defined in Figma.
 
 Working name: **XenolithGraph** (subject to change before v0.1).
+
+---
+
+## 🚨 TDD IS MANDATORY — NOT OPTIONAL
+
+**Every feature in this repo is written test-first. No exceptions.**
+
+The cycle is **red → green → refactor**:
+
+1. Write a failing Vitest (unit) or Playwright (interaction) test that describes the behaviour you want. Run it. **It must fail for the right reason.**
+2. Write the minimum implementation to make the test pass. Run the full test suite. **All tests must be green.**
+3. Refactor with the test suite as a safety net. Tests stay green throughout.
+
+Concrete rules:
+
+- **No production code without a failing test first.** If you find yourself writing implementation before a test exists, stop and write the test.
+- **Commit message convention:** test-only commits use `test:` prefix; the implementation commit that makes them pass uses `feat:` / `fix:`. The two are usually separate commits so the red→green transition is visible in history.
+- **Public API change ⇒ Vitest test.** No exceptions.
+- **Interaction change ⇒ Playwright test.** Drag, pan, zoom, pin connect, keyboard — all covered.
+- **Visual change ⇒ renderer snapshot test.** PIXI render → PNG → image-diff against committed baseline.
+- **Bug fix ⇒ regression test first.** Reproduce the bug as a failing test, then fix.
+- **Refactor with zero test changes is the cleanest signal everything is fine.** If a refactor forces a test rewrite, the test was probably coupled to implementation, not behaviour — flag it in the PR.
+
+CI is configured to reject PRs where coverage drops or where any test was skipped/disabled without an issue link.
+
+When Claude works in this repo: **read this section before writing any code in `packages/` or `apps/`.** If a task seems to require implementation without a test, push back and ask. This is the single most important rule in the project.
+
+---
 
 ## Why this exists
 
@@ -11,7 +39,7 @@ The web node-graph space in 2026 is split between two camps:
 - **Generic flowchart libraries** (xyflow / React Flow ~36k★, Rete.js ~12k★, Drawflow ~6k★) — framework or framework-agnostic, but visually neutral. Every LLM-workflow tool (LangFlow, Flowise, Dify) looks identical because they all sit on React Flow.
 - **One semi-Blueprint library** — LiteGraph.js (~8k★, the engine behind ComfyUI). Declares "UDK Blueprint-like" but the aesthetic is mid-2010s, Canvas2D-only, no TypeScript, single maintainer, no framework adapters.
 
-There is **no open-source library that delivers an actual UE4/UE5 Blueprint look and UX out of the box** while being modern (TypeScript, ESM, WebGL, framework-agnostic, plugin-based). XenolithGraph aims to fill that gap.
+There is **no open-source library that ships a finished, distinctive node-editor design language out of the box** while being modern (TypeScript, ESM, WebGL, framework-agnostic, plugin-based). XenolithGraph aims to fill that gap with the Xen design system.
 
 Primary target users: AI/LLM workflow builders, audio/DSP graph editors, shader/material editors, gameplay-logic editors, anyone who wants a node UI that looks like a tool rather than a diagram.
 
@@ -19,7 +47,7 @@ Primary target users: AI/LLM workflow builders, audio/DSP graph editors, shader/
 
 - Not a generic flowchart library. Blueprint semantics (typed pins, exec vs data, type-color system, K2-style search palette) are first-class, not opt-in.
 - Not a runtime. The library renders and edits graphs; executing them is a separate concern handled by the host application.
-- Not coupled to Unreal Engine, `.uasset`, or any game engine. The aesthetic is borrowed, the format is not.
+- Not coupled to any external engine, file format, or product. The Xen design system is original; references to blueprint-style editors are influence, not reproduction.
 - Not React-only. React/Vue/Svelte get adapters; the core is framework-agnostic.
 
 ## Architecture (planned)
@@ -48,7 +76,7 @@ The strict rule: a layer may know about layers below it, never above. The core h
 | `@xenolith/render-pixi` | PIXI v8 renderer. PIXI is a peer dependency. |
 | `@xenolith/editor` | Wires core + renderer + interaction + plugins into a usable editor. |
 | `@xenolith/react`, `@xenolith/svelte`, `@xenolith/vue` | Thin adapters. |
-| `@xenolith/theme-ue5`, `@xenolith/theme-ue4` | Default themes (UE5 is the out-of-box default). |
+| `@xenolith/theme-xen` | Default theme (Xen — original design system from the Figma source). |
 | `@xenolith/plugin-*` | Minimap, search palette, undo, serialize, clipboard, alignment. |
 
 ### Tooling baseline
@@ -89,7 +117,7 @@ interface Pin {
 
 interface TypeDescriptor {
   id: TypeId
-  color: string                 // UE5 type-color palette
+  color: string                 // Xen type-color palette
   shape: 'circle' | 'diamond' | 'arrow'
   cast?: (v: unknown) => unknown
   compatibleWith?: TypeId[]
@@ -101,7 +129,7 @@ All mutations flow through a `CommandBus` (every change is an `apply/undo` pair)
 ## Roadmap
 
 - **v0.1** — core + render-pixi + editor MVP. Nodes, pins, edges, pan/zoom, selection, drag. No undo, no palette. Vite playground demo.
-- **v0.2** — typed pins, connection validation, UE5 theme, K2-style Tab palette, undo, JSON serialization.
+- **v0.2** — typed pins, connection validation, Xen theme, Tab palette, undo, JSON serialization.
 - **v0.3** — comments, reroute nodes, copy/paste, minimap, search plugin.
 - **v0.4** — React / Vue / Svelte adapters, docs site, landing page.
 - **v0.5** — LLM-workflow showcase (a visibly better-looking LangFlow clone built on Xenolith). This is the launch artifact for Twitter / HN.
@@ -114,7 +142,7 @@ All mutations flow through a `CommandBus` (every change is an `apply/undo` pair)
 - **No new dependencies in `@xenolith/core` ever.** Headless core stays zero-dep. Render and adapter layers may add deps but each addition needs justification in the PR.
 - **Every public API change ships with a Vitest test.** Every interaction change ships with a Playwright test.
 - **Perf budgets are not advisory.** A PR that blows the budget either fixes it or gets reverted.
-- **Don't reinvent UE Blueprint UX.** When in doubt how something should feel (palette behaviour, pin hover halo, drag-from-pin to empty space behaviour), open UE5 editor and copy it. The recognizability is the product.
+- **The Figma source is the canonical visual reference.** When in doubt about a visual choice, the Xen Figma file is the source of truth — not Claude's interpretation, not other editors. Reference assets live in `packages/theme-xen/reference/`. For interaction patterns Figma doesn't cover (palette behaviour, drag-from-pin to empty space, pin hover halo), established blueprint-style editors are useful inspiration, but the visual outcome must match Xen.
 
 ## Status
 

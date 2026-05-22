@@ -44,7 +44,7 @@ This document describes the locked-in architecture for v0.x. Individual decision
 | `@xenolith/core` | v0.1 | Headless graph model, type system, command bus, events. Zero deps. |
 | `@xenolith/render-pixi` | v0.1 | PIXI v8 renderer. PIXI is a **peer** dependency, not bundled. |
 | `@xenolith/editor` | v0.1 | Wires core + renderer + interaction + plugins into a usable editor. |
-| `@xenolith/theme-ue5` | v0.2 | Default theme. Tokens generated from the Figma design system. |
+| `@xenolith/theme-xen` | v0.2 | Default theme (Xen — original design system). Tokens generated from the Figma source. |
 | `@xenolith/plugin-search` | v0.2 | K2-style Tab palette with fuzzy search and contextual filtering. |
 | `@xenolith/plugin-undo` | v0.2 | Undo/redo over the command bus. |
 | `@xenolith/plugin-serialize` | v0.2 | JSON v1 file format with migrations. |
@@ -54,7 +54,7 @@ This document describes the locked-in architecture for v0.x. Individual decision
 | `@xenolith/react` | v0.4 | React adapter. |
 | `@xenolith/svelte` | v0.4 | Svelte adapter. |
 | `@xenolith/vue` | v0.4 | Vue adapter. |
-| `@xenolith/theme-ue4` | post-1.0 | Alternative theme. |
+| `@xenolith/theme-*` | post-1.0 | Alternative themes (light, high-contrast, etc.). |
 
 Apps under `apps/`:
 
@@ -106,7 +106,7 @@ interface Edge {
 
 interface TypeDescriptor {
   id: TypeId
-  color: string                 // UE5 type-color palette
+  color: string                 // Xen type-color palette
   shape: 'circle' | 'diamond' | 'arrow'
   cast?: (v: unknown) => unknown
   compatibleWith?: TypeId[]
@@ -228,7 +228,7 @@ interface Theme {
 }
 ```
 
-`@xenolith/theme-ue5` is the default. Tokens are generated from the Figma design system (Tokens Studio export → `theme-ue5/src/tokens.json`). Themes are stylistic only — they do not change behaviour.
+`@xenolith/theme-xen` is the default. Tokens originate in the Figma source (Xen design system) and live in `theme-xen/src/tokens.json`. Themes are stylistic only — they do not change behaviour. The Xen theme defines four category accents (logic green, data blue, macro purple, utility white), six pin types with shape mapping (circle / empty-circle / chevron), two state styles (hover yellow, selected white), and a glassmorphic header treatment.
 
 ## 10. File format & serialization
 
@@ -261,7 +261,7 @@ Bench harness runs in CI on a fixed runner. A PR that regresses any budget eithe
 | Milestone | Scope |
 |---|---|
 | **v0.1** | Core + render-pixi + editor MVP. Nodes, pins, edges, pan/zoom, selection, drag. No undo, no palette. Playground demo. |
-| **v0.2** | Typed pins, connection validation, UE5 theme, Tab palette, undo, JSON serialize. |
+| **v0.2** | Typed pins, connection validation, Xen theme, Tab palette, undo, JSON serialize. |
 | **v0.3** | Comments, reroute, copy/paste, minimap, alignment plugin. |
 | **v0.4** | React/Vue/Svelte adapters, docs site, landing page. |
 | **v0.5** | LLM-workflow showcase example. Launch artifact for Twitter/HN. |
@@ -275,7 +275,7 @@ Bench harness runs in CI on a fixed runner. A PR that regresses any budget eithe
 - Every public API change ships with a Vitest test.
 - Every interaction change ships with a Playwright test.
 - Visual changes ship with a renderer snapshot test.
-- When in doubt how something should feel, open UE5 and copy it. Recognizability is the product.
+- When in doubt how something should feel, refer to the Xen design system in Figma (the canonical source for all visuals). For interaction patterns where Figma is silent (palette behaviour, drag-from-pin to empty space, pin hover halo), reference established blueprint-style editors as inspiration — but the visual outcome must match Xen, not them.
 
 ## 14. Open questions
 

@@ -10,6 +10,7 @@
   "references": [
     { "path": "../../packages/core" },
     { "path": "../../packages/render-pixi" },
-    { "path": "../../packages/editor" }
+    { "path": "../../packages/editor" },
+    { "path": "../../packages/theme-xen" }
   ]
 }
