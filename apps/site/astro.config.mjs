@@ -2,7 +2,7 @@ import { defineConfig } from 'astro/config'
 import starlight from '@astrojs/starlight'
 
 export default defineConfig({
-  site: 'https://strelok2012.github.io',
+  site: 'https://xenolithengine.github.io',
   base: '/xenolith-graph',
   vite: {
     resolve: {
@@ -46,7 +46,7 @@ export default defineConfig({
         },
       },
       social: {
-        github: 'https://github.com/strelok2012/xenolith-graph',
+        github: 'https://github.com/XenolithEngine/xenolith-graph',
       },
       sidebar: [
         {
@@ -66,11 +66,11 @@ export default defineConfig({
         },
       ],
       head: [
-        { tag: 'meta', attrs: { property: 'og:image',        content: 'https://strelok2012.github.io/xenolith-graph/og.png' } },
+        { tag: 'meta', attrs: { property: 'og:image',        content: 'https://xenolithengine.github.io/xenolith-graph/og.png' } },
         { tag: 'meta', attrs: { property: 'og:image:width',  content: '1200' } },
         { tag: 'meta', attrs: { property: 'og:image:height', content: '630' } },
         { tag: 'meta', attrs: { name: 'twitter:card',        content: 'summary_large_image' } },
-        { tag: 'meta', attrs: { name: 'twitter:image',       content: 'https://strelok2012.github.io/xenolith-graph/og.png' } },
+        { tag: 'meta', attrs: { name: 'twitter:image',       content: 'https://xenolithengine.github.io/xenolith-graph/og.png' } },
       ],
     }),
   ],

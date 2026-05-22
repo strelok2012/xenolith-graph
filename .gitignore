@@ -1,6 +1,7 @@
 node_modules
 dist
 .turbo
+.astro
 coverage
 .DS_Store
 *.log
