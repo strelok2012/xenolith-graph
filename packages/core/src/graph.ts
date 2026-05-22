@@ -98,4 +98,24 @@ export class Graph {
     this.#version++
     return edge
   }
+
+  /**
+   * @internal — patch a subset of mutable Node fields in place.
+   * Only `position`, `size`, `state`, and `type` may be patched; identity (`id`) and pin structure
+   * (`pins`) are immutable through this method by design. Returns the patched node (same reference)
+   * or undefined if the id is unknown.
+   */
+  _patchNode(
+    id: NodeId,
+    patch: Partial<Pick<Node, 'position' | 'size' | 'state' | 'type'>>,
+  ): Readonly<Node> | undefined {
+    const node = this.#nodes.get(id)
+    if (!node) return undefined
+    if (patch.position !== undefined) node.position = patch.position
+    if (patch.size     !== undefined) node.size     = patch.size
+    if (patch.state    !== undefined) node.state    = patch.state
+    if (patch.type     !== undefined) node.type     = patch.type
+    this.#version++
+    return node
+  }
 }

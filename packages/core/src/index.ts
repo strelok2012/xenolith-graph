@@ -21,3 +21,5 @@ export type { Command, CommandContext, CommandBusOptions, CoreEvents } from './c
 
 export { AddNode, RemoveNode, ConnectPins, DisconnectEdge } from './commands.js'
 export type { RemoveNodeUndo } from './commands.js'
+
+export { MoveNode, ResizeNode, SetNodeState } from './commands-mut.js'
