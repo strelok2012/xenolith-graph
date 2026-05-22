@@ -5,4 +5,15 @@ export const xenTokens = tokens as unknown as XenTokens
 
 export const VERSION = xenTokens.version
 
-export type { XenTokens, PinTypeToken, CategoryToken, StateStyle, PinShape } from './types.js'
+export type {
+  XenTokens,
+  XenCategoryMap,
+  XenPinTypeMap,
+  XenSurfaceColors,
+  PinTypeToken,
+  CategoryToken,
+  StateStyle,
+  PinShape,
+  TypographyStyle,
+  ShadowStyle,
+} from './types.js'

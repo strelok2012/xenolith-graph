@@ -35,6 +35,22 @@ export interface XenSurfaceColors {
   headerEnd: string
 }
 
+export interface XenPinTypeMap {
+  exec: PinTypeToken
+  float: PinTypeToken
+  object: PinTypeToken
+  string: PinTypeToken
+  any: PinTypeToken
+  wildcard: PinTypeToken
+}
+
+export interface XenCategoryMap {
+  logic: CategoryToken
+  data: CategoryToken
+  macro: CategoryToken
+  utility: CategoryToken
+}
+
 export interface XenTokens {
   name: 'xen'
   version: string
@@ -44,8 +60,8 @@ export interface XenTokens {
     text: Record<string, string>
     alpha: Record<string, string>
   }
-  pinType: Record<string, PinTypeToken>
-  category: Record<string, CategoryToken>
+  pinType: XenPinTypeMap
+  category: XenCategoryMap
   pill: Record<string, string>
   state: {
     hover: StateStyle
@@ -54,11 +70,46 @@ export interface XenTokens {
     disabled: StateStyle
   }
   geometry: {
-    node: Record<string, number>
-    pin: Record<string, number | string>
-    header: Record<string, number>
-    edge: Record<string, number | boolean>
-    comment: Record<string, number>
+    node: {
+      radius: number
+      minWidth: number
+      headerHeight: number
+      headerPadding: number
+      innerPaddingX: number
+      innerPaddingY: number
+      pillRadius: number
+      pillHeight: number
+      pillMinWidth: number
+    }
+    pin: {
+      diameter: number
+      stroke: number
+      strokeColor: string
+      labelGap: number
+      rowSpacing: number
+      rowHeight: number
+      hitPadding: number
+      chevronExecWidth: number
+      chevronExecHeight: number
+    }
+    header: {
+      toPinsGap: number
+      chevronSize: number
+      titleGap: number
+    }
+    edge: {
+      width: number
+      execWidth: number
+      bezierTension: number
+      hitPadding: number
+      pulseEnabled: boolean
+    }
+    comment: {
+      radius: number
+      headerHeight: number
+      minWidth: number
+      minHeight: number
+    }
   }
   typography: {
     fontFamily: string

@@ -26,9 +26,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@xenolith/core": "workspace:*"
+    "@xenolith/core": "workspace:*",
+    "@xenolith/theme-xen": "workspace:*"
   },
   "peerDependencies": {
+    "@xenolith/theme-xen": "workspace:*",
     "pixi.js": "^8.6.0"
   },
   "devDependencies": {
