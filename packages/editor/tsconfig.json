@@ -6,5 +6,9 @@
     "composite": true
   },
   "include": ["src"],
-  "references": [{ "path": "../core" }, { "path": "../render-pixi" }]
+  "references": [
+    { "path": "../core" },
+    { "path": "../render-pixi" },
+    { "path": "../theme-xen" }
+  ]
 }

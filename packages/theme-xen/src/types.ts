@@ -57,7 +57,7 @@ export interface XenTokens {
   color: {
     brand: Record<string, string>
     surface: XenSurfaceColors
-    text: Record<string, string>
+    text: { primary: string; secondary: string; muted: string; disabled: string }
     alpha: Record<string, string>
   }
   pinType: XenPinTypeMap

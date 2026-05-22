@@ -5,7 +5,7 @@
     "rootDir": "./src",
     "composite": true,
     "resolveJsonModule": true,
-    "lib": ["ES2022"]
+    "lib": ["ES2022", "DOM"]
   },
   "include": ["src/**/*.ts", "src/**/*.json"],
   "references": [{ "path": "../core" }]

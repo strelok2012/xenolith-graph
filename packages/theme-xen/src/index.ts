@@ -5,6 +5,8 @@ export const xenTokens = tokens as unknown as XenTokens
 
 export const VERSION = xenTokens.version
 
+export { loadXenFonts } from './fonts.js'
+
 export type {
   XenTokens,
   XenCategoryMap,

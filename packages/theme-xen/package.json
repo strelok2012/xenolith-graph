@@ -17,6 +17,7 @@
   "files": [
     "dist",
     "src/tokens.json",
+    "src/fonts",
     "reference",
     "README.md"
   ],

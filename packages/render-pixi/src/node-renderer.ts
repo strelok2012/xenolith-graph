@@ -22,6 +22,27 @@ function buildTopRoundedRect(g: Graphics, x: number, y: number, w: number, h: nu
     .closePath()
 }
 
+/** Open path that traces only the top edge (rounded corners + straight top). Stroke this with a
+ *  vertical white-to-transparent gradient to get the Figma rim-light effect. */
+function buildTopRimPath(g: Graphics, x: number, y: number, w: number, r: number) {
+  const radius = Math.max(0, Math.min(r, w / 2))
+  return g
+    .moveTo(x, y + radius)
+    .arcTo(x, y, x + radius, y, radius)
+    .lineTo(x + w - radius, y)
+    .arcTo(x + w, y, x + w, y + radius, radius)
+}
+
+/** Downward chevron `∨` inside a `size`×`size` box centred at (cx, cy). */
+function buildChevron(g: Graphics, cx: number, cy: number, size: number) {
+  const halfW = size * 0.22
+  const halfH = size * 0.11
+  return g
+    .moveTo(cx - halfW, cy - halfH)
+    .lineTo(cx, cy + halfH)
+    .lineTo(cx + halfW, cy - halfH)
+}
+
 export interface RenderNodeOptions {
   /** Visual category for the header accent. Defaults to 'utility'. */
   category?: string
@@ -110,6 +131,38 @@ export function renderNode(node: Node, tokens: XenTokens, opts: RenderNodeOption
   ).fill(highlightFill)
   container.addChild(headerHighlight)
 
+  // Top rim light: thin white→transparent gradient stroke along the top curved edge only.
+  // Matches the Figma `<path ... stroke="url(#paint1_linear)" stroke-width="0.5"/>` element.
+  const rimGradient = new FillGradient({
+    type: 'linear',
+    start: { x: 0, y: 0 },
+    end: { x: 0, y: 1 },
+    colorStops: [
+      { offset: 0, color: 'rgba(255, 255, 255, 0.8)' },
+      { offset: 1, color: 'rgba(255, 255, 255, 0)' },
+    ],
+    textureSpace: 'local',
+  })
+  const headerRim = new Graphics()
+  buildTopRimPath(headerRim, padding, padding, headerInnerWidth, headerRadius).stroke({
+    width: 0.75,
+    fill: rimGradient,
+    alignment: 0,
+  })
+  container.addChild(headerRim)
+
+  // Chevron icon (downward V) on the left of the header title.
+  const chevronY = padding + geo.node.headerHeight / 2 - 0.5
+  const chevronCenterX = padding + 8 + geo.header.chevronSize / 2 - 4
+  const chevron = new Graphics()
+  buildChevron(chevron, chevronCenterX, chevronY, geo.header.chevronSize).stroke({
+    color: tokens.color.text.primary,
+    width: 1,
+    cap: 'round',
+    join: 'round',
+  })
+  container.addChild(chevron)
+
   const title = new Text({
     text: opts.title ?? node.type,
     style: {
@@ -119,7 +172,7 @@ export function renderNode(node: Node, tokens: XenTokens, opts: RenderNodeOption
       fill:       tokens.typography.heading.color,
     },
   })
-  title.position.set(geo.header.chevronSize + geo.header.titleGap + 6, 3)
+  title.position.set(chevronCenterX + geo.header.chevronSize / 2 + geo.header.titleGap, 3)
   container.addChild(title)
 
   for (const pin of node.pins) {

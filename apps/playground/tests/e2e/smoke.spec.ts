@@ -27,4 +27,24 @@ test.describe('playground smoke', () => {
     expect(info!.width).toBeGreaterThan(0)
     expect(info!.height).toBeGreaterThan(0)
   })
+
+  test('Inter is registered with the document after init', async ({ page }) => {
+    await page.goto('/')
+    await page.waitForSelector('canvas')
+    const interStatus = await page.evaluate(async () => {
+      await document.fonts.ready
+      const faces = Array.from(document.fonts as unknown as Iterable<FontFace>).map((f) => ({
+        family: f.family,
+        weight: f.weight,
+        status: f.status,
+      }))
+      return {
+        bold12: document.fonts.check('700 12px "Inter"'),
+        regular10: document.fonts.check('400 10px "Inter"'),
+        faces,
+      }
+    })
+    expect(interStatus.bold12, JSON.stringify(interStatus.faces)).toBe(true)
+    expect(interStatus.regular10, JSON.stringify(interStatus.faces)).toBe(true)
+  })
 })

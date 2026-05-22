@@ -27,7 +27,8 @@
   },
   "dependencies": {
     "@xenolith/core": "workspace:*",
-    "@xenolith/render-pixi": "workspace:*"
+    "@xenolith/render-pixi": "workspace:*",
+    "@xenolith/theme-xen": "workspace:*"
   },
   "peerDependencies": {
     "pixi.js": "^8.6.0"

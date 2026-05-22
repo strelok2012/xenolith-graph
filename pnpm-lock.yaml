@@ -75,6 +75,9 @@ importers:
       '@xenolith/render-pixi':
         specifier: workspace:*
         version: link:../render-pixi
+      '@xenolith/theme-xen':
+        specifier: workspace:*
+        version: link:../theme-xen
     devDependencies:
       pixi.js:
         specifier: ^8.6.0
