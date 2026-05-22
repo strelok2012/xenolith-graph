@@ -101,6 +101,7 @@ export interface XenTokens {
       width: number
       execWidth: number
       bezierTension: number
+      minHorizontalSpread: number
       hitPadding: number
       pulseEnabled: boolean
     }
