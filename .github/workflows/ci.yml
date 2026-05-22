@@ -7,6 +7,15 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -37,7 +46,18 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @xenolith/site run build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
         with:
-          name: site-dist
           path: apps/site/dist
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: build-site
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
