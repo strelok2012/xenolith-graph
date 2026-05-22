@@ -6,7 +6,7 @@
     "composite": true,
     "noEmit": true
   },
-  "include": ["src", "vite.config.ts"],
+  "include": ["src"],
   "references": [
     { "path": "../../packages/core" },
     { "path": "../../packages/render-pixi" },
