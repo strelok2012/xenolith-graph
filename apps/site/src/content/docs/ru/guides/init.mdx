@@ -1,0 +1,24 @@
+---
+title: Опции редактора
+description: Все параметры XenolithEditor.init.
+---
+
+`XenolithEditor.init(target, options)` принимает опциональный объект `options`. У каждого поля есть осмысленный default — пустые опции дают канонический Xen-редактор.
+
+## Все опции
+
+```ts
+interface XenolithEditorOptions {
+  theme?: DeepPartial<XenTokens>
+  background?: string
+  resizeToWindow?: boolean
+  renderer?: 'webgl' | 'webgpu'
+  viewport?: ViewportState
+  zoomBounds?: [number, number]      // default [0.25, 2]
+  disableInteraction?: boolean
+  disableGrid?: boolean
+  snap?: number                       // default 8
+}
+```
+
+Тонкости: `zoomBounds` по умолчанию `[0.25, 2]`, потому что выше 2× начинает «шакалить» текст. `snap = 8` повторяет UE Blueprint editor; удерживайте Alt чтобы отключить snap.

@@ -23,3 +23,6 @@ export { AddNode, RemoveNode, ConnectPins, DisconnectEdge } from './commands.js'
 export type { RemoveNodeUndo } from './commands.js'
 
 export { MoveNode, ResizeNode, SetNodeState } from './commands-mut.js'
+
+export { Selection } from './selection.js'
+export type { SelectionMode, SelectionChange } from './selection.js'

@@ -1,0 +1,167 @@
+/* Xenolith UI Kit — palette and surface treatments from the Runtime docs design system. */
+:root {
+  --xn-gold:        #D9CAA0;
+  --xn-gold-bright: #FFF7D7;
+  --xn-gold-mid:    #B09C5A;
+  --xn-gold-dim:    #89742B;
+  --xn-gold-dark:   #635317;
+
+  --xn-ink:         #1A1A1A;
+  --xn-ink-2:       #1F1F1F;
+  --xn-ink-3:       #242424;
+  --xn-stone:       #2B2A24;
+  --xn-bone:        #FFFFFF;
+  --xn-bone-dim:    rgba(255, 255, 255, 0.66);
+  --xn-bone-mute:   rgba(255, 255, 255, 0.4);
+  --xn-bone-faint:  rgba(255, 255, 255, 0.1);
+
+  --xn-hair:        rgba(217, 202, 160, 0.18);
+  --xn-hair-soft:   rgba(217, 202, 160, 0.10);
+  --xn-hair-faint:  rgba(217, 202, 160, 0.06);
+
+  --xn-grad-gold-frame: linear-gradient(179.62deg, #FFF7D7 0.33%, #635317 26.16%, #B09C5A 48.01%, #635317 62.91%, #FFF7D7 99.17%);
+  --xn-grad-gold-soft:  linear-gradient(179.62deg, rgba(251,251,251,0.10) 0.33%, rgba(176,156,90,0.10) 26.16%, rgba(137,116,43,0.10) 48.01%, rgba(155,134,60,0.10) 62.91%, rgba(237,237,237,0.10) 99.17%), linear-gradient(180deg, rgba(99,83,23,0.10) 0%, rgba(176,156,90,0.10) 100%);
+}
+
+:root[data-theme="dark"],
+:root[data-theme="light"],
+:root {
+  --sl-color-accent-low:  #2a1f0a;
+  --sl-color-accent:      var(--xn-gold);
+  --sl-color-accent-high: var(--xn-gold-bright);
+
+  --sl-color-white:       var(--xn-bone);
+  --sl-color-gray-1:      rgba(255, 255, 255, 0.86);
+  --sl-color-gray-2:      var(--xn-bone-dim);
+  --sl-color-gray-3:      var(--xn-bone-mute);
+  --sl-color-gray-4:      #6A6A6A;
+  --sl-color-gray-5:      var(--xn-stone);
+  --sl-color-gray-6:      var(--xn-ink-3);
+  --sl-color-black:       var(--xn-ink);
+
+  --sl-color-bg:          var(--xn-ink);
+  --sl-color-bg-nav:      rgba(26, 26, 26, 0.86);
+  --sl-color-bg-sidebar:  var(--xn-ink);
+  --sl-color-bg-inline-code: rgba(217, 202, 160, 0.08);
+  --sl-color-text:        var(--xn-bone);
+  --sl-color-text-accent: var(--xn-gold-bright);
+  --sl-color-hairline:    var(--xn-hair);
+  --sl-color-hairline-light: rgba(255, 255, 255, 0.06);
+  --sl-color-hairline-shade: var(--xn-hair-soft);
+
+  --sl-shadow-sm: 0 1px 0 rgba(217, 202, 160, 0.04);
+  --sl-shadow-md: 0 8px 30px rgba(0, 0, 0, 0.45);
+  --sl-shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.6);
+
+  --sl-font: var(--xn-sans);
+  --sl-font-mono: var(--xn-mono);
+}
+
+html body {
+  background-image:
+    radial-gradient(circle at 15% -10%, rgba(217, 202, 160, 0.07), transparent 50%),
+    radial-gradient(circle at 100% 0%,  rgba(217, 202, 160, 0.04), transparent 40%);
+  background-attachment: fixed;
+}
+
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3 {
+  font-family: var(--xn-display);
+  letter-spacing: 0.005em;
+  font-weight: 500;
+}
+
+.site-title {
+  font-family: var(--xn-display);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.sl-markdown-content :not(pre) > code {
+  color: var(--xn-gold-bright);
+  border: 1px solid var(--xn-hair);
+  border-radius: 4px;
+  padding: 0.05em 0.4em;
+  background: rgba(217, 202, 160, 0.06);
+}
+
+.sidebar-content a[aria-current="page"] {
+  background: linear-gradient(90deg, rgba(217, 202, 160, 0.14), transparent);
+  color: var(--xn-gold-bright);
+}
+
+.sl-markdown-content pre {
+  background: #131313 !important;
+  border: 1px solid var(--xn-hair-soft);
+  border-radius: 10px;
+}
+
+/* Splash pages with a custom Landing component — hide Starlight's auto-generated hero block
+ * (title + tagline) so our Landing takes the lead. `:has()` is broadly supported in modern
+ * evergreens; the rule is scoped so only landing pages are affected. */
+.content-panel:has(.xn-landing) > .sl-container > .hero,
+.content-panel:has(.xn-landing) > .sl-container > .hero + hr {
+  display: none !important;
+}
+.content-panel:has(.xn-landing) {
+  padding-top: 0 !important;
+}
+
+/* Empty paragraphs Starlight wraps around MDX whitespace — collapse them. */
+.sl-markdown-content > p:empty { display: none; }
+
+/* Showcase frames. Global so PIXI's runtime-added <canvas> (which has no Astro scope hash) is
+ * matched and positioned absolutely — without this the canvas overrides the parent's aspect-ratio. */
+.xn-showcase {
+  position: relative;
+  background: var(--xn-ink-2);
+  border-radius: 14px;
+  border: 1px solid var(--xn-hair-soft);
+  overflow: hidden;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+.xn-showcase > canvas {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+.xn-showcase-label {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  font-family: var(--xn-display);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-weight: 500;
+  color: var(--xn-gold);
+  background: var(--xn-grad-gold-soft);
+  border: 1px solid var(--xn-hair);
+  padding: 6px 10px;
+  border-radius: 8px;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* H1 inline "init('#app')" — needs to defeat Starlight's `.sl-markdown-content code` rule.
+ * Match the same specificity AND override the box treatment + colour. */
+.sl-markdown-content .xn-h1-code,
+.xn-landing .xn-h1-code {
+  font-family: var(--xn-mono);
+  font-weight: 600;
+  font-size: 0.85em;
+  background: var(--xn-grad-gold-frame);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  border: none;
+  padding: 0;
+}

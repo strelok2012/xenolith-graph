@@ -1,0 +1,95 @@
+:root {
+  --xeno-canvas: #1A1A1A;
+  --xeno-brand: #FCB400;
+}
+
+.xeno-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 3rem 0 1rem;
+  text-align: center;
+}
+
+.xeno-hero h1 {
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  line-height: 1.1;
+  margin: 0;
+  font-weight: 700;
+}
+
+.xeno-hero .accent { color: var(--xeno-brand); }
+
+.xeno-hero p {
+  font-size: 1.125rem;
+  color: var(--sl-color-gray-3);
+  max-width: 56ch;
+  margin: 0 auto;
+}
+
+.xeno-cta {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: center;
+  margin-top: 0.5rem;
+}
+
+.xeno-cta a {
+  padding: 0.75rem 1.5rem;
+  border-radius: 8px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.xeno-cta a.primary {
+  background: var(--xeno-brand);
+  color: #1A1A1A;
+}
+
+.xeno-cta a.secondary {
+  border: 1px solid var(--sl-color-gray-4);
+  color: var(--sl-color-white);
+}
+
+.xeno-demos {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+  margin: 2rem 0;
+}
+
+@media (min-width: 900px) {
+  .xeno-demos {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.xeno-demo {
+  position: relative;
+  background: var(--xeno-canvas);
+  border-radius: 12px;
+  border: 1px solid var(--sl-color-gray-5);
+  overflow: hidden;
+  aspect-ratio: 16 / 10;
+}
+
+.xeno-demo > .label {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-3);
+  background: rgba(0, 0, 0, 0.4);
+  padding: 4px 8px;
+  border-radius: 4px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.xeno-demo canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}

@@ -19,10 +19,15 @@ export function resolveCategoryAccent(category: string | undefined, tokens: XenT
   return lookupCategory(category, tokens.category)?.accent ?? tokens.category.utility.accent
 }
 
-export function resolvePinFill(pinType: string, tokens: XenTokens): string | null {
+/**
+ * Fill colour for a pin's interior. For `circle-empty` (wildcard) pins we return the node body
+ * colour so the pin reads as a coloured ring around a solid dark center, not an open hole through
+ * which the canvas grid shows. The type-distinctive colour stays on the stroke.
+ */
+export function resolvePinFill(pinType: string, tokens: XenTokens): string {
   const known = lookupPin(pinType, tokens.pinType)
   if (known) {
-    return known.shape === 'circle-empty' ? null : known.color
+    return known.shape === 'circle-empty' ? tokens.color.surface.node : known.color
   }
   return tokens.pinType.any.color
 }

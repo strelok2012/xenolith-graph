@@ -125,6 +125,7 @@ export interface XenTokens {
     pillBackdropBlur: number
     headerHighlightGradient: string
     headerHighlightStroke: string
+    nodeDropShadow: ShadowStyle
   }
   background: {
     color: string

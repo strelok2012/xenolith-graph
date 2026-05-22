@@ -1,0 +1,20 @@
+---
+title: 编辑器选项
+description: XenolithEditor.init 的所有参数。
+---
+
+```ts
+interface XenolithEditorOptions {
+  theme?: DeepPartial<XenTokens>
+  background?: string
+  resizeToWindow?: boolean
+  renderer?: 'webgl' | 'webgpu'
+  viewport?: ViewportState
+  zoomBounds?: [number, number]   // 默认 [0.25, 2]
+  disableInteraction?: boolean
+  disableGrid?: boolean
+  snap?: number                    // 默认 8
+}
+```
+
+`zoomBounds` 上限默认为 2×，因为文字在更高缩放下会变模糊。`snap = 8` 与 Unreal Blueprint 编辑器一致；按住 Alt 关闭吸附。

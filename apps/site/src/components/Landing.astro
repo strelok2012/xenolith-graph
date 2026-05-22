@@ -1,0 +1,499 @@
+---
+import { Image } from 'astro:assets'
+import { Code } from 'astro:components'
+import logo from '../assets/logo.png'
+import EditorShowcase from './EditorShowcase.astro'
+
+import '../styles/fonts.css'
+import '../styles/theme.css'
+
+type Lang = 'en' | 'ru' | 'zh'
+interface Props { lang: Lang }
+const { lang } = Astro.props
+
+const docPath = lang === 'en' ? '/xenolith-graph/guides/install/' : `/xenolith-graph/${lang}/guides/install/`
+const playgroundPath = '/xenolith-graph/playground/'
+
+const t = (() => {
+  if (lang === 'ru') return {
+    eyebrow: ['Node-graph редактор', 'PIXI v8', 'drop-in для веба'],
+    h1a:     'Один',
+    h1b:     'init',
+    h1c:     '— и у вас редактор.',
+    sub:     'Полированный node-graph редактор для веба со встроенной Blueprint-эстетикой. Никаких CDN, никаких шагов настройки — npm-пакет, точка монтирования, готово. Тема — bundle Inter, палитра, формы, анимации.',
+    ctaPrimary:   'Открыть документацию',
+    ctaSecondary: 'GitHub',
+    showcaseA: 'Тема Xen — по умолчанию',
+    showcaseB: 'Override темы (5 строк JSON)',
+    showcaseSub: 'Одна и та же 18-нодная композиция, разная палитра. Полностью JSON-конфигурация — Xen-токены глубоко мержатся с дефолтами.',
+    metrics: [
+      { v: '1', l: 'строка init' },
+      { v: '0', l: 'внешних CDN' },
+      { v: 'PIXI', l: 'v8 рендер' },
+    ],
+    featuresTitle: 'Что внутри',
+    featuresSub: 'Базовый UX-фундамент любого визуального редактора — pan, zoom, drag, marquee, collapse, undo. Всё работает с первого вызова init.',
+    features: [
+      { n: '01', h: 'Drop-in PIXI v8',         p: 'Один npm-пакет, один await init. Retina, анти-алиасинг, WebGL и WebGPU из коробки, бесшовный resize.' },
+      { n: '02', h: 'Bundled design system',    p: 'Шрифты Inter WOFF2, палитра, геометрия, анимации — внутри пакета. Никаких сетевых запросов к Google Fonts.' },
+      { n: '03', h: 'Глубокая темизация',      p: 'DeepPartial<XenTokens> override. Меняйте только то, что нужно — категории, типы пинов, цвета поверхностей, эффекты.' },
+      { n: '04', h: 'Collapse / Expand',        p: 'Любая нода сворачивается в pill-форму одним кликом по шеврону. Пины анимированно переезжают на дугу скругления.' },
+      { n: '05', h: 'Multi-drag со snap',       p: 'Marquee-selection, drag всей выборки сразу, snap к сетке 8px по умолчанию. Зажмите Alt — snap отключается.' },
+      { n: '06', h: 'Headless core',            p: 'Граф, команды, undo/redo, selection — zero runtime deps. Рендерер можно заменить без переписывания логики.' },
+    ],
+    quickStartTitle: 'Старт за 30 секунд',
+    quickStartCode: `import { XenolithEditor } from '@xenolith/editor'
+
+// Один вызов — фонты, PIXI, viewport, grid, interaction уже подняты.
+const editor = await XenolithEditor.init('#app')
+
+// Добавляем ноды и связи.
+editor.addNode(myNode, { category: 'logic', title: 'Source' })
+editor.connect(a, 0, b, 1, { sourceType: 'float' })
+
+// Готово. Hover, select, drag, collapse, zoom, pan, marquee — работают.`,
+    finalH:   'Готов к интеграции',
+    finalP:   'MIT-лицензия. Опубликован в npm. Открыт для PR и issues — fontend для AI-workflow, shader graph, dataflow ediotrs, любых нодовых UI.',
+    finalCta: 'Документация →',
+  }
+  if (lang === 'zh') return {
+    eyebrow: ['节点图编辑器', 'PIXI v8', 'Web 直接可用'],
+    h1a:     '一行',
+    h1b:     'init',
+    h1c:     '即得到一个编辑器。',
+    sub:     '面向 Web 的高质量节点图编辑器，开箱即用，附带 Blueprint 风格设计系统。无 CDN，无额外步骤——npm 包、挂载点、即可。主题已打包 Inter 字体、调色板、几何、动画。',
+    ctaPrimary:   '查看文档',
+    ctaSecondary: 'GitHub',
+    showcaseA: '默认 Xen 主题',
+    showcaseB: '主题覆盖（5 行 JSON）',
+    showcaseSub: '相同的 18 个节点构图，不同调色板。完全 JSON 配置——Xen 令牌深度合并到默认值。',
+    metrics: [
+      { v: '1', l: '行 init' },
+      { v: '0', l: '外部 CDN' },
+      { v: 'PIXI', l: 'v8 渲染' },
+    ],
+    featuresTitle: '内置什么',
+    featuresSub:   '任何可视化编辑器的基础 UX——平移、缩放、拖动、框选、折叠、撤销，全部在 init 后立即可用。',
+    features: [
+      { n: '01', h: '即插即用的 PIXI v8',  p: '一个 npm 包，一次 await init。Retina、抗锯齿、WebGL/WebGPU 自动选择，无缝 resize。' },
+      { n: '02', h: '打包的设计系统',     p: 'Inter WOFF2 字体、调色板、几何、动画都在包内。不向 Google Fonts 发起任何请求。' },
+      { n: '03', h: '深度主题化',         p: 'DeepPartial<XenTokens> 覆盖。只改你需要的部分——类别、引脚类型、表面色、效果。' },
+      { n: '04', h: '折叠 / 展开',         p: '任何节点一键折叠为胶囊形态。引脚沿圆角动画就位。' },
+      { n: '05', h: '多选拖动 + 吸附',     p: '框选、整体拖动当前选中，默认吸附到 8px 网格。按住 Alt 关闭吸附。' },
+      { n: '06', h: '无头核心',            p: '图、命令、撤销/重做、选区——零运行时依赖。渲染器可在不重写逻辑的情况下替换。' },
+    ],
+    quickStartTitle: '30 秒上手',
+    quickStartCode: `import { XenolithEditor } from '@xenolith/editor'
+
+// 一次调用——字体、PIXI、视口、栅格、交互全部就绪。
+const editor = await XenolithEditor.init('#app')
+
+// 添加节点与连接。
+editor.addNode(myNode, { category: 'logic', title: 'Source' })
+editor.connect(a, 0, b, 1, { sourceType: 'float' })
+
+// 完成。悬停、选择、拖动、折叠、缩放、平移、框选都已工作。`,
+    finalH:   '可立即集成',
+    finalP:   'MIT 许可证。发布在 npm。欢迎 PR 与 issue——AI 工作流前端、shader 编辑器、数据流编辑器，任何节点 UI。',
+    finalCta: '文档 →',
+  }
+  return {
+    eyebrow: ['Node-graph editor', 'PIXI v8', 'drop-in for the web'],
+    h1a:     'One',
+    h1b:     'init',
+    h1c:     '— and you have an editor.',
+    sub:     'A polished node-graph editor for the web with a Blueprint-style design system inside the package. No CDN, no setup steps — npm install, mount point, done. The theme ships bundled Inter fonts, palette, shapes, animation.',
+    ctaPrimary:   'Open documentation',
+    ctaSecondary: 'GitHub',
+    showcaseA: 'Default Xen theme',
+    showcaseB: 'Theme override (5 lines of JSON)',
+    showcaseSub: 'Same 18-node composition, different palette. Pure JSON configuration — Xen tokens are deep-merged into the defaults.',
+    metrics: [
+      { v: '1', l: 'line init' },
+      { v: '0', l: 'external CDNs' },
+      { v: 'PIXI', l: 'v8 renderer' },
+    ],
+    featuresTitle: 'What is inside',
+    featuresSub: 'The whole UX baseline any canvas editor needs — pan, zoom, drag, marquee, collapse, undo. Everything works the moment init returns.',
+    features: [
+      { n: '01', h: 'Drop-in PIXI v8',     p: 'One npm package, one await init. Retina, anti-aliasing, WebGL/WebGPU auto-selected, seamless resize.' },
+      { n: '02', h: 'Bundled design system', p: 'Inter WOFF2 fonts, palette, geometry, animation — inside the package. Zero traffic to Google Fonts.' },
+      { n: '03', h: 'Deep theming',         p: 'DeepPartial<XenTokens> override. Change only what you need — categories, pin types, surfaces, effects.' },
+      { n: '04', h: 'Collapse / Expand',    p: 'Any node folds into pill mode with one chevron click. Pins animate to the rounded end-cap arcs.' },
+      { n: '05', h: 'Multi-drag with snap', p: 'Marquee selection, drag the whole selection at once, default 8px snap to grid. Hold Alt to disable.' },
+      { n: '06', h: 'Headless core',        p: 'Graph, commands, undo/redo, selection — zero runtime deps. Renderer is swappable without rewriting the logic.' },
+    ],
+    quickStartTitle: '30-second start',
+    quickStartCode: `import { XenolithEditor } from '@xenolith/editor'
+
+// One call — fonts, PIXI, viewport, grid, interactions are wired.
+const editor = await XenolithEditor.init('#app')
+
+// Add nodes and edges.
+editor.addNode(myNode, { category: 'logic', title: 'Source' })
+editor.connect(a, 0, b, 1, { sourceType: 'float' })
+
+// Done. Hover, select, drag, collapse, zoom, pan, marquee — they all work.`,
+    finalH:   'Ready to embed',
+    finalP:   'MIT licence. Published on npm. PRs and issues welcome — AI workflow front-ends, shader graphs, dataflow editors, anything node-based.',
+    finalCta: 'Documentation →',
+  }
+})()
+
+const themeAJson = '{}'
+const themeBJson = JSON.stringify({
+  color: {
+    surface: { canvas: '#0E1626', node: '#101D33', headerEnd: '#1B2A44' },
+    text:    { primary: '#E6F2FF' },
+  },
+  background: {
+    color: '#0E1626',
+    grid:  { color: 'rgba(110, 180, 255, 0.18)', spacing: 24, size: 1 },
+  },
+  category: {
+    logic:   { accent: '#3FB8FF' },
+    data:    { accent: '#FF66C4' },
+    macro:   { accent: '#FFB347' },
+    utility: { accent: '#A5F3C5' },
+  },
+  pinType: {
+    float:  { color: '#3FB8FF', edgeColor: '#3FB8FF' },
+    object: { color: '#FF66C4', edgeColor: '#FF66C4' },
+    string: { color: '#FFB347', edgeColor: '#FFB347' },
+  },
+})
+---
+
+<div class="xn-landing">
+  <section class="xn-hero">
+    <div class="xn-hero-left">
+      <div class="xn-eyebrow-row">
+        {t.eyebrow.map((e) => <span class="xn-eyebrow">{e}</span>)}
+      </div>
+      <h1 class="xn-h1">
+        {t.h1a} <code class="xn-h1-code">{t.h1b}('#app')</code> {t.h1c}
+      </h1>
+      <p class="xn-hero-sub">{t.sub}</p>
+      <div class="xn-cta-row">
+        <a class="xn-btn xn-btn-primary" href={docPath}>{t.ctaPrimary} <span aria-hidden="true">→</span></a>
+        <a class="xn-btn xn-btn-ghost" href={playgroundPath}>{lang === 'ru' ? 'Открыть playground' : lang === 'zh' ? '打开 playground' : 'Open playground'}</a>
+        <a class="xn-btn xn-btn-ghost" href="https://github.com/strelok2012/xenolith-graph">{t.ctaSecondary}</a>
+      </div>
+    </div>
+    <div class="xn-hero-emblem">
+      <Image src={logo} alt="XenolithGraph" width={320} height={320} />
+      <div class="xn-emblem-glow"></div>
+    </div>
+  </section>
+
+  <ul class="xn-metrics">
+    {t.metrics.map((m) => (
+      <li>
+        <div class="xn-metric-v">{m.v}</div>
+        <div class="xn-metric-l">{m.l}</div>
+      </li>
+    ))}
+  </ul>
+
+  <section class="xn-showcase-section">
+    <h2 class="xn-h2">{t.showcaseA} · {t.showcaseB}</h2>
+    <p class="xn-h2-sub">{t.showcaseSub}</p>
+    <div class="xn-showcase-row">
+      <EditorShowcase id="hero-default" label={t.showcaseA} themeJson={themeAJson} />
+      <EditorShowcase id="hero-override" label={t.showcaseB} themeJson={themeBJson} />
+    </div>
+  </section>
+
+  <section class="xn-features">
+    <header>
+      <h2 class="xn-h2">{t.featuresTitle}</h2>
+      <p class="xn-h2-sub">{t.featuresSub}</p>
+    </header>
+    <ul class="xn-feature-grid">
+      {t.features.map((f) => (
+        <li class="xn-feature">
+          <div class="xn-feature-num">{f.n}</div>
+          <h3>{f.h}</h3>
+          <p>{f.p}</p>
+        </li>
+      ))}
+    </ul>
+  </section>
+
+  <section class="xn-quickstart">
+    <h2 class="xn-h2">{t.quickStartTitle}</h2>
+    <Code code={t.quickStartCode} lang="ts" theme="vesper" />
+  </section>
+
+  <section class="xn-final">
+    <h2 class="xn-h2 xn-final-h">{t.finalH}</h2>
+    <p>{t.finalP}</p>
+    <a class="xn-btn xn-btn-primary" href={docPath}>{t.finalCta}</a>
+  </section>
+</div>
+
+<style>
+  /* PIXI appends <canvas> at runtime so it has no Astro scope hash — use :global() so the
+   * selectors match. Otherwise canvas overrides parent's aspect-ratio: 16/10. */
+  :global(.xn-showcase) {
+    position: relative;
+    background: var(--xn-ink-2);
+    border-radius: 14px;
+    border: 1px solid var(--xn-hair-soft);
+    overflow: hidden;
+    width: 100%;
+    aspect-ratio: 16 / 10;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  }
+  :global(.xn-showcase > canvas) {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    display: block;
+  }
+  :global(.xn-showcase-label) {
+    position: absolute;
+    top: 14px; left: 14px;
+    font-family: var(--xn-display);
+    font-size: 11px; letter-spacing: 0.16em;
+    text-transform: uppercase; font-weight: 500;
+    color: var(--xn-gold);
+    background: var(--xn-grad-gold-soft);
+    border: 1px solid var(--xn-hair);
+    padding: 6px 10px;
+    border-radius: 8px;
+    z-index: 2;
+    pointer-events: none;
+  }
+  /* Override Starlight's `.sl-markdown-content code` rule for our hero inline code. */
+  :global(.sl-markdown-content .xn-h1-code),
+  :global(.xn-landing .xn-h1-code) {
+    background: var(--xn-grad-gold-frame);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    border: none !important;
+    padding: 0 !important;
+    font-family: var(--xn-mono);
+    font-weight: 600;
+    font-size: 0.85em;
+  }
+
+  .xn-landing {
+    --hpad: clamp(20px, 4vw, 56px);
+    color: var(--xn-bone);
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 var(--hpad) 96px;
+  }
+
+  /* HERO */
+  .xn-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+    gap: 48px;
+    align-items: center;
+    padding: 40px 0 32px;
+  }
+  @media (max-width: 880px) {
+    .xn-hero { grid-template-columns: 1fr; gap: 32px; }
+    .xn-hero-emblem { order: -1; }
+  }
+  .xn-eyebrow-row {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    margin-bottom: 14px;
+    margin-top: 0;
+  }
+  .xn-eyebrow {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--xn-display);
+    font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+    font-weight: 500;
+    color: var(--xn-gold);
+    border: 1px solid rgba(217, 202, 160, 0.28);
+    background: var(--xn-grad-gold-soft);
+    padding: 6px 12px;
+    border-radius: 10px;
+  }
+  .xn-h1 {
+    font-family: var(--xn-display);
+    font-weight: 500;
+    font-size: clamp(40px, 5.4vw, 62px);
+    line-height: 1.05;
+    letter-spacing: 0.005em;
+    margin: 0 0 16px;
+    color: var(--xn-bone);
+  }
+  .xn-h1-code {
+    font-family: var(--xn-mono);
+    font-weight: 600;
+    background: var(--xn-grad-gold-frame);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    font-size: 0.85em;
+  }
+  .xn-hero-sub {
+    color: var(--xn-bone-dim);
+    font-size: 17px;
+    line-height: 1.55;
+    max-width: 58ch;
+    margin: 0 0 32px;
+  }
+  .xn-cta-row { display: flex; gap: 12px; flex-wrap: wrap; }
+
+  .xn-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+    font-family: var(--xn-sans);
+    font-size: 12px; font-weight: 800;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: #FFFFFF;
+    padding: 13px 28px; border-radius: 10px;
+    text-decoration: none;
+    transition: filter .15s ease, transform .15s ease, border-color .15s ease;
+  }
+  .xn-btn-primary {
+    background: var(--xn-grad-gold-soft), #1F1F1F;
+    border: 1px solid transparent;
+    background-clip: padding-box;
+    box-shadow:
+      inset 0 0 0 1px rgba(217, 202, 160, 0.4),
+      0 1px 0 rgba(255, 247, 215, 0.08) inset,
+      0 14px 36px rgba(99, 83, 23, 0.32);
+  }
+  .xn-btn-primary:hover { filter: brightness(1.18); transform: translateY(-1px); }
+  .xn-btn-primary span[aria-hidden] { color: var(--xn-gold); font-weight: 700; }
+  .xn-btn-ghost {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+  }
+  .xn-btn-ghost:hover { border-color: rgba(217, 202, 160, 0.55); color: var(--xn-gold); }
+
+  .xn-hero-emblem {
+    position: relative;
+    display: flex; justify-content: center; align-items: center;
+  }
+  .xn-hero-emblem :global(img) {
+    width: 100%; max-width: 320px; height: auto;
+    filter: drop-shadow(0 24px 48px rgba(0,0,0,0.45));
+  }
+  .xn-emblem-glow {
+    position: absolute; inset: 8%;
+    background: radial-gradient(circle, rgba(217, 202, 160, 0.22), transparent 60%);
+    z-index: -1; filter: blur(48px);
+  }
+
+  /* METRICS */
+  .xn-metrics {
+    list-style: none; margin: 32px 0; padding: 0;
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+  }
+  @media (max-width: 720px) { .xn-metrics { grid-template-columns: 1fr; } }
+  .xn-metrics li {
+    border: 1px solid var(--xn-hair-soft);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.015);
+    padding: 18px;
+  }
+  .xn-metric-v {
+    font-family: var(--xn-display);
+    font-size: 28px; font-weight: 500;
+    color: var(--xn-gold-bright);
+    margin-bottom: 4px;
+  }
+  .xn-metric-l {
+    font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--xn-bone-mute);
+  }
+
+  /* SHOWCASE */
+  .xn-showcase-section { margin: 64px 0; }
+  .xn-h2 {
+    font-family: var(--xn-display);
+    font-weight: 500;
+    font-size: clamp(28px, 3.4vw, 38px);
+    line-height: 1.15;
+    margin: 0 0 12px;
+    color: var(--xn-bone);
+  }
+  .xn-h2-sub {
+    color: var(--xn-bone-dim);
+    font-size: 15px; line-height: 1.55;
+    max-width: 68ch;
+    margin: 0 0 24px;
+  }
+  /* Stack showcases vertically — each takes the full width so the graph is readable. */
+  .xn-showcase-row {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  /* FEATURES */
+  .xn-features { margin: 80px 0; }
+  .xn-features header { margin-bottom: 32px; }
+  .xn-feature-grid {
+    list-style: none; margin: 0; padding: 0;
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+  }
+  @media (max-width: 880px) { .xn-feature-grid { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 560px) { .xn-feature-grid { grid-template-columns: 1fr; } }
+  .xn-feature {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--xn-hair-soft);
+    border-radius: 14px;
+    padding: 24px;
+  }
+  .xn-feature-num {
+    font-family: var(--xn-mono);
+    font-size: 12px; letter-spacing: 0.1em;
+    color: var(--xn-gold);
+    margin-bottom: 16px;
+  }
+  .xn-feature h3 {
+    font-family: var(--xn-display);
+    font-size: 18px; font-weight: 500;
+    margin: 0 0 8px;
+    color: var(--xn-bone);
+  }
+  .xn-feature p {
+    margin: 0;
+    color: var(--xn-bone-dim);
+    font-size: 14px; line-height: 1.55;
+  }
+
+  /* QUICKSTART */
+  .xn-quickstart { margin: 80px 0; }
+  .xn-codeblock {
+    background: #0F1010;
+    border: 1px solid var(--xn-hair-soft);
+    border-radius: 12px;
+    padding: 24px;
+    overflow-x: auto;
+    color: var(--xn-bone);
+    font-family: var(--xn-mono);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  /* FINAL */
+  .xn-final {
+    margin: 80px 0 0;
+    padding: 48px;
+    border: 1px solid var(--xn-hair);
+    border-radius: 16px;
+    background: var(--xn-grad-gold-soft);
+    text-align: center;
+  }
+  .xn-final p {
+    color: var(--xn-bone-dim);
+    max-width: 56ch;
+    margin: 0 auto 24px;
+    font-size: 16px;
+    line-height: 1.55;
+  }
+  .xn-final-h { margin-bottom: 12px; }
+</style>

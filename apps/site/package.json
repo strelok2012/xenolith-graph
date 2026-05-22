@@ -1,0 +1,26 @@
+{
+  "name": "@xenolith/site",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "node scripts/generate-og.mjs && astro build",
+    "preview": "astro preview",
+    "astro": "astro",
+    "og": "node scripts/generate-og.mjs"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.30.0",
+    "@xenolith/core": "workspace:*",
+    "@xenolith/editor": "workspace:*",
+    "@xenolith/render-pixi": "workspace:*",
+    "@xenolith/theme-xen": "workspace:*",
+    "astro": "^5.0.0",
+    "pixi.js": "^8.6.0",
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

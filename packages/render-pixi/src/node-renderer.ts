@@ -1,14 +1,31 @@
-import { Container, FillGradient, Graphics, Text } from 'pixi.js'
-import type { Node } from '@xenolith/core'
+import { BlurFilter, Container, FillGradient, Graphics, Text, Ticker, type TextStyleFontWeight } from 'pixi.js'
+import type { StateStyle } from '@xenolith/theme-xen'
+import type { Node, Pin } from '@xenolith/core'
 import type { XenTokens } from '@xenolith/theme-xen'
 import { computeNodeLayout } from './layout.js'
-import { resolveCategoryGradient, resolvePinFill, resolvePinStroke } from './style.js'
+import { hexToRgba, resolveCategoryAccent, resolveCategoryGradient, resolvePinFill, resolvePinStroke } from './style.js'
 
-/**
- * Draw a top-rounded rectangle: top-left and top-right corners are arcs of radius `r`,
- * bottom edge is a straight line across. Used for the node header so its bottom edge meets
- * the body cleanly instead of bowing inward.
- */
+export type NodeVisualState = 'default' | 'hover' | 'selected' | 'active'
+
+export interface RenderNodeOptions {
+  category?: string
+  title?: string
+  state?: NodeVisualState
+  collapsed?: boolean
+}
+
+export interface NodeView {
+  readonly container: Container
+  setVisualState(state: NodeVisualState): void
+  setCollapsed(collapsed: boolean, animated?: boolean): void
+  isCollapsed(): boolean
+  /** Centre of a pin in the node's local coordinates given the current visual state.
+   *  Edge renderers use this to track pin positions as nodes collapse/expand. */
+  pinLocalPosition(pinId: string): { x: number; y: number } | null
+}
+
+const COLLAPSE_DURATION_MS = 220
+
 function buildTopRoundedRect(g: Graphics, x: number, y: number, w: number, h: number, r: number) {
   const radius = Math.max(0, Math.min(r, w / 2, h))
   return g
@@ -22,8 +39,6 @@ function buildTopRoundedRect(g: Graphics, x: number, y: number, w: number, h: nu
     .closePath()
 }
 
-/** Open path that traces only the top edge (rounded corners + straight top). Stroke this with a
- *  vertical white-to-transparent gradient to get the Figma rim-light effect. */
 function buildTopRimPath(g: Graphics, x: number, y: number, w: number, r: number) {
   const radius = Math.max(0, Math.min(r, w / 2))
   return g
@@ -33,7 +48,6 @@ function buildTopRimPath(g: Graphics, x: number, y: number, w: number, r: number
     .arcTo(x + w, y, x + w, y + radius, radius)
 }
 
-/** Downward chevron `∨` inside a `size`×`size` box centred at (cx, cy). */
 function buildChevron(g: Graphics, cx: number, cy: number, size: number) {
   const halfW = size * 0.22
   const halfH = size * 0.11
@@ -43,31 +57,120 @@ function buildChevron(g: Graphics, cx: number, cy: number, size: number) {
     .lineTo(cx + halfW, cy - halfH)
 }
 
-export interface RenderNodeOptions {
-  /** Visual category for the header accent. Defaults to 'utility'. */
-  category?: string
-  /** Title shown in the header. Defaults to node.type. */
-  title?: string
+function makeGlowLayer(style: StateStyle, w: number, h: number, radius: number): Container {
+  const layer = new Container()
+  layer.visible = false
+  if (style.glow !== undefined) {
+    const glow = new Graphics()
+      .roundRect(0, 0, w, h, radius)
+      .fill({ color: style.glow })
+    const blur = new BlurFilter({ strength: style.glowBlur ?? 10, quality: 4 })
+    blur.padding = (style.glowBlur ?? 10) * 2
+    glow.filters = [blur]
+    layer.addChild(glow)
+  }
+  return layer
 }
 
-export function renderNode(node: Node, tokens: XenTokens, opts: RenderNodeOptions = {}): Container {
+function makeBorderLayer(style: StateStyle, w: number, h: number, radius: number): Container {
+  const layer = new Container()
+  layer.visible = false
+  if (style.border !== undefined) {
+    const border = new Graphics()
+      .roundRect(0, 0, w, h, radius)
+      .stroke({
+        color: style.border,
+        width: style.borderWidth ?? 1,
+        alignment: 0.5,
+      })
+    layer.addChild(border)
+  }
+  return layer
+}
+
+interface PinPosition {
+  pinId: string
+  x: number
+  y: number
+}
+
+/** Compute pin positions on the pill (collapsed) form — placed along the curved end caps so each
+ *  pin sits tangent to the rounded edge, not floating off to one side. */
+function collapsedPinPositions(
+  pins: Pin[],
+  pillW: number,
+  pillH: number,
+  pillR: number,
+): PinPosition[] {
+  const inputs = pins.filter((p) => p.direction === 'in')
+  const outputs = pins.filter((p) => p.direction === 'out')
+  const cy = pillH / 2
+  // Angular layout: ~50° between pins, clamped to 170° total spread.
+  const idealStep = Math.PI / 3.6
+  const maxTotal = Math.PI * 0.94
+  const arc = (count: number, idx: number): number => {
+    if (count <= 1) return 0
+    const total = Math.min(maxTotal, (count - 1) * idealStep)
+    const step = total / (count - 1)
+    return -total / 2 + idx * step
+  }
+  const out: PinPosition[] = []
+  // Inputs on the left semicircle, centre at (pillR, cy).
+  inputs.forEach((p, i) => {
+    const angle = arc(inputs.length, i)
+    out.push({
+      pinId: p.id,
+      x: pillR - pillR * Math.cos(angle),
+      y: cy + pillR * Math.sin(angle),
+    })
+  })
+  // Outputs on the right semicircle, centre at (pillW - pillR, cy).
+  outputs.forEach((p, i) => {
+    const angle = arc(outputs.length, i)
+    out.push({
+      pinId: p.id,
+      x: pillW - pillR + pillR * Math.cos(angle),
+      y: cy + pillR * Math.sin(angle),
+    })
+  })
+  return out
+}
+
+export function renderNode(
+  node: Node,
+  tokens: XenTokens,
+  opts: RenderNodeOptions = {},
+): NodeView {
   const geo = tokens.geometry
-  const layout = computeNodeLayout(node, {
+  const expandedLayout = computeNodeLayout(node, {
     node:   geo.node,
     pin:    { diameter: geo.pin.diameter, rowSpacing: geo.pin.rowSpacing, rowHeight: geo.pin.rowHeight },
     header: { toPinsGap: geo.header.toPinsGap },
   })
 
-  const container = new Container()
+  const container = new Container({ label: `node:${node.id}` })
   container.position.set(node.position.x, node.position.y)
 
-  const w = layout.body.width
-  const h = layout.body.height
+  // ============================================================================================
+  // EXPANDED FORM
+  // ============================================================================================
+  const expanded = new Container({ label: 'expanded' })
+  container.addChild(expanded)
+
+  const w = expandedLayout.body.width
+  const h = expandedLayout.body.height
+
+  const glowLayers: Record<Exclude<NodeVisualState, 'default'>, Container> = {
+    hover:    makeGlowLayer(tokens.state.hover,    w, h, geo.node.radius),
+    selected: makeGlowLayer(tokens.state.selected, w, h, geo.node.radius),
+    active:   makeGlowLayer(tokens.state.active,   w, h, geo.node.radius),
+  }
+  expanded.addChild(glowLayers.hover, glowLayers.selected, glowLayers.active)
 
   const body = new Graphics()
     .roundRect(0, 0, w, h, geo.node.radius)
     .fill({ color: tokens.color.surface.node })
-  container.addChild(body)
+  expanded.addChild(body)
 
   const padding = geo.node.headerPadding
   const headerInnerWidth = w - padding * 2
@@ -75,9 +178,6 @@ export function renderNode(node: Node, tokens: XenTokens, opts: RenderNodeOption
   const headerRadius = Math.max(geo.node.radius - 2, 0)
 
   const gradient = resolveCategoryGradient(opts.category, tokens)
-  // PIXI v8 FillGradient with textureSpace: 'local' normalizes 0..1 to the shape's bounding box.
-  // Horizontal axis: left edge (start of category accent at 0.6 alpha) to right edge (same accent
-  // fading to alpha 0, blending into the body underneath).
   const headerFill = new FillGradient({
     type: 'linear',
     start: { x: 0, y: 0 },
@@ -88,51 +188,28 @@ export function renderNode(node: Node, tokens: XenTokens, opts: RenderNodeOption
     ],
     textureSpace: 'local',
   })
-
   const headerInner = new Graphics()
-  buildTopRoundedRect(
-    headerInner,
-    padding,
-    padding,
-    headerInnerWidth,
-    headerInnerHeight,
-    headerRadius,
-  ).fill(headerFill)
-  container.addChild(headerInner)
+  buildTopRoundedRect(headerInner, padding, padding, headerInnerWidth, headerInnerHeight, headerRadius).fill(headerFill)
+  expanded.addChild(headerInner)
 
-  // Figma: `inset 0 3px 6px rgba(255, 255, 255, 0.5)`. The 0.5 is calibrated for a page with
-  // `backdrop-filter: blur(4px)`; without that softening we render at lower intensity, otherwise
-  // the white wash competes with the category gradient on the right side.
-  const highlightAlpha = 0.25
   const fadeStop = Math.min(
     1,
-    (tokens.effect.headerInnerShadow.blur + tokens.effect.headerInnerShadow.offsetY) /
-      headerInnerHeight,
+    (tokens.effect.headerInnerShadow.blur + tokens.effect.headerInnerShadow.offsetY) / headerInnerHeight,
   )
   const highlightFill = new FillGradient({
     type: 'linear',
     start: { x: 0, y: 0 },
     end: { x: 0, y: 1 },
     colorStops: [
-      { offset: 0, color: `rgba(255, 255, 255, ${highlightAlpha})` },
+      { offset: 0, color: 'rgba(255, 255, 255, 0.25)' },
       { offset: fadeStop, color: 'rgba(255, 255, 255, 0)' },
     ],
     textureSpace: 'local',
   })
-
   const headerHighlight = new Graphics()
-  buildTopRoundedRect(
-    headerHighlight,
-    padding,
-    padding,
-    headerInnerWidth,
-    headerInnerHeight,
-    headerRadius,
-  ).fill(highlightFill)
-  container.addChild(headerHighlight)
+  buildTopRoundedRect(headerHighlight, padding, padding, headerInnerWidth, headerInnerHeight, headerRadius).fill(highlightFill)
+  expanded.addChild(headerHighlight)
 
-  // Top rim light: thin white→transparent gradient stroke along the top curved edge only.
-  // Matches the Figma `<path ... stroke="url(#paint1_linear)" stroke-width="0.5"/>` element.
   const rimGradient = new FillGradient({
     type: 'linear',
     start: { x: 0, y: 0 },
@@ -149,19 +226,21 @@ export function renderNode(node: Node, tokens: XenTokens, opts: RenderNodeOption
     fill: rimGradient,
     alignment: 0,
   })
-  container.addChild(headerRim)
+  expanded.addChild(headerRim)
 
-  // Chevron icon (downward V) on the left of the header title.
   const chevronY = padding + geo.node.headerHeight / 2 - 0.5
   const chevronCenterX = padding + 8 + geo.header.chevronSize / 2 - 4
   const chevron = new Graphics()
-  buildChevron(chevron, chevronCenterX, chevronY, geo.header.chevronSize).stroke({
+  // Draw at origin (0,0); position the Graphics so rotation pivots around the chevron centre.
+  buildChevron(chevron, 0, 0, geo.header.chevronSize).stroke({
     color: tokens.color.text.primary,
     width: 1,
     cap: 'round',
     join: 'round',
   })
-  container.addChild(chevron)
+  chevron.position.set(chevronCenterX, chevronY)
+  chevron.eventMode = 'static'
+  expanded.addChild(chevron)
 
   const title = new Text({
     text: opts.title ?? node.type,
@@ -173,22 +252,313 @@ export function renderNode(node: Node, tokens: XenTokens, opts: RenderNodeOption
     },
   })
   title.position.set(chevronCenterX + geo.header.chevronSize / 2 + geo.header.titleGap, 3)
-  container.addChild(title)
+  expanded.addChild(title)
 
+  const borderLayers: Record<Exclude<NodeVisualState, 'default'>, Container> = {
+    hover:    makeBorderLayer(tokens.state.hover,    w, h, geo.node.radius),
+    selected: makeBorderLayer(tokens.state.selected, w, h, geo.node.radius),
+    active:   makeBorderLayer(tokens.state.active,   w, h, geo.node.radius),
+  }
+  expanded.addChild(borderLayers.hover, borderLayers.selected, borderLayers.active)
+
+  // Pin Graphics & labels for expanded form. We also track pin position lookups for edge wiring.
+  const expandedPinLocations = new Map<string, { x: number; y: number }>()
+  const pinLabels: Text[] = []
   for (const pin of node.pins) {
-    const layoutPin = layout.pins.find((p) => p.id === pin.id)
+    const layoutPin = expandedLayout.pins.find((p) => p.id === pin.id)
     if (!layoutPin) continue
     const localX = layoutPin.x - node.position.x
     const localY = layoutPin.y - node.position.y
+    expandedPinLocations.set(pin.id, { x: localX, y: localY })
     const radius = geo.pin.diameter / 2
     const fill = resolvePinFill(String(pin.type), tokens)
     const stroke = resolvePinStroke(String(pin.type), tokens)
+    const pinGfx = new Graphics()
+      .circle(localX, localY, radius)
+      .fill({ color: fill })
+      .stroke({ color: stroke, width: geo.pin.stroke })
+    expanded.addChild(pinGfx)
 
-    const pinGfx = new Graphics().circle(localX, localY, radius)
-    if (fill !== null) pinGfx.fill({ color: fill })
-    pinGfx.stroke({ color: stroke, width: geo.pin.stroke })
-    container.addChild(pinGfx)
+    if (pin.label) {
+      const label = new Text({
+        text: pin.label,
+        style: {
+          fontFamily: tokens.typography.fontFamily,
+          fontSize:   tokens.typography.label.size,
+          fontWeight: String(tokens.typography.label.weight) as TextStyleFontWeight,
+          fill:       tokens.typography.label.color,
+        },
+      })
+      if (layoutPin.side === 'left') {
+        label.anchor.set(0, 0.5)
+        label.position.set(localX + radius + geo.pin.labelGap, localY)
+      } else {
+        label.anchor.set(1, 0.5)
+        label.position.set(localX - radius - geo.pin.labelGap, localY)
+      }
+      pinLabels.push(label)
+      expanded.addChild(label)
+    }
   }
 
-  return container
+  // ============================================================================================
+  // COLLAPSED FORM (pill)
+  // ============================================================================================
+  const collapsed = new Container({ label: 'collapsed' })
+  collapsed.visible = false
+  collapsed.alpha = 0
+  container.addChild(collapsed)
+
+  const pillW = geo.node.pillMinWidth
+  const pillH = geo.node.pillHeight
+  const pillR = geo.node.pillRadius
+  // Centre the pill vertically within the (taller) expanded body so the node's anchor doesn't shift.
+  const pillOffsetY = (h - pillH) / 2
+
+  // Glow layers for pill form. Drawn behind the pill body so the halo bleeds outside the capsule.
+  const pillGlowLayers: Record<Exclude<NodeVisualState, 'default'>, Container> = {
+    hover:    makeGlowLayer(tokens.state.hover,    pillW, pillH, pillR),
+    selected: makeGlowLayer(tokens.state.selected, pillW, pillH, pillR),
+    active:   makeGlowLayer(tokens.state.active,   pillW, pillH, pillR),
+  }
+  for (const l of Object.values(pillGlowLayers)) l.position.set(0, pillOffsetY)
+  collapsed.addChild(pillGlowLayers.hover, pillGlowLayers.selected, pillGlowLayers.active)
+
+  const accent = resolveCategoryAccent(opts.category, tokens)
+
+  // Two layers: opaque body, then accent gradient on top — matches Figma's
+  // `background: linear-gradient(...), #0F110E` (gradient layered over a solid fill).
+  const pillBg = new Graphics()
+    .roundRect(0, pillOffsetY, pillW, pillH, pillR)
+    .fill({ color: tokens.color.surface.node })
+  collapsed.addChild(pillBg)
+
+  // Figma stops are at 12.63% / 51.57% / 90.91% — accent confined to centre, fading at edges.
+  const pillFill = new FillGradient({
+    type: 'linear',
+    start: { x: 0, y: 0 },
+    end: { x: 1, y: 0 },
+    colorStops: [
+      { offset: 0,        color: hexToRgba(tokens.color.surface.node, 0.5) },
+      { offset: 0.1263,   color: hexToRgba(tokens.color.surface.node, 0.5) },
+      { offset: 0.5157,   color: hexToRgba(accent, 0.3) },
+      { offset: 0.9091,   color: hexToRgba(tokens.color.surface.node, 0.5) },
+      { offset: 1,        color: hexToRgba(tokens.color.surface.node, 0.5) },
+    ],
+    textureSpace: 'local',
+  })
+  const pillAccent = new Graphics()
+    .roundRect(0, pillOffsetY, pillW, pillH, pillR)
+    .fill(pillFill)
+  collapsed.addChild(pillAccent)
+
+  // Inset top highlight — consistent with the expanded header rim. Vertical white→transparent
+  // gradient, contained to the top portion of the pill.
+  const pillHighlightFadeStop = Math.min(
+    1,
+    (tokens.effect.pillInnerShadow.blur + tokens.effect.pillInnerShadow.offsetY) / pillH,
+  )
+  const pillHighlightFill = new FillGradient({
+    type: 'linear',
+    start: { x: 0, y: 0 },
+    end: { x: 0, y: 1 },
+    colorStops: [
+      { offset: 0,                       color: 'rgba(255, 255, 255, 0.18)' },
+      { offset: pillHighlightFadeStop,   color: 'rgba(255, 255, 255, 0)' },
+    ],
+    textureSpace: 'local',
+  })
+  const pillHighlight = new Graphics()
+    .roundRect(0, pillOffsetY, pillW, pillH, pillR)
+    .fill(pillHighlightFill)
+  collapsed.addChild(pillHighlight)
+
+  // Thin bright stroke along the very top edge of the capsule — mirrors expanded's `headerRim`.
+  const pillRimFill = new FillGradient({
+    type: 'linear',
+    start: { x: 0, y: 0 },
+    end: { x: 0, y: 1 },
+    colorStops: [
+      { offset: 0, color: 'rgba(255, 255, 255, 0.55)' },
+      { offset: 1, color: 'rgba(255, 255, 255, 0)' },
+    ],
+    textureSpace: 'local',
+  })
+  const pillRim = new Graphics()
+    .roundRect(0, pillOffsetY, pillW, pillH, pillR)
+    .stroke({ width: 0.75, fill: pillRimFill, alignment: 0 })
+  // Mask so only the top half of the stroke shows.
+  const pillRimMask = new Graphics()
+    .rect(-4, pillOffsetY - 4, pillW + 8, pillH / 2 + 4)
+    .fill({ color: 0xffffff })
+  collapsed.addChild(pillRimMask)
+  pillRim.mask = pillRimMask
+  collapsed.addChild(pillRim)
+
+  // Pill chevron — rotated 90° clockwise (points right when collapsed).
+  const pillChevron = new Graphics()
+  const pillChevronCX = 16
+  const pillChevronCY = pillOffsetY + pillH / 2
+  buildChevron(pillChevron, 0, 0, geo.header.chevronSize).stroke({
+    color: tokens.color.text.primary,
+    width: 1.2,
+    cap: 'round',
+    join: 'round',
+  })
+  pillChevron.position.set(pillChevronCX, pillChevronCY)
+  pillChevron.rotation = -Math.PI / 2
+  collapsed.addChild(pillChevron)
+
+  const pillTitle = new Text({
+    text: opts.title ?? node.type,
+    style: {
+      fontFamily: tokens.typography.fontFamily,
+      fontSize:   tokens.typography.heading.size,
+      fontWeight: '700',
+      fill:       tokens.typography.heading.color,
+    },
+  })
+  pillTitle.position.set(pillChevronCX + geo.header.chevronSize / 2 + geo.header.titleGap, pillOffsetY + (pillH - tokens.typography.heading.lineHeight) / 2)
+  collapsed.addChild(pillTitle)
+
+  // Border layers — on top of body+title but UNDER pins (so pins overlap the rim).
+  const pillBorderLayers: Record<Exclude<NodeVisualState, 'default'>, Container> = {
+    hover:    makeBorderLayer(tokens.state.hover,    pillW, pillH, pillR),
+    selected: makeBorderLayer(tokens.state.selected, pillW, pillH, pillR),
+    active:   makeBorderLayer(tokens.state.active,   pillW, pillH, pillR),
+  }
+  for (const l of Object.values(pillBorderLayers)) l.position.set(0, pillOffsetY)
+  collapsed.addChild(pillBorderLayers.hover, pillBorderLayers.selected, pillBorderLayers.active)
+
+  const pillPinLocations = new Map<string, { x: number; y: number }>()
+  const pillPinPositions = collapsedPinPositions(node.pins, pillW, pillH, pillR)
+  for (const pp of pillPinPositions) {
+    const pin = node.pins.find((p) => p.id === pp.pinId)
+    if (!pin) continue
+    const localX = pp.x
+    const localY = pillOffsetY + pp.y
+    pillPinLocations.set(pin.id, { x: localX, y: localY })
+    const radius = geo.pin.diameter / 2
+    const fill = resolvePinFill(String(pin.type), tokens)
+    const stroke = resolvePinStroke(String(pin.type), tokens)
+    const pinGfx = new Graphics()
+      .circle(localX, localY, radius)
+      .fill({ color: fill })
+      .stroke({ color: stroke, width: geo.pin.stroke })
+    collapsed.addChild(pinGfx)
+  }
+
+  // ============================================================================================
+  // STATE & ANIMATION
+  // ============================================================================================
+  let isCollapsedState = opts.collapsed ?? false
+  let collapseFraction = isCollapsedState ? 1 : 0
+  let animationTicker: ((delta: { deltaMS: number }) => void) | null = null
+
+  function applyFraction(f: number): void {
+    const expandedAlpha = 1 - f
+    const collapsedAlpha = f
+    expanded.alpha = expandedAlpha
+    expanded.visible = expandedAlpha > 0.001
+    collapsed.alpha = collapsedAlpha
+    collapsed.visible = collapsedAlpha > 0.001
+    // Rotate the expanded chevron from 0 → -90° as we collapse.
+    chevron.rotation = -f * (Math.PI / 2)
+  }
+
+  applyFraction(collapseFraction)
+
+  function setCollapsed(c: boolean, animated = true): void {
+    if (c === isCollapsedState && (collapseFraction === 0 || collapseFraction === 1)) return
+    isCollapsedState = c
+    const targetFraction = c ? 1 : 0
+    if (!animated) {
+      collapseFraction = targetFraction
+      applyFraction(targetFraction)
+      return
+    }
+    if (animationTicker) {
+      Ticker.shared.remove(animationTicker)
+      animationTicker = null
+    }
+    const start = collapseFraction
+    const delta = targetFraction - start
+    let elapsed = 0
+    animationTicker = (tick) => {
+      elapsed += tick.deltaMS
+      const t = Math.min(1, elapsed / COLLAPSE_DURATION_MS)
+      // ease-out cubic for snappy feel
+      const eased = 1 - Math.pow(1 - t, 3)
+      collapseFraction = start + delta * eased
+      applyFraction(collapseFraction)
+      if (t >= 1 && animationTicker) {
+        Ticker.shared.remove(animationTicker)
+        animationTicker = null
+      }
+    }
+    Ticker.shared.add(animationTicker)
+  }
+
+  function setVisualState(state: NodeVisualState): void {
+    glowLayers.hover.visible      = state === 'hover'
+    glowLayers.selected.visible   = state === 'selected'
+    glowLayers.active.visible     = state === 'active'
+    borderLayers.hover.visible    = state === 'hover'
+    borderLayers.selected.visible = state === 'selected'
+    borderLayers.active.visible   = state === 'active'
+    pillGlowLayers.hover.visible      = state === 'hover'
+    pillGlowLayers.selected.visible   = state === 'selected'
+    pillGlowLayers.active.visible     = state === 'active'
+    pillBorderLayers.hover.visible    = state === 'hover'
+    pillBorderLayers.selected.visible = state === 'selected'
+    pillBorderLayers.active.visible   = state === 'active'
+  }
+  setVisualState(opts.state ?? 'default')
+
+  function pinLocalPosition(pinId: string): { x: number; y: number } | null {
+    const expandedPos = expandedPinLocations.get(pinId)
+    const pillPos = pillPinLocations.get(pinId)
+    if (!expandedPos && !pillPos) return null
+    if (!expandedPos) return pillPos!
+    if (!pillPos) return expandedPos
+    // Interpolate based on current animation fraction.
+    return {
+      x: expandedPos.x + (pillPos.x - expandedPos.x) * collapseFraction,
+      y: expandedPos.y + (pillPos.y - expandedPos.y) * collapseFraction,
+    }
+  }
+
+  // Toggle on chevron click — both forms' chevrons act as a toggle button.
+  function onChevronClick(): void {
+    setCollapsed(!isCollapsedState, true)
+  }
+  chevron.cursor = 'pointer'
+  chevron.eventMode = 'static'
+  // Hit area is in LOCAL coordinates. Chevron Graphics is drawn at (0,0) and positioned via
+  // `chevron.position.set(chevronCenterX, chevronY)`, so the centre is (0,0) in local space.
+  chevron.hitArea = { contains: (px, py) =>
+    Math.abs(px) <= geo.header.chevronSize / 2 &&
+    Math.abs(py) <= geo.header.chevronSize / 2,
+  }
+  chevron.on('pointerdown', (e) => {
+    onChevronClick()
+    e.stopPropagation()
+  })
+  pillChevron.cursor = 'pointer'
+  pillChevron.eventMode = 'static'
+  pillChevron.hitArea = { contains: (px, py) =>
+    Math.hypot(px, py) <= geo.header.chevronSize,
+  }
+  pillChevron.on('pointerdown', (e) => {
+    onChevronClick()
+    e.stopPropagation()
+  })
+
+  return {
+    container,
+    setVisualState,
+    setCollapsed,
+    isCollapsed: () => isCollapsedState,
+    pinLocalPosition,
+  }
 }

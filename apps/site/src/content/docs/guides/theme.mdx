@@ -1,0 +1,75 @@
+---
+title: Theme customisation
+description: Override Xen tokens with a partial theme.
+---
+
+The Xen design system lives in `@xenolith/theme-xen`. Pass any subset of its tokens to `XenolithEditor.init` and they will be deep-merged with the defaults.
+
+## Quick overrides
+
+Change the category accents and a few pin colours:
+
+```ts
+const editor = await XenolithEditor.init('#app', {
+  theme: {
+    category: {
+      logic:   { accent: '#3FB8FF' },
+      data:    { accent: '#FF66C4' },
+      macro:   { accent: '#FFB347' },
+      utility: { accent: '#A5F3C5' },
+    },
+    pinType: {
+      float:  { color: '#3FB8FF', edgeColor: '#3FB8FF' },
+      object: { color: '#FF66C4', edgeColor: '#FF66C4' },
+      string: { color: '#FFB347', edgeColor: '#FFB347' },
+    },
+  },
+})
+```
+
+Every other token (geometry, typography, effects, surfaces) stays at the Xen defaults.
+
+## The full token shape
+
+The full type lives in `@xenolith/theme-xen` and is `XenTokens`. Top-level groups:
+
+| Group          | Purpose                                                                  |
+|----------------|--------------------------------------------------------------------------|
+| `color.brand`  | Brand / hover / accent yellows and their alphas.                         |
+| `color.surface`| Canvas, node body, panel, divider, header-end gradient stop.             |
+| `color.text`   | Primary, secondary, muted, disabled text colours.                        |
+| `pinType`      | One entry per pin type: `color`, `edgeColor`, `shape`, `edgeWidth`.      |
+| `category`     | Header accent + Figma gradient per category (`logic`, `data`, `macro`, `utility`). |
+| `pill`         | Pill-form accent gradient CSS strings (`green`, `orange`, ...).          |
+| `state`        | `hover`, `selected`, `active`, `disabled` — border + glow tokens.        |
+| `geometry`     | Node, pin, header, edge, comment dimensions.                             |
+| `typography`   | Inter family + heading / label / comment styles.                         |
+| `effect`       | Header inner shadow, backdrop blur, rim highlight, drop shadow.          |
+| `background`   | Canvas colour and dot-grid configuration.                                |
+
+## Worked example: pastel theme
+
+```ts
+import { XenolithEditor } from '@xenolith/editor'
+
+await XenolithEditor.init('#app', {
+  theme: {
+    color: {
+      surface: { canvas: '#FAF7F2', node: '#FFFFFF' },
+      text:    { primary: '#1A1A1A', secondary: '#666666' },
+    },
+    background: {
+      color: '#FAF7F2',
+      grid:  { color: 'rgba(0, 0, 0, 0.06)' },
+    },
+    category: {
+      logic:   { accent: '#7FB8A1' },
+      data:    { accent: '#7FA8C7' },
+      macro:   { accent: '#C77F9F' },
+      utility: { accent: '#444444' },
+    },
+  },
+})
+```
+
+The deep-merge engine preserves every Xen token you didn't touch. Arrays are replaced wholesale (not merged element-wise) — but the token schema does not currently contain arrays, so this rule never bites in practice.

@@ -1,0 +1,44 @@
+---
+title: Кастомизация темы
+description: Переопределение токенов темы Xen.
+---
+
+Дизайн-система Xen живёт в `@xenolith/theme-xen`. В `XenolithEditor.init` можно передать частичный объект с любыми токенами — он будет глубоко смержен с дефолтными.
+
+## Быстрый override
+
+```ts
+const editor = await XenolithEditor.init('#app', {
+  theme: {
+    category: {
+      logic:   { accent: '#3FB8FF' },
+      data:    { accent: '#FF66C4' },
+      macro:   { accent: '#FFB347' },
+      utility: { accent: '#A5F3C5' },
+    },
+    pinType: {
+      float:  { color: '#3FB8FF', edgeColor: '#3FB8FF' },
+      object: { color: '#FF66C4', edgeColor: '#FF66C4' },
+      string: { color: '#FFB347', edgeColor: '#FFB347' },
+    },
+  },
+})
+```
+
+Все токены, которых вы не коснулись (геометрия, типографика, эффекты), остаются дефолтными Xen.
+
+## Группы токенов
+
+| Группа          | Содержит                                                              |
+|-----------------|-----------------------------------------------------------------------|
+| `color.brand`   | Бренд / hover жёлтые и их альфы.                                      |
+| `color.surface` | Canvas, body ноды, panel, divider, конец градиента header.            |
+| `color.text`    | Primary, secondary, muted, disabled.                                  |
+| `pinType`       | Один токен на тип пина: `color`, `edgeColor`, `shape`, `edgeWidth`.   |
+| `category`      | Header accent + Figma-градиент на категорию.                          |
+| `pill`          | Pill-форма accent градиентов.                                         |
+| `state`         | hover, selected, active, disabled — border + glow.                    |
+| `geometry`      | Размеры ноды, пина, header, edge, comment.                            |
+| `typography`    | Inter + heading / label / comment.                                    |
+| `effect`        | Inner shadow, backdrop blur, rim highlight, drop shadow.              |
+| `background`    | Цвет canvas и конфиг dot-grid.                                        |

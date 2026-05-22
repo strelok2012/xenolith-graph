@@ -5,7 +5,12 @@ function pin(direction: 'in' | 'out', type: string, label: string): Pin {
   return { id: createPinId(), kind: 'data', direction, type, multiple: direction === 'out', label }
 }
 
-function makeNode(opts: { type: string; position: { x: number; y: number }; size: { x: number; y: number }; pins: Pin[] }): Node {
+function mk(opts: {
+  type: string
+  position: { x: number; y: number }
+  size: { x: number; y: number }
+  pins: Pin[]
+}): Node {
   return {
     id: createNodeId(),
     type: opts.type,
@@ -16,46 +21,56 @@ function makeNode(opts: { type: string; position: { x: number; y: number }; size
   }
 }
 
-const editor = await XenolithEditor.init('#app')
-
-const logicNode = makeNode({
-  type: 'Логика',
-  position: { x: 60, y: 80 },
-  size: { x: 150, y: 70 },
-  pins: [pin('in', 'float', 'Вход'), pin('out', 'float', 'Выход')],
+const editor = await XenolithEditor.init('#app', {
+  viewport: { x: 60, y: 60, zoom: 0.85 },
 })
 
-const dataNode = makeNode({
-  type: 'Данные',
-  position: { x: 60, y: 240 },
-  size: { x: 150, y: 85 },
-  pins: [pin('in', 'object', 'Вход'), pin('out', 'object', 'Выход')],
-})
+const N = {
+  source:    mk({ type: 'Source',    position: { x: 40,  y: 40  }, size: { x: 150, y: 70  }, pins: [pin('out', 'float',  'Output')] }),
+  sample:    mk({ type: 'Sample',    position: { x: 40,  y: 170 }, size: { x: 150, y: 85  }, pins: [pin('in','float','In'), pin('out','float','Out')] }),
+  filter:    mk({ type: 'Filter',    position: { x: 40,  y: 310 }, size: { x: 150, y: 85  }, pins: [pin('in','float','In'), pin('out','float','Out')] }),
+  cache:     mk({ type: 'Cache',     position: { x: 40,  y: 450 }, size: { x: 150, y: 70  }, pins: [pin('in','object','In'), pin('out','object','Out')] }),
+  gather:    mk({ type: 'Gather',    position: { x: 260, y: 180 }, size: { x: 150, y: 105 }, pins: [pin('in','float','A'), pin('in','float','B'), pin('in','object','C'), pin('out','object','Out')] }),
+  pack:      mk({ type: 'Pack',      position: { x: 260, y: 340 }, size: { x: 150, y: 85  }, pins: [pin('in','object','In'), pin('in','float','Tag'), pin('out','object','Pack')] }),
+  transform: mk({ type: 'Transform', position: { x: 480, y: 140 }, size: { x: 150, y: 70  }, pins: [pin('in','object','In'), pin('out','object','Out')] }),
+  validate:  mk({ type: 'Validate',  position: { x: 480, y: 260 }, size: { x: 150, y: 85  }, pins: [pin('in','object','In'), pin('out','wildcard','Out')] }),
+  enrich:    mk({ type: 'Enrich',    position: { x: 480, y: 400 }, size: { x: 150, y: 85  }, pins: [pin('in','object','In'), pin('out','object','Out')] }),
+  score:     mk({ type: 'Score',     position: { x: 700, y: 220 }, size: { x: 150, y: 85  }, pins: [pin('in','object','In'), pin('out','float','Out')] }),
+  resolve:   mk({ type: 'Resolve',   position: { x: 700, y: 350 }, size: { x: 150, y: 105 }, pins: [pin('in','object','In'), pin('in','float','Hint'), pin('in','wildcard','Aux'), pin('out','string','Out')] }),
+  sink1:     mk({ type: 'Display',   position: { x: 920, y: 120 }, size: { x: 150, y: 70  }, pins: [pin('in','string','In'), pin('out','any','Out')] }),
+  sink2:     mk({ type: 'Audit',     position: { x: 920, y: 240 }, size: { x: 150, y: 70  }, pins: [pin('in','float','In'), pin('out','any','Out')] }),
+  sink3:     mk({ type: 'Persist',   position: { x: 920, y: 360 }, size: { x: 150, y: 70  }, pins: [pin('in','string','In'), pin('out','any','Out')] }),
+}
 
-const macroNode = makeNode({
-  type: 'Макро',
-  position: { x: 320, y: 150 },
-  size: { x: 150, y: 105 },
-  pins: [
-    pin('in', 'float', 'Вход'),
-    pin('in', 'object', 'Вход'),
-    pin('in', 'wildcard', 'Вход'),
-    pin('out', 'string', 'Выход'),
-  ],
-})
+editor.addNode(N.source,    { category: 'logic',   title: 'Source'    })
+editor.addNode(N.sample,    { category: 'logic',   title: 'Sample'    })
+editor.addNode(N.filter,    { category: 'logic',   title: 'Filter',    collapsed: true })
+editor.addNode(N.cache,     { category: 'data',    title: 'Cache',     collapsed: true })
+editor.addNode(N.gather,    { category: 'macro',   title: 'Gather'    })
+editor.addNode(N.pack,      { category: 'macro',   title: 'Pack',      collapsed: true })
+editor.addNode(N.transform, { category: 'data',    title: 'Transform' })
+editor.addNode(N.validate,  { category: 'data',    title: 'Validate'  })
+editor.addNode(N.enrich,    { category: 'data',    title: 'Enrich'    })
+editor.addNode(N.score,     { category: 'macro',   title: 'Score'     })
+editor.addNode(N.resolve,   { category: 'macro',   title: 'Resolve'   })
+editor.addNode(N.sink1,     { category: 'utility', title: 'Display'   })
+editor.addNode(N.sink2,     { category: 'utility', title: 'Audit'     })
+editor.addNode(N.sink3,     { category: 'utility', title: 'Persist'   })
 
-const utilityNode = makeNode({
-  type: 'Утилита',
-  position: { x: 580, y: 180 },
-  size: { x: 150, y: 70 },
-  pins: [pin('in', 'string', 'Вход'), pin('out', 'any', 'Выход')],
-})
-
-editor.addNode(logicNode,   { category: 'logic',   title: 'Логика'  })
-editor.addNode(dataNode,    { category: 'data',    title: 'Данные'  })
-editor.addNode(macroNode,   { category: 'macro',   title: 'Макро'   })
-editor.addNode(utilityNode, { category: 'utility', title: 'Утилита' })
-
-editor.connect(logicNode, 1, macroNode, 0,  { sourceType: 'float'  })
-editor.connect(dataNode,  1, macroNode, 1,  { sourceType: 'object' })
-editor.connect(macroNode, 3, utilityNode, 0, { sourceType: 'string' })
+editor.connect(N.source,    0, N.sample,    0, { sourceType: 'float'  })
+editor.connect(N.sample,    1, N.filter,    0, { sourceType: 'float'  })
+editor.connect(N.filter,    1, N.gather,    0, { sourceType: 'float'  })
+editor.connect(N.sample,    1, N.gather,    1, { sourceType: 'float'  })
+editor.connect(N.cache,     1, N.gather,    2, { sourceType: 'object' })
+editor.connect(N.gather,    3, N.transform, 0, { sourceType: 'object' })
+editor.connect(N.gather,    3, N.pack,      0, { sourceType: 'object' })
+editor.connect(N.cache,     1, N.pack,      1, { sourceType: 'object' })
+editor.connect(N.transform, 1, N.validate,  0, { sourceType: 'object' })
+editor.connect(N.transform, 1, N.enrich,    0, { sourceType: 'object' })
+editor.connect(N.enrich,    1, N.score,     0, { sourceType: 'object' })
+editor.connect(N.enrich,    1, N.resolve,   0, { sourceType: 'object' })
+editor.connect(N.score,     1, N.resolve,   1, { sourceType: 'float'  })
+editor.connect(N.validate,  1, N.resolve,   2, { sourceType: 'wildcard' })
+editor.connect(N.resolve,   3, N.sink1,     0, { sourceType: 'string' })
+editor.connect(N.score,     1, N.sink2,     0, { sourceType: 'float'  })
+editor.connect(N.resolve,   3, N.sink3,     0, { sourceType: 'string' })

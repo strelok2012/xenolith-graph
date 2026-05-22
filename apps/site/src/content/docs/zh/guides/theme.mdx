@@ -1,0 +1,28 @@
+---
+title: 主题自定义
+description: 覆盖 Xen 主题令牌。
+---
+
+Xen 设计系统位于 `@xenolith/theme-xen`。可向 `XenolithEditor.init` 传入部分 token，深合并到默认值。
+
+## 快速覆盖
+
+```ts
+const editor = await XenolithEditor.init('#app', {
+  theme: {
+    category: {
+      logic:   { accent: '#3FB8FF' },
+      data:    { accent: '#FF66C4' },
+      macro:   { accent: '#FFB347' },
+      utility: { accent: '#A5F3C5' },
+    },
+    pinType: {
+      float:  { color: '#3FB8FF', edgeColor: '#3FB8FF' },
+      object: { color: '#FF66C4', edgeColor: '#FF66C4' },
+      string: { color: '#FFB347', edgeColor: '#FFB347' },
+    },
+  },
+})
+```
+
+未覆盖的 token 保持默认。

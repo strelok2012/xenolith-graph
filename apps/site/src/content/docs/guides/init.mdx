@@ -1,0 +1,60 @@
+---
+title: Editor options
+description: All initialisation options for XenolithEditor.
+---
+
+`XenolithEditor.init(target, options)` accepts an optional `options` object. Every field has a sensible default — empty options give you the canonical Xen editor.
+
+## All options
+
+```ts
+interface XenolithEditorOptions {
+  /** Deep-partial theme override merged into the bundled Xen tokens. */
+  theme?: DeepPartial<XenTokens>
+
+  /** Canvas background. Defaults to the Xen canvas color (#1A1A1A). */
+  background?: string
+
+  /** Auto-resize the canvas with the window. Defaults to `true`. */
+  resizeToWindow?: boolean
+
+  /** Preferred renderer. PIXI v8 picks the best available; we default to `'webgl'`. */
+  renderer?: 'webgl' | 'webgpu'
+
+  /** Initial viewport state {x, y, zoom}. Defaults to identity. */
+  viewport?: ViewportState
+
+  /** Min/max zoom bounds. Defaults to [0.25, 2] — text begins to pixelate past 2×. */
+  zoomBounds?: [number, number]
+
+  /** Disable pan/zoom and node click interaction. Defaults to `false`. */
+  disableInteraction?: boolean
+
+  /** Hide the dot grid behind the world. Defaults to `false`. */
+  disableGrid?: boolean
+
+  /** Snap cell size in world pixels when dragging nodes. Hold Alt to disable. Defaults to `8`. */
+  snap?: number
+}
+```
+
+## Examples
+
+### Read-only embed for documentation
+
+```ts
+const editor = await XenolithEditor.init('#docs-embed', {
+  disableInteraction: true,
+  disableGrid: true,
+  viewport: { x: 0, y: 0, zoom: 0.75 },
+})
+```
+
+### Wider snap, larger zoom range
+
+```ts
+const editor = await XenolithEditor.init('#app', {
+  snap: 16,
+  zoomBounds: [0.1, 4],
+})
+```

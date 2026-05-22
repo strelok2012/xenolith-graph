@@ -1,0 +1,64 @@
+---
+title: Install
+description: Install XenolithGraph and mount your first editor.
+---
+
+## Install
+
+```sh
+npm install @xenolith/editor @xenolith/core @xenolith/theme-xen pixi.js
+```
+
+`pixi.js` is a peer dependency — pin it in your app so you stay in control of the renderer version.
+
+## Mount
+
+```ts
+import { XenolithEditor } from '@xenolith/editor'
+
+const editor = await XenolithEditor.init('#app')
+```
+
+That single call:
+
+1. Loads bundled Inter (Regular / SemiBold / Bold) from inside the theme package — no Google Fonts.
+2. Creates a PIXI v8 `Application`, attaches a canvas to your target element.
+3. Wires pan, zoom, drag, selection, marquee, and node interactions.
+4. Returns an `editor` instance you can populate.
+
+There is no second setup step. If you `npm install`, you can `init`.
+
+## Add nodes and edges
+
+```ts
+import { createNodeId, createPinId } from '@xenolith/core'
+
+const a = {
+  id: createNodeId(),
+  type: 'Source',
+  position: { x: 100, y: 100 },
+  size: { x: 150, y: 70 },
+  state: {},
+  pins: [
+    { id: createPinId(), kind: 'data', direction: 'out', type: 'float', multiple: true, label: 'Output' },
+  ],
+}
+
+editor.addNode(a, { category: 'logic', title: 'Source' })
+```
+
+`editor.connect(fromNode, fromPinIndex, toNode, toPinIndex, { sourceType })` draws an edge between two pins. The wire colour follows the source pin's type — this is an invariant of the Xen theme.
+
+## Interaction
+
+| Gesture                       | Behaviour                                    |
+|------------------------------|----------------------------------------------|
+| Wheel                         | Focal zoom to the cursor                     |
+| Right- or middle-button drag  | Pan                                          |
+| Left-click on a node          | Select (replaces selection)                  |
+| Shift + left-click            | Toggle in multi-selection                    |
+| Left-click on empty canvas    | Clear selection                              |
+| Left-drag on empty canvas     | Marquee selection (nodes inside the box)     |
+| Left-drag on a node           | Move it (and the whole selection if any), snapped to grid |
+| Hold Alt while dragging       | Disable snap-to-grid                         |
+| Click on a header chevron     | Collapse / expand the node to / from pill mode |

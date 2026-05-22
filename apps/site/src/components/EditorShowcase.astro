@@ -1,0 +1,60 @@
+---
+interface Props {
+  id: string
+  label: string
+  themeJson?: string
+}
+const { id, label, themeJson = '{}' } = Astro.props
+---
+
+<div
+  class="xn-showcase"
+  id={id}
+  data-xeno-showcase
+  data-xeno-theme={themeJson}
+>
+  <span class="xn-showcase-label">{label}</span>
+</div>
+
+<style is:global>
+  /* Global rules: PIXI appends `canvas` to .xn-showcase at runtime, so the canvas does not
+   * carry Astro's scoped data-attribute. Must be a global rule for the selector to match. */
+  .xn-showcase {
+    position: relative;
+    background: var(--xn-ink-2);
+    border-radius: 14px;
+    border: 1px solid var(--xn-hair-soft);
+    overflow: hidden;
+    aspect-ratio: 16 / 10;
+    width: 100%;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  }
+  .xn-showcase > canvas {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    display: block;
+  }
+  .xn-showcase-label {
+    position: absolute;
+    top: 14px;
+    left: 14px;
+    font-family: var(--xn-display);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    font-weight: 500;
+    color: var(--xn-gold);
+    background: var(--xn-grad-gold-soft);
+    border: 1px solid var(--xn-hair);
+    padding: 6px 10px;
+    border-radius: 8px;
+    z-index: 2;
+    pointer-events: none;
+  }
+</style>
+
+<script>
+  import '../scripts/showcase.ts'
+</script>

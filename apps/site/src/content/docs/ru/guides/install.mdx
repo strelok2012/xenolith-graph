@@ -1,0 +1,50 @@
+---
+title: Установка
+description: Установить XenolithGraph и поднять первый редактор.
+---
+
+## Установка
+
+```sh
+npm install @xenolith/editor @xenolith/core @xenolith/theme-xen pixi.js
+```
+
+`pixi.js` — peer-зависимость, держите её в своих deps, чтобы контролировать версию рендерера.
+
+## Монтирование
+
+```ts
+import { XenolithEditor } from '@xenolith/editor'
+
+const editor = await XenolithEditor.init('#app')
+```
+
+Этот один вызов:
+
+1. Грузит bundled Inter (Regular / SemiBold / Bold) из самой темы — никаких Google Fonts.
+2. Поднимает PIXI v8 `Application`, цепляет canvas к указанному элементу.
+3. Подключает pan, zoom, drag, selection, marquee, и взаимодействие с нодами.
+4. Возвращает `editor`, в который можно добавлять узлы и связи.
+
+Никакого второго шага настройки нет. Установили — `init` уже работает.
+
+## Добавление узлов и рёбер
+
+```ts
+import { createNodeId, createPinId } from '@xenolith/core'
+
+const a = {
+  id: createNodeId(),
+  type: 'Source',
+  position: { x: 100, y: 100 },
+  size: { x: 150, y: 70 },
+  state: {},
+  pins: [
+    { id: createPinId(), kind: 'data', direction: 'out', type: 'float', multiple: true, label: 'Output' },
+  ],
+}
+
+editor.addNode(a, { category: 'logic', title: 'Source' })
+```
+
+`editor.connect(fromNode, fromPinIndex, toNode, toPinIndex, { sourceType })` рисует ребро между двумя пинами. Цвет провода всегда равен цвету типа source-пина — это инвариант темы Xen.

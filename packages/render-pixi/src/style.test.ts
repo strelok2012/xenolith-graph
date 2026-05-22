@@ -35,8 +35,8 @@ describe('resolvePinFill', () => {
     expect(resolvePinFill('any', xenTokens)).toBe(xenTokens.pinType.any.color)
   })
 
-  it('returns null for the wildcard type (outline-only pin)', () => {
-    expect(resolvePinFill('wildcard', xenTokens)).toBeNull()
+  it('returns the node body color for the wildcard type — a ring around a dark center, not a hole', () => {
+    expect(resolvePinFill('wildcard', xenTokens)).toBe(xenTokens.color.surface.node)
   })
 
   it('falls back to the any colour for unknown types', () => {
