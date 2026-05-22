@@ -1,8 +1,19 @@
-import { VERSION as CORE_VERSION } from '@xenolith/core'
-import { VERSION as RENDER_VERSION } from '@xenolith/render-pixi'
-import { VERSION as EDITOR_VERSION } from '@xenolith/editor'
+import { Application } from 'pixi.js'
+import { xenTokens } from '@xenolith/theme-xen'
 
 const root = document.getElementById('app')
-if (root) {
-  root.textContent = `XenolithGraph — core ${CORE_VERSION} · render-pixi ${RENDER_VERSION} · editor ${EDITOR_VERSION}`
+if (!root) throw new Error('playground: missing #app root element')
+
+const app = new Application()
+
+async function init(): Promise<void> {
+  await app.init({
+    background: xenTokens.color.surface.canvas,
+    resizeTo: window,
+    antialias: true,
+    preference: 'webgl',
+  })
+  root!.appendChild(app.canvas)
 }
+
+void init()

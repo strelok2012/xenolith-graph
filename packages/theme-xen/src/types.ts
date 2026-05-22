@@ -23,12 +23,24 @@ export interface StateStyle {
   opacity?: number
 }
 
+export interface XenSurfaceColors {
+  canvas: string
+  node: string
+  panel: string
+  elevated: string
+  muted: string
+  subtle: string
+  outline: string
+  divider: string
+  headerEnd: string
+}
+
 export interface XenTokens {
   name: 'xen'
   version: string
   color: {
     brand: Record<string, string>
-    surface: Record<string, string>
+    surface: XenSurfaceColors
     text: Record<string, string>
     alpha: Record<string, string>
   }
