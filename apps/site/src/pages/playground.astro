@@ -35,6 +35,33 @@ import '../styles/theme.css'
         font-size: 13px;
       }
       .playground-toolbar a:hover { color: var(--xn-gold-bright); }
+      .playground-switcher {
+        position: fixed; top: 16px; right: 16px; z-index: 10;
+        display: flex; gap: 4px;
+        background: rgba(0, 0, 0, 0.45);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        padding: 4px;
+        border-radius: 8px;
+      }
+      .playground-switcher button {
+        font-family: var(--xn-display);
+        font-size: 11px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        font-weight: 500;
+        background: transparent;
+        border: none;
+        color: rgba(255, 255, 255, 0.7);
+        padding: 6px 12px;
+        border-radius: 5px;
+        cursor: pointer;
+      }
+      .playground-switcher button.active {
+        background: rgba(255, 255, 255, 0.16);
+        color: #fff;
+      }
       .playground-hint {
         position: fixed; bottom: 16px; left: 16px; z-index: 10;
         font-size: 12px; color: rgba(255,255,255,0.4);
@@ -60,6 +87,10 @@ import '../styles/theme.css'
       <strong>Playground</strong>
       <a href="/xenolith-graph/">← Back to site</a>
     </div>
+    <div class="playground-switcher" id="theme-switcher">
+      <button data-theme="liquid-glass" class="active">Liquid Glass</button>
+      <button data-theme="xen">Xen</button>
+    </div>
     <div id="app"></div>
     <div class="playground-hint">
       <kbd>Wheel</kbd> zoom · <kbd>RMB drag</kbd> pan · <kbd>LMB drag empty</kbd> marquee ·
@@ -69,10 +100,30 @@ import '../styles/theme.css'
     <script>
       import { XenolithEditor } from '@xenolith/editor'
       import { createNodeId, createPinId } from '@xenolith/core'
+      import { xenTheme } from '@xenolith/render-pixi'
+      import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
+
+      const THEMES = { 'liquid-glass': liquidGlassTheme, xen: xenTheme }
 
       const editor = await XenolithEditor.init('#app', {
         viewport: { x: 80, y: 80, zoom: 0.85 },
+        theme: liquidGlassTheme,
       })
+
+      const switcher = document.getElementById('theme-switcher')
+      if (switcher) {
+        switcher.addEventListener('click', (e) => {
+          const target = e.target instanceof HTMLButtonElement ? e.target : null
+          const name = target?.dataset.theme
+          if (!name) return
+          const theme = THEMES[name]
+          if (!theme) return
+          editor.setTheme(theme)
+          for (const btn of switcher.querySelectorAll('button')) {
+            btn.classList.toggle('active', btn.dataset.theme === name)
+          }
+        })
+      }
 
       function pin(direction, type, label) {
         return { id: createPinId(), kind: 'data', direction, type, multiple: direction === 'out', label }

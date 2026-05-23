@@ -1,6 +1,6 @@
 import type { XenolithTheme } from '@xenolith/render-pixi'
 import { liquidGlassTokens } from './tokens.js'
-import { renderNodeLiquidGlass } from './render-node.js'
+import { renderNodeLiquidGlass, syncLiquidGlassBackdropSize } from './render-node.js'
 import { createLiquidGlassBackdrop } from './backdrop.js'
 
 /**
@@ -18,6 +18,10 @@ export const liquidGlassTheme: XenolithTheme = {
   needsBackdrop: true,
   renderNode: (node, opts, ctx) => renderNodeLiquidGlass(node, liquidGlassTokens, opts, ctx),
   createGrid: () => createLiquidGlassBackdrop(liquidGlassTokens),
+  onFrame: (ctx) => {
+    const tex = ctx.backdropTexture
+    if (tex) syncLiquidGlassBackdropSize(tex.width, tex.height)
+  },
 }
 
 export { liquidGlassTokens } from './tokens.js'

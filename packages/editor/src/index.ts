@@ -184,6 +184,7 @@ export class XenolithEditor {
     app.ticker.add(() => {
       for (const edgeId of this.#edgeRecords.keys()) this.#redrawEdge(edgeId)
       this.#updateBackdrop()
+      this.#theme.onFrame?.(this.#themeContext())
     })
   }
 

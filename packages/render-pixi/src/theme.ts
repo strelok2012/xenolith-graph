@@ -34,4 +34,8 @@ export interface XenolithTheme {
   drawEdge?: (g: Graphics, from: PinLayout, to: PinLayout, opts: RenderEdgeOptions) => Graphics
   /** Custom canvas background / grid. Return an empty Container to mean "no grid at all". */
   createGrid?: () => Container
+  /** Per-frame hook fired after the editor updates its backdrop RT. Themes use this to refresh
+   *  per-frame uniforms across every mesh they created — e.g. uBackdropSize for Liquid Glass
+   *  so its shader sampling stays correct when the canvas resizes. */
+  onFrame?: (ctx: ThemeRenderContext) => void
 }

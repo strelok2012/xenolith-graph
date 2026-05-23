@@ -25,6 +25,26 @@ import {
 } from '@xenolith/render-pixi'
 import { glassFragmentGLSL, glassVertexGLSL } from './glass-shader.js'
 
+/** Module-level registry of every live glass mesh so the theme's per-frame hook can broadcast
+ *  `uBackdropSize` updates whenever the editor's backdrop RT is resized (window resize,
+ *  embedded-showcase ResizeObserver, etc.). Without this the shader keeps using the size from
+ *  construction time, refraction lands on the wrong texels, and you see the "phantom edges"
+ *  artifact in any embedded canvas. */
+interface GlassMeshEntry {
+  shader: Shader
+}
+const liveGlassMeshes = new Set<GlassMeshEntry>()
+
+export function syncLiquidGlassBackdropSize(w: number, h: number): void {
+  for (const entry of liveGlassMeshes) {
+    const group = entry.shader.resources['glassUniforms']
+    if (!group) continue
+    const arr = group.uniforms.uBackdropSize as Float32Array
+    if (arr && arr[0] === w && arr[1] === h) continue
+    group.uniforms.uBackdropSize = new Float32Array([w, h])
+  }
+}
+
 
 /** Build one glass-material mesh sized to (w, h). The fragment shader samples
  *  `ctx.backdropTexture` (a per-frame snapshot of the world minus nodes) via screen UV, with
@@ -83,6 +103,10 @@ function createGlassMesh(
   mesh.eventMode = 'static'
   mesh.cursor = 'pointer'
   mesh.hitArea = new Rectangle(0, 0, w, h)
+
+  const entry: GlassMeshEntry = { shader }
+  liveGlassMeshes.add(entry)
+  mesh.on('destroyed', () => liveGlassMeshes.delete(entry))
   return mesh
 }
 
