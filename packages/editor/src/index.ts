@@ -1,6 +1,7 @@
 import { Application, Container, EventEmitter as PixiEventEmitter, FederatedPointerEvent, Graphics, type ContainerChild } from 'pixi.js'
 import {
   CommandBus,
+  ConnectPins,
   EventEmitter,
   Graph,
   MoveNode,
@@ -11,6 +12,8 @@ import {
   type EdgeId,
   type Node,
   type NodeId,
+  type Pin,
+  type PinId,
 } from '@xenolith/core'
 import {
   computeNodeLayout,
@@ -22,10 +25,12 @@ import {
   rectIntersects,
   renderEdge,
   renderNode,
-  computeDragTarget,
+  computeGroupSnappedDelta,
+  readPinHandle,
   screenToWorld,
   Viewport,
   type NodeView,
+  type PinHandle,
   type PinLayout,
   type RenderEdgeOptions,
   type RenderNodeOptions,
@@ -33,6 +38,7 @@ import {
   type ZoomBounds,
 } from '@xenolith/render-pixi'
 import { xenTokens, loadXenFonts, mergeTheme, type DeepPartial, type XenTokens } from '@xenolith/theme-xen'
+import { canConnect } from './pin-compat.js'
 
 export const VERSION = '0.0.0'
 
@@ -65,9 +71,16 @@ type DragState =
   | {
       kind: 'active'
       startScreen: { x: number; y: number }
+      anchorId: NodeId
       initialPositions: Map<NodeId, { x: number; y: number }>
       affectedEdges: Set<EdgeId>
       alt: boolean
+    }
+  | {
+      kind: 'pin-drag'
+      source: PinHandle
+      ghost: Graphics
+      hoveredTarget: PinHandle | null
     }
 
 type MarqueeState =
@@ -133,6 +146,7 @@ export class XenolithEditor {
       app.stage.eventMode = 'static'
       app.stage.hitArea = app.screen
       this.#wireStageInteraction()
+      window.addEventListener('keydown', this.#onKeyDown)
     } else {
       this.#interaction = null
     }
@@ -214,8 +228,15 @@ export class XenolithEditor {
   get theme(): XenTokens { return this.#theme }
 
   destroy(): void {
+    window.removeEventListener('keydown', this.#onKeyDown)
     this.#interaction?.detach()
     this.#app.destroy(true, { children: true })
+  }
+
+  readonly #onKeyDown = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape' && this.#dragState.kind === 'pin-drag') {
+      this.#cancelPinDrag()
+    }
   }
 
   #updateVisualStates(): void {
@@ -290,6 +311,17 @@ export class XenolithEditor {
     return this.#pinLayoutFor({ ...node, position: livePos }, idx)
   }
 
+  #countEdgesAtPin(nodeId: NodeId, pinId: string): number {
+    let n = 0
+    for (const edge of this.graph.edges()) {
+      if ((edge.from.node === nodeId && String(edge.from.pin) === pinId) ||
+          (edge.to.node   === nodeId && String(edge.to.pin)   === pinId)) {
+        n++
+      }
+    }
+    return n
+  }
+
   /** Find every edge that touches any node in `nodeIds`. */
   #edgesAttachedTo(nodeIds: ReadonlySet<NodeId>): Set<EdgeId> {
     const out = new Set<EdgeId>()
@@ -304,7 +336,14 @@ export class XenolithEditor {
     const stage = this.#app.stage
 
     stage.on('pointerdown', (e: FederatedPointerEvent) => {
-      if (e.button !== 0 || e.target !== stage) return
+      if (e.button !== 0) return
+      const pin = readPinHandle(e.target)
+      if (pin) {
+        this.#beginPinDrag(pin, e)
+        e.stopPropagation()
+        return
+      }
+      if (e.target !== stage) return
       const startScreen = { x: e.global.x, y: e.global.y }
       marquee = {
         kind: 'pending',
@@ -316,6 +355,12 @@ export class XenolithEditor {
 
     stage.on('pointermove', (e: FederatedPointerEvent) => {
       const current = { x: e.global.x, y: e.global.y }
+
+      if (this.#dragState.kind === 'pin-drag') {
+        const target = readPinHandle(e.target)
+        this.#updatePinDrag(current, target)
+        return
+      }
 
       if (this.#dragState.kind === 'pending') {
         const dx = current.x - this.#dragState.startScreen.x
@@ -331,13 +376,18 @@ export class XenolithEditor {
           y: (current.y - this.#dragState.startScreen.y) / zoom,
         }
         // Snap during drag, not only at commit — gives the UE / Figma "node clicks into cells"
-        // feel. Hold Alt at any point during the drag to disable.
+        // feel. Hold Alt at any point during the drag to disable. The snap is anchored to the
+        // node under the cursor and the resulting delta applied uniformly, so the group's
+        // internal layout is preserved (per-node snapping caused off-grid nodes to drift apart).
         const snap = e.altKey || this.#dragState.alt ? null : this.#snapSize
+        const anchorInitial = this.#dragState.initialPositions.get(this.#dragState.anchorId)
+        const snappedDelta = anchorInitial
+          ? computeGroupSnappedDelta(anchorInitial, worldDelta, snap)
+          : worldDelta
         for (const [id, initial] of this.#dragState.initialPositions) {
           const view = this.#views.get(id)
           if (!view) continue
-          const target = computeDragTarget(initial, worldDelta, snap)
-          view.container.position.set(target.x, target.y)
+          view.container.position.set(initial.x + snappedDelta.x, initial.y + snappedDelta.y)
         }
         for (const edgeId of this.#dragState.affectedEdges) this.#redrawEdge(edgeId)
         return
@@ -370,6 +420,10 @@ export class XenolithEditor {
     })
 
     const endStage = (e: FederatedPointerEvent): void => {
+      if (this.#dragState.kind === 'pin-drag') {
+        this.#endPinDrag(readPinHandle(e.target))
+        return
+      }
       if (this.#dragState.kind !== 'idle') {
         this.#endNodeDrag(e.altKey)
         return
@@ -415,6 +469,7 @@ export class XenolithEditor {
     })
     view.container.on('pointerdown', (e: FederatedPointerEvent) => {
       if (e.button !== 0) return
+      if (readPinHandle(e.target)) return
       if (!this.selection.contains(id)) {
         this.selection.select(id, e.shiftKey ? 'toggle' : 'replace')
       }
@@ -433,7 +488,8 @@ export class XenolithEditor {
     if (this.#dragState.kind !== 'pending') return
     const initialPositions = new Map<NodeId, { x: number; y: number }>()
     // Drag the entire selection if any; otherwise just the node that was pressed.
-    const ids = this.selection.size > 0 ? this.selection.ids() : [this.#dragState.nodeId]
+    const anchorId = this.#dragState.nodeId
+    const ids = this.selection.size > 0 ? this.selection.ids() : [anchorId]
     for (const id of ids) {
       const node = this.graph.getNode(id)
       if (node) initialPositions.set(id, { ...node.position })
@@ -442,10 +498,110 @@ export class XenolithEditor {
     this.#dragState = {
       kind: 'active',
       startScreen: this.#dragState.startScreen,
+      anchorId,
       initialPositions,
       affectedEdges,
       alt,
     }
+  }
+
+  #beginPinDrag(source: PinHandle, e: FederatedPointerEvent): void {
+    if (this.#dragState.kind !== 'idle') return
+    const ghost = new Graphics()
+    ghost.eventMode = 'none'
+    this.#edgesLayer.addChild(ghost)
+    this.#dragState = { kind: 'pin-drag', source, ghost, hoveredTarget: null }
+    this.#updatePinDrag({ x: e.global.x, y: e.global.y }, null)
+  }
+
+  #updatePinDrag(screen: { x: number; y: number }, hoveredTarget: PinHandle | null): void {
+    if (this.#dragState.kind !== 'pin-drag') return
+    const { source, ghost } = this.#dragState
+    const sourceNode = this.graph.getNode(source.nodeId as NodeId)
+    if (!sourceNode) return
+    const sourcePos = this.#pinWorldPosition(sourceNode, source.pinId)
+    if (!sourcePos) return
+    const cursorWorld = screenToWorld(screen, this.#viewport.state)
+    const cursorEndpoint: PinLayout = {
+      id: 'ghost' as PinLayout['id'],
+      x: cursorWorld.x,
+      y: cursorWorld.y,
+      side: source.direction === 'out' ? 'left' : 'right',
+    }
+    const from = source.direction === 'out' ? sourcePos : cursorEndpoint
+    const to = source.direction === 'out' ? cursorEndpoint : sourcePos
+    drawEdge(ghost, from, to, this.#theme, { sourceType: source.type })
+
+    let validity: 'none' | 'valid' | 'invalid' = 'none'
+    if (hoveredTarget) {
+      const targetNode = this.graph.getNode(hoveredTarget.nodeId as NodeId)
+      const sourcePin = sourceNode.pins.find((p) => String(p.id) === source.pinId)
+      const targetPin = targetNode?.pins.find((p) => String(p.id) === hoveredTarget.pinId)
+      if (sourcePin && targetPin && targetNode) {
+        const ok = canConnect(sourcePin, targetPin, sourceNode.id === targetNode.id, {
+          sourceEdges: this.#countEdgesAtPin(sourceNode.id, source.pinId),
+          targetEdges: this.#countEdgesAtPin(targetNode.id, hoveredTarget.pinId),
+        })
+        validity = ok ? 'valid' : 'invalid'
+      } else {
+        validity = 'invalid'
+      }
+    }
+    ghost.alpha = validity === 'none' ? 0.55 : 1
+    ghost.tint = validity === 'invalid' ? 0xff5577 : 0xffffff
+
+    this.#dragState = { kind: 'pin-drag', source, ghost, hoveredTarget }
+  }
+
+  #endPinDrag(target: PinHandle | null): void {
+    if (this.#dragState.kind !== 'pin-drag') return
+    const { source, ghost } = this.#dragState
+    const sourceNode = this.graph.getNode(source.nodeId as NodeId)
+    const sourcePin = sourceNode?.pins.find((p) => String(p.id) === source.pinId)
+    if (target && sourceNode && sourcePin) {
+      const targetNode = this.graph.getNode(target.nodeId as NodeId)
+      const targetPin = targetNode?.pins.find((p) => String(p.id) === target.pinId)
+      if (
+        targetNode &&
+        targetPin &&
+        canConnect(sourcePin, targetPin, sourceNode.id === targetNode.id, {
+          sourceEdges: this.#countEdgesAtPin(sourceNode.id, source.pinId),
+          targetEdges: this.#countEdgesAtPin(targetNode.id, target.pinId),
+        })
+      ) {
+        // Normalise edge orientation to (out → in) so the data model stays consistent regardless
+        // of which end the user dragged from.
+        const fromIsSource = sourcePin.direction === 'out'
+        const outNode = fromIsSource ? sourceNode : targetNode
+        const outPin: Pin = fromIsSource ? sourcePin : targetPin
+        const inNode = fromIsSource ? targetNode : sourceNode
+        const inPin: Pin = fromIsSource ? targetPin : sourcePin
+        const edge: Edge = {
+          id: createEdgeId(),
+          from: { node: outNode.id, pin: outPin.id as PinId },
+          to: { node: inNode.id, pin: inPin.id as PinId },
+        }
+        this.commandBus.apply(new ConnectPins(edge))
+        const fromPos = this.#pinWorldPosition(outNode, String(outPin.id))
+        const toPos = this.#pinWorldPosition(inNode, String(inPin.id))
+        if (fromPos && toPos) {
+          const opts: RenderEdgeOptions = { sourceType: String(outPin.type) }
+          const gfx = renderEdge(fromPos, toPos, this.#theme, opts)
+          this.#edgesLayer.addChild(gfx)
+          this.#edgeRecords.set(edge.id, { edge, graphics: gfx, opts })
+        }
+      }
+    }
+    ghost.parent?.removeChild(ghost)
+    ghost.destroy()
+    this.#dragState = { kind: 'idle' }
+  }
+
+  #cancelPinDrag(): void {
+    if (this.#dragState.kind !== 'pin-drag') return
+    this.#dragState.ghost.parent?.removeChild(this.#dragState.ghost)
+    this.#dragState.ghost.destroy()
+    this.#dragState = { kind: 'idle' }
   }
 
   #endNodeDrag(altOnRelease: boolean): void {
@@ -456,20 +612,26 @@ export class XenolithEditor {
     if (this.#dragState.kind !== 'active') return
 
     const snap = altOnRelease || this.#dragState.alt ? null : this.#snapSize
-    const movedIds = [...this.#dragState.initialPositions.keys()]
-    const affected = this.#dragState.affectedEdges
+    const state = this.#dragState
+    const movedIds = [...state.initialPositions.keys()]
+    const affected = state.affectedEdges
+    const anchorInitial = state.initialPositions.get(state.anchorId)
+    const anchorView = this.#views.get(state.anchorId)
+    const rawDelta = anchorInitial && anchorView
+      ? {
+          x: anchorView.container.position.x - anchorInitial.x,
+          y: anchorView.container.position.y - anchorInitial.y,
+        }
+      : { x: 0, y: 0 }
+    const finalDelta = anchorInitial
+      ? computeGroupSnappedDelta(anchorInitial, rawDelta, snap)
+      : rawDelta
 
     this.commandBus.transaction(() => {
-      for (const [id, initial] of this.#dragState.kind === 'active'
-        ? this.#dragState.initialPositions
-        : []) {
+      for (const [id, initial] of state.initialPositions) {
         const view = this.#views.get(id)
         if (!view) continue
-        const delta = {
-          x: view.container.position.x - initial.x,
-          y: view.container.position.y - initial.y,
-        }
-        const target = computeDragTarget(initial, delta, snap)
+        const target = { x: initial.x + finalDelta.x, y: initial.y + finalDelta.y }
         view.container.position.set(target.x, target.y)
         this.commandBus.apply(new MoveNode(id, target))
       }

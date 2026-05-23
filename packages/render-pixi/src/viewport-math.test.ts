@@ -6,6 +6,7 @@ import {
   snapToGrid,
   clampZoom,
   computeDragTarget,
+  computeGroupSnappedDelta,
   type ViewportState,
 } from './viewport-math.js'
 
@@ -118,5 +119,29 @@ describe('computeDragTarget', () => {
 
   it('throws if snap is non-positive', () => {
     expect(() => computeDragTarget({ x: 0, y: 0 }, { x: 0, y: 0 }, 0)).toThrow(/cellSize/i)
+  })
+})
+
+describe('computeGroupSnappedDelta', () => {
+  it('with snap=null returns the raw delta unchanged', () => {
+    expect(computeGroupSnappedDelta({ x: 17, y: 5 }, { x: 12, y: -3 }, null)).toEqual({ x: 12, y: -3 })
+  })
+
+  it('returns a delta that snaps the anchor node onto the grid', () => {
+    // anchor at (17, 5) + raw delta (12, -3) → raw (29, 2) → snap 8 → (32, 0) → delta (15, -5)
+    expect(computeGroupSnappedDelta({ x: 17, y: 5 }, { x: 12, y: -3 }, 8)).toEqual({ x: 15, y: -5 })
+  })
+
+  it('preserves the relative offset between any two nodes in a multi-selection drag', () => {
+    // The regression: two nodes started off-grid at different sub-cell offsets. Per-node snapping
+    // produced a different rounding for each → relative offset breaks. With a shared delta, the
+    // gap (B − A) is byte-identical before and after.
+    const a = { x: 17, y: 5 }
+    const b = { x: 26, y: 14 } // gap (9, 9)
+    const rawDelta = { x: 12, y: -3 }
+    const d = computeGroupSnappedDelta(a, rawDelta, 8)
+    const aAfter = { x: a.x + d.x, y: a.y + d.y }
+    const bAfter = { x: b.x + d.x, y: b.y + d.y }
+    expect({ x: bAfter.x - aAfter.x, y: bAfter.y - aAfter.y }).toEqual({ x: 9, y: 9 })
   })
 })

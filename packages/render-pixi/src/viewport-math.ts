@@ -91,3 +91,25 @@ export function computeDragTarget(initial: Vec2, delta: Vec2, snap: number | nul
   const raw = { x: initial.x + delta.x, y: initial.y + delta.y }
   return snap === null ? raw : snapToGrid(raw, snap)
 }
+
+/**
+ * Resolve the uniform world-delta applied to *every* node in a multi-selection drag.
+ *
+ * Anchoring the snap to one node (the one under the cursor when the drag started) and applying
+ * the resulting delta to the rest preserves the group's internal layout. Snapping each node
+ * independently — what we did before — produced per-node rounding errors when nodes started
+ * off-grid: relative offsets drifted by up to a cell, so one node visibly "stuttered" out of
+ * formation. See drag-group regression test.
+ */
+export function computeGroupSnappedDelta(
+  anchorInitial: Vec2,
+  rawDelta: Vec2,
+  snap: number | null,
+): Vec2 {
+  if (snap === null) return rawDelta
+  const anchorTarget = snapToGrid(
+    { x: anchorInitial.x + rawDelta.x, y: anchorInitial.y + rawDelta.y },
+    snap,
+  )
+  return { x: anchorTarget.x - anchorInitial.x, y: anchorTarget.y - anchorInitial.y }
+}

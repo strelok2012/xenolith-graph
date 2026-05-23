@@ -1,4 +1,4 @@
-import { BlurFilter, Container, FillGradient, Graphics, Text, Ticker, type TextStyleFontWeight } from 'pixi.js'
+import { BlurFilter, Circle, Container, FillGradient, Graphics, Text, Ticker, type TextStyleFontWeight } from 'pixi.js'
 import type { StateStyle } from '@xenolith/theme-xen'
 import type { Node, Pin } from '@xenolith/core'
 import type { XenTokens } from '@xenolith/theme-xen'
@@ -6,6 +6,48 @@ import { computeNodeLayout } from './layout.js'
 import { hexToRgba, resolveCategoryAccent, resolveCategoryGradient, resolvePinFill, resolvePinStroke } from './style.js'
 
 export type NodeVisualState = 'default' | 'hover' | 'selected' | 'active'
+
+/** Metadata attached to every pin Graphics so the editor's stage-level pointer handlers can
+ *  identify which pin was hit without reaching into renderer internals. */
+export interface PinHandle {
+  nodeId: string
+  pinId: string
+  direction: 'in' | 'out'
+  kind: 'exec' | 'data'
+  type: string
+}
+
+/** Hit-radius multiplier applied to pin Graphics. > 1 makes pins easier to grab with a mouse
+ *  and gives finger-sized targets for tablets without changing the visual diameter. */
+const PIN_HIT_RADIUS_FACTOR = 2.4
+
+/** Read the PinHandle from a PIXI event target (or any DisplayObject). Returns null when the
+ *  target is not a pin Graphics. Editor code uses this on stage `pointerdown` / `pointerover`. */
+export function readPinHandle(target: unknown): PinHandle | null {
+  if (!target || typeof target !== 'object') return null
+  const handle = (target as { __xenPin?: PinHandle }).__xenPin
+  return handle ?? null
+}
+
+function markPinInteractive(
+  g: Graphics,
+  pin: Pin,
+  nodeId: string,
+  cx: number,
+  cy: number,
+  visualRadius: number,
+): void {
+  g.eventMode = 'static'
+  g.cursor = 'crosshair'
+  g.hitArea = new Circle(cx, cy, visualRadius * PIN_HIT_RADIUS_FACTOR)
+  ;(g as unknown as { __xenPin: PinHandle }).__xenPin = {
+    nodeId,
+    pinId: String(pin.id),
+    direction: pin.direction,
+    kind: pin.kind,
+    type: String(pin.type),
+  }
+}
 
 export interface RenderNodeOptions {
   category?: string
@@ -277,6 +319,7 @@ export function renderNode(
       .circle(localX, localY, radius)
       .fill({ color: fill })
       .stroke({ color: stroke, width: geo.pin.stroke })
+    markPinInteractive(pinGfx, pin, String(node.id), localX, localY, radius)
     expanded.addChild(pinGfx)
 
     if (pin.label) {
@@ -445,6 +488,7 @@ export function renderNode(
       .circle(localX, localY, radius)
       .fill({ color: fill })
       .stroke({ color: stroke, width: geo.pin.stroke })
+    markPinInteractive(pinGfx, pin, String(node.id), localX, localY, radius)
     collapsed.addChild(pinGfx)
   }
 

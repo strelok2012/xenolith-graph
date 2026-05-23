@@ -16,8 +16,8 @@ export {
 } from './style.js'
 export type { CategoryGradient } from './style.js'
 
-export { renderNode } from './node-renderer.js'
-export type { RenderNodeOptions, NodeView, NodeVisualState } from './node-renderer.js'
+export { renderNode, readPinHandle } from './node-renderer.js'
+export type { RenderNodeOptions, NodeView, NodeVisualState, PinHandle } from './node-renderer.js'
 
 export { renderEdge, drawEdge } from './edge-renderer.js'
 export type { RenderEdgeOptions } from './edge-renderer.js'
@@ -29,6 +29,7 @@ export {
   clampZoom,
   snapToGrid,
   computeDragTarget,
+  computeGroupSnappedDelta,
 } from './viewport-math.js'
 export type { ViewportState, ZoomBounds, Vec2 as ViewportVec2 } from './viewport-math.js'
 
