@@ -1,13 +1,66 @@
 ---
-title: Theme customisation
-description: Override Xen tokens with a partial theme.
+title: Themes
+description: Swap between Xen and Liquid Glass, override tokens, or build your own theme with a custom shader.
 ---
 
-The Xen design system lives in `@xenolith/theme-xen`. Pass any subset of its tokens to `XenolithEditor.init` and they will be deep-merged with the defaults.
+A `XenolithTheme` bundles three things:
 
-## Quick overrides
+```ts
+interface XenolithTheme {
+  id:             string
+  tokens:         XenTokens                              // design tokens
+  needsBackdrop?: boolean                                // opt into per-frame backdrop RT
+  renderNode?:    (node, opts, ctx) => NodeView          // custom node rendering
+  drawEdge?:      (g, from, to, opts) => Graphics        // custom wire rendering
+  createGrid?:    () => Container                        // custom canvas backdrop
+}
+```
 
-Change the category accents and a few pin colours:
+Each hook is optional. When omitted, the editor falls back to Xen's built-in renderer for that element — so a "theme" can be anything from a 5-line palette tweak to a fully custom Mesh + GLSL material.
+
+## Built-in themes
+
+Two themes ship in the box.
+
+### Xen — default
+
+```ts
+import { XenolithEditor } from '@xenolith/editor'
+
+const editor = await XenolithEditor.init('#app')
+// Xen is the default — no `theme` option needed.
+```
+
+Original dark/gold design system: `#0F110E` node bodies, gold accents, category-tinted headers, typed-pin colour-coded wires, animated collapse to pill. Lives in `@xenolith/theme-xen`.
+
+### Liquid Glass — Apple WWDC25 frosted shader
+
+```ts
+import { XenolithEditor } from '@xenolith/editor'
+import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
+
+const editor = await XenolithEditor.init('#app', { theme: liquidGlassTheme })
+```
+
+Custom PIXI v8 Mesh + GLSL material. Each frame the editor renders the world (minus the nodes layer) into a backdrop `RenderTexture`; every glass body samples that texture through its shader with edge-localised refraction, gaussian blur, and a vertical tint. Sits over a radial-gradient navy canvas with a soft dot grid.
+
+The backdrop pass is **opt-in**: Liquid Glass sets `needsBackdrop: true`, Xen does not — so swapping back to Xen turns the extra render pass off entirely.
+
+## Runtime theme switching
+
+```ts
+import { xenTheme } from '@xenolith/render-pixi'
+import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
+
+editor.setTheme(liquidGlassTheme)   // every node re-rendered through the new theme
+editor.setTheme(xenTheme)           // selection, hover, collapsed state, positions preserved
+```
+
+`setTheme` accepts either a full `XenolithTheme` **or** a `DeepPartial<XenTokens>` token override (which gets deep-merged into the active theme's tokens).
+
+## Token overrides
+
+If you just want to tweak Xen's palette, pass an override in `init`:
 
 ```ts
 const editor = await XenolithEditor.init('#app', {
@@ -47,29 +100,31 @@ The full type lives in `@xenolith/theme-xen` and is `XenTokens`. Top-level group
 | `effect`       | Header inner shadow, backdrop blur, rim highlight, drop shadow.          |
 | `background`   | Canvas colour and dot-grid configuration.                                |
 
-## Worked example: pastel theme
+## Building your own theme
+
+For a palette-only theme, an object literal is enough:
 
 ```ts
-import { XenolithEditor } from '@xenolith/editor'
+import type { XenolithTheme } from '@xenolith/render-pixi'
+import { xenTokens } from '@xenolith/theme-xen'
+import { mergeTheme } from '@xenolith/theme-xen'
 
-await XenolithEditor.init('#app', {
-  theme: {
+export const pastelTheme: XenolithTheme = {
+  id: 'pastel',
+  tokens: mergeTheme(xenTokens, {
     color: {
       surface: { canvas: '#FAF7F2', node: '#FFFFFF' },
       text:    { primary: '#1A1A1A', secondary: '#666666' },
     },
-    background: {
-      color: '#FAF7F2',
-      grid:  { color: 'rgba(0, 0, 0, 0.06)' },
-    },
+    background: { color: '#FAF7F2', grid: { color: 'rgba(0,0,0,0.06)' } },
     category: {
       logic:   { accent: '#7FB8A1' },
       data:    { accent: '#7FA8C7' },
       macro:   { accent: '#C77F9F' },
       utility: { accent: '#444444' },
     },
-  },
-})
+  }),
+}
 ```
 
-The deep-merge engine preserves every Xen token you didn't touch. Arrays are replaced wholesale (not merged element-wise) — but the token schema does not currently contain arrays, so this rule never bites in practice.
+For a custom material (your own shader, your own backdrop), implement `renderNode` and optionally `createGrid`. See `@xenolith/theme-liquid-glass`'s source for a complete worked example — PIXI Mesh + GLSL with SDF refraction and backdrop sampling.

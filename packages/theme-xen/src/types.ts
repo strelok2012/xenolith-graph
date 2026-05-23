@@ -20,6 +20,9 @@ export interface StateStyle {
   borderWidth?: number
   glow?: string
   glowBlur?: number
+  /** Width of the stroke that seeds the blurred glow halo. Wider stroke = brighter halo at
+   *  equal alpha (more source energy under the gaussian). Default 3. */
+  glowWidth?: number
   opacity?: number
 }
 

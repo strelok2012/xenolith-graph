@@ -41,6 +41,9 @@ importers:
       '@xenolith/render-pixi':
         specifier: workspace:*
         version: link:../../packages/render-pixi
+      '@xenolith/theme-liquid-glass':
+        specifier: workspace:*
+        version: link:../../packages/theme-liquid-glass
       '@xenolith/theme-xen':
         specifier: workspace:*
         version: link:../../packages/theme-xen
@@ -72,6 +75,9 @@ importers:
       '@xenolith/render-pixi':
         specifier: workspace:*
         version: link:../../packages/render-pixi
+      '@xenolith/theme-liquid-glass':
+        specifier: workspace:*
+        version: link:../../packages/theme-liquid-glass
       '@xenolith/theme-xen':
         specifier: workspace:*
         version: link:../../packages/theme-xen
@@ -141,6 +147,28 @@ importers:
 
   packages/test-fixtures:
     devDependencies:
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@24.12.4)
+
+  packages/theme-liquid-glass:
+    dependencies:
+      '@xenolith/core':
+        specifier: workspace:*
+        version: link:../core
+      '@xenolith/render-pixi':
+        specifier: workspace:*
+        version: link:../render-pixi
+      '@xenolith/theme-xen':
+        specifier: workspace:*
+        version: link:../theme-xen
+    devDependencies:
+      pixi.js:
+        specifier: ^8.6.0
+        version: 8.18.1
       typescript:
         specifier: ^5.7.0
         version: 5.9.3

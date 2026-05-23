@@ -142,6 +142,7 @@ All mutations flow through a `CommandBus` (every change is an `apply/undo` pair)
 - **No new dependencies in `@xenolith/core` ever.** Headless core stays zero-dep. Render and adapter layers may add deps but each addition needs justification in the PR.
 - **Every public API change ships with a Vitest test.** Every interaction change ships with a Playwright test.
 - **Perf budgets are not advisory.** A PR that blows the budget either fixes it or gets reverted.
+- **PIXI shaders / filters: read the docs and source, never guess.** Custom `GlProgram` / `GpuProgram` / `Shader` / `Filter` work must be verified against the actual PIXI v8 source (or live docs at https://pixijs.com/8.x/guides) before writing. GLSL preamble handling, uniform-block conventions, and version-directive prepending differ between APIs and have burned us already. Cheap validation: ship a 5-line dummy shader (`finalColor = vec4(1, 0, 0, 1)`) into the playground and confirm it compiles before scaling up.
 - **The Figma source is the canonical visual reference.** When in doubt about a visual choice, the Xen Figma file is the source of truth — not Claude's interpretation, not other editors. Reference assets live in `packages/theme-xen/reference/`. For interaction patterns Figma doesn't cover (palette behaviour, drag-from-pin to empty space, pin hover halo), established blueprint-style editors are useful inspiration, but the visual outcome must match Xen.
 
 ## Status

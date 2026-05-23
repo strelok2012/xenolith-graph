@@ -1,0 +1,37 @@
+import type { Graphics, Container, TextureSource } from 'pixi.js'
+import type { Node } from '@xenolith/core'
+import type { XenTokens } from '@xenolith/theme-xen'
+import type { NodeView, RenderNodeOptions } from './node-renderer.js'
+import type { PinLayout } from './layout.js'
+import type { RenderEdgeOptions } from './edge-renderer.js'
+
+/**
+ * A swappable theme. Bundles design tokens with optional per-element rendering hooks; if a hook
+ * is omitted the editor falls back to the default Xen renderer for that element.
+ *
+ * Themes are values, not subclasses — registries can carry many side-by-side, and
+ * `editor.setTheme(...)` swaps them at runtime by re-rendering every node, edge, and the grid.
+ */
+/** Shared editor state surfaced to theme render hooks. Themes that opt into backdrop sampling
+ *  (Liquid Glass, Pixel Art) bind the live backdrop texture from this context to their shader.
+ *  The texture instance is stable across resizes; PIXI updates the underlying GPU resource. */
+export interface ThemeRenderContext {
+  backdropTexture: TextureSource | null
+}
+
+export interface XenolithTheme {
+  /** Stable identifier used for diffing in setTheme and for telemetry. */
+  id: string
+  tokens: XenTokens
+  /** Opt-in flag — when true, the editor maintains a per-frame backdrop RenderTexture and
+   *  surfaces it via `ThemeRenderContext.backdropTexture`. Themes that don't sample the
+   *  backdrop (Xen, vanilla flat themes) leave this false so the editor skips the extra render
+   *  pass entirely. */
+  needsBackdrop?: boolean
+  /** Custom node rendering pipeline. Themes that need backdrop sampling read ctx.backdropTexture. */
+  renderNode?: (node: Node, opts: RenderNodeOptions, ctx: ThemeRenderContext) => NodeView
+  /** Custom wire rendering. Returns the same `Graphics` so the editor can reuse the instance. */
+  drawEdge?: (g: Graphics, from: PinLayout, to: PinLayout, opts: RenderEdgeOptions) => Graphics
+  /** Custom canvas background / grid. Return an empty Container to mean "no grid at all". */
+  createGrid?: () => Container
+}

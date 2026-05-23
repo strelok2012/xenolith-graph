@@ -29,7 +29,7 @@ export function readPinHandle(target: unknown): PinHandle | null {
   return handle ?? null
 }
 
-function markPinInteractive(
+export function markPinInteractive(
   g: Graphics,
   pin: Pin,
   nodeId: string,
@@ -103,11 +103,16 @@ function makeGlowLayer(style: StateStyle, w: number, h: number, radius: number):
   const layer = new Container()
   layer.visible = false
   if (style.glow !== undefined) {
+    // Glow source is a STROKE, not a fill. A blurred filled rectangle leaks brighter halos
+    // along the long edges than at the corners → halo looks squarer than the body. A blurred
+    // perimeter stroke traces the contour exactly; the body (drawn on top) hides the inward
+    // half, leaving a uniform-width outward halo regardless of how long any edge is.
+    const strength = style.glowBlur ?? 10
     const glow = new Graphics()
       .roundRect(0, 0, w, h, radius)
-      .fill({ color: style.glow })
-    const blur = new BlurFilter({ strength: style.glowBlur ?? 10, quality: 4 })
-    blur.padding = (style.glowBlur ?? 10) * 2
+      .stroke({ color: style.glow, width: style.glowWidth ?? 3, alignment: 0.5 })
+    const blur = new BlurFilter({ strength, quality: 4, antialias: 'on' })
+    blur.padding = Math.max(strength * 4, 32)
     glow.filters = [blur]
     layer.addChild(glow)
   }

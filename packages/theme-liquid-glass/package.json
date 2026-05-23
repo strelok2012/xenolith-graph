@@ -1,0 +1,41 @@
+{
+  "name": "@xenolith/theme-liquid-glass",
+  "version": "0.0.0",
+  "description": "Liquid Glass theme for XenolithGraph — Apple WWDC25-inspired translucent material.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc -b --watch",
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@xenolith/core": "workspace:*",
+    "@xenolith/render-pixi": "workspace:*",
+    "@xenolith/theme-xen": "workspace:*"
+  },
+  "peerDependencies": {
+    "pixi.js": "^8.6.0"
+  },
+  "devDependencies": {
+    "pixi.js": "^8.6.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

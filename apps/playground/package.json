@@ -10,13 +10,15 @@
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "playwright:install": "playwright install --with-deps chromium"
+    "playwright:install": "playwright install --with-deps chromium",
+    "capture": "node scripts/capture-themes.mjs"
   },
   "dependencies": {
     "@xenolith/core": "workspace:*",
     "@xenolith/editor": "workspace:*",
     "@xenolith/render-pixi": "workspace:*",
     "@xenolith/theme-xen": "workspace:*",
+    "@xenolith/theme-liquid-glass": "workspace:*",
     "pixi.js": "^8.6.0"
   },
   "devDependencies": {

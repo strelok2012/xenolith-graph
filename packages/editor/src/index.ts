@@ -1,7 +1,8 @@
-import { Application, Container, EventEmitter as PixiEventEmitter, FederatedPointerEvent, Graphics, type ContainerChild } from 'pixi.js'
+import { Application, Container, EventEmitter as PixiEventEmitter, FederatedPointerEvent, Graphics, RenderTexture, type ContainerChild, type TextureSource } from 'pixi.js'
 import {
   CommandBus,
   ConnectPins,
+  DisconnectEdge,
   EventEmitter,
   Graph,
   MoveNode,
@@ -23,18 +24,20 @@ import {
   nodeBounds,
   rectFromPoints,
   rectIntersects,
-  renderEdge,
   renderNode,
   computeGroupSnappedDelta,
   readPinHandle,
   screenToWorld,
   Viewport,
+  xenTheme,
   type NodeView,
   type PinHandle,
   type PinLayout,
   type RenderEdgeOptions,
   type RenderNodeOptions,
+  type ThemeRenderContext,
   type ViewportState,
+  type XenolithTheme,
   type ZoomBounds,
 } from '@xenolith/render-pixi'
 import { xenTokens, loadXenFonts, mergeTheme, type DeepPartial, type XenTokens } from '@xenolith/theme-xen'
@@ -46,8 +49,10 @@ const MARQUEE_DRAG_THRESHOLD = 4
 const NODE_DRAG_THRESHOLD = 4
 
 export interface XenolithEditorOptions {
-  /** Partial override of the default Xen theme. Deep-merged with `xenTokens`. */
-  theme?: DeepPartial<XenTokens>
+  /** Either a full XenolithTheme (Xen, Liquid Glass, Pixel Art, …) or a partial token override
+   *  that is deep-merged into the default Xen theme. Themes can be swapped at runtime via
+   *  `editor.setTheme(...)`. */
+  theme?: XenolithTheme | DeepPartial<XenTokens>
   background?: string
   resizeToWindow?: boolean
   renderer?: 'webgl' | 'webgpu'
@@ -57,6 +62,12 @@ export interface XenolithEditorOptions {
   disableGrid?: boolean
   /** Snap cell size in world pixels when dragging. Hold Alt during drag to disable. Default: 8. */
   snap?: number
+}
+
+function resolveTheme(input: XenolithTheme | DeepPartial<XenTokens> | undefined): XenolithTheme {
+  if (!input) return xenTheme
+  if (typeof input === 'object' && 'id' in input && 'tokens' in input) return input as XenolithTheme
+  return { id: 'xen-custom', tokens: mergeTheme(xenTheme.tokens, input as DeepPartial<XenTokens>) }
 }
 
 interface EdgeRecord {
@@ -81,6 +92,9 @@ type DragState =
       source: PinHandle
       ghost: Graphics
       hoveredTarget: PinHandle | null
+      /** When the drag began by tearing an edge off a connected pin, this is the original edge.
+       *  Esc restores it; a successful drop on a new target leaves it removed. */
+      rewireOriginal: Edge | null
     }
 
 type MarqueeState =
@@ -99,7 +113,12 @@ export class XenolithEditor {
   readonly selection: Selection
   readonly commandBus: CommandBus
   readonly #app: Application
-  readonly #theme: XenTokens
+  #theme: XenolithTheme
+  #gridLayer: Container | null = null
+  /** Live snapshot of the world MINUS the nodes layer — created lazily the first time the
+   *  active theme opts in via `theme.needsBackdrop = true`. Themes that don't sample the
+   *  backdrop pay zero extra render cost. */
+  #backdropRT: RenderTexture | null = null
   readonly #world: Container<ContainerChild>
   readonly #edgesLayer: Container<ContainerChild>
   readonly #nodesLayer: Container<ContainerChild>
@@ -108,15 +127,21 @@ export class XenolithEditor {
   readonly #zoomBounds: ZoomBounds
   readonly #snapSize: number
   readonly #views = new Map<NodeId, NodeView>()
+  /** Per-node render options (category, title, collapsed). Captured at addNode so setTheme can
+   *  re-issue the render with identical args after swapping the active theme. */
+  readonly #renderOpts = new Map<NodeId, RenderNodeOptions>()
   readonly #edgeRecords = new Map<EdgeId, EdgeRecord>()
   readonly #coreEvents = new EventEmitter<CoreEvents>()
   #hoveredId: NodeId | null = null
   readonly #marqueeHovered = new Set<NodeId>()
   #dragState: DragState = { kind: 'idle' }
 
-  private constructor(app: Application, theme: XenTokens, opts: XenolithEditorOptions) {
+  private constructor(app: Application, theme: XenolithTheme, opts: XenolithEditorOptions) {
     this.#app = app
     this.#theme = theme
+    if (theme.needsBackdrop) {
+      this.#backdropRT = this.#createBackdropRT()
+    }
     this.graph = new Graph()
     this.selection = new Selection()
     this.commandBus = new CommandBus({ graph: this.graph, events: this.#coreEvents })
@@ -127,7 +152,8 @@ export class XenolithEditor {
     this.#edgesLayer = new Container({ label: 'edges' })
     this.#nodesLayer = new Container({ label: 'nodes' })
     if (!opts.disableGrid) {
-      this.#world.addChild(createGridSprite(theme))
+      this.#gridLayer = this.#createGrid()
+      this.#world.addChild(this.#gridLayer)
     }
     this.#world.addChild(this.#edgesLayer, this.#nodesLayer)
     app.stage.addChild(this.#world)
@@ -157,6 +183,7 @@ export class XenolithEditor {
     // The cost is one drawEdge per edge per frame — cheap on Graphics in PIXI v8.
     app.ticker.add(() => {
       for (const edgeId of this.#edgeRecords.keys()) this.#redrawEdge(edgeId)
+      this.#updateBackdrop()
     })
   }
 
@@ -171,10 +198,10 @@ export class XenolithEditor {
       )
     }
     await loadXenFonts()
-    const theme = opts.theme ? mergeTheme(xenTokens, opts.theme) : xenTokens
+    const theme = resolveTheme(opts.theme)
     const app = new Application()
     const initOpts: Parameters<Application['init']>[0] = {
-      background: opts.background ?? theme.color.surface.canvas,
+      background: opts.background ?? theme.tokens.color.surface.canvas,
       antialias: true,
       resolution: window.devicePixelRatio || 1,
       autoDensity: true,
@@ -186,9 +213,58 @@ export class XenolithEditor {
     return new XenolithEditor(app, theme, opts)
   }
 
+  // ----- theme hook wrappers ---------------------------------------------------------------
+  // Every visual element goes through these so that #theme.<hook> wins when present, with the
+  // built-in Xen renderer as a fallback. Keeps the rest of the editor agnostic to which theme
+  // is currently active.
+
+  #renderNode(node: Node, opts: RenderNodeOptions): NodeView {
+    return this.#theme.renderNode?.(node, opts, this.#themeContext()) ?? renderNode(node, this.#theme.tokens, opts)
+  }
+  #drawEdge(g: Graphics, from: PinLayout, to: PinLayout, opts: RenderEdgeOptions): Graphics {
+    return this.#theme.drawEdge?.(g, from, to, opts) ?? drawEdge(g, from, to, this.#theme.tokens, opts)
+  }
+  #renderEdge(from: PinLayout, to: PinLayout, opts: RenderEdgeOptions): Graphics {
+    return this.#drawEdge(new Graphics(), from, to, opts)
+  }
+  #createGrid(): Container {
+    return this.#theme.createGrid?.() ?? createGridSprite(this.#theme.tokens)
+  }
+
+  #createBackdropRT(): RenderTexture {
+    return RenderTexture.create({
+      width:      Math.max(1, this.#app.screen.width),
+      height:     Math.max(1, this.#app.screen.height),
+      resolution: this.#app.renderer.resolution,
+      antialias:  true,
+    })
+  }
+
+  /** Render the world without the nodes layer into `#backdropRT`. No-op when the active theme
+   *  has `needsBackdrop = false` — the RT itself isn't even allocated in that case. One extra
+   *  render pass per frame when enabled; acceptable cost for the visual it buys. */
+  #updateBackdrop(): void {
+    if (!this.#backdropRT) return
+    const sw = Math.max(1, this.#app.screen.width)
+    const sh = Math.max(1, this.#app.screen.height)
+    if (this.#backdropRT.width !== sw || this.#backdropRT.height !== sh) {
+      this.#backdropRT.resize(sw, sh)
+    }
+    const nodesWereVisible = this.#nodesLayer.visible
+    this.#nodesLayer.visible = false
+    this.#app.renderer.render({ container: this.#app.stage, target: this.#backdropRT })
+    this.#nodesLayer.visible = nodesWereVisible
+  }
+
+  /** Theme hooks read this to drive backdrop-sampling shaders. */
+  #themeContext(): ThemeRenderContext {
+    return { backdropTexture: this.#backdropRT?.source ?? null }
+  }
+
   addNode(node: Node, render: RenderNodeOptions = {}): Node {
     this.graph._addNode(node)
-    const view = renderNode(node, this.#theme, render)
+    this.#renderOpts.set(node.id, render)
+    const view = this.#renderNode(node, render)
     this.#views.set(node.id, view)
     this.#nodesLayer.addChild(view.container)
     this.#wireNodeInteraction(node.id, view)
@@ -212,7 +288,7 @@ export class XenolithEditor {
       to:   { node: toNode.id,   pin: toPinModel.id   },
     }
     this.graph._addEdge(edge)
-    const gfx = renderEdge(fromPin, toPin, this.#theme, opts)
+    const gfx = this.#renderEdge(fromPin, toPin, opts)
     this.#edgesLayer.addChild(gfx)
     this.#edgeRecords.set(edge.id, { edge, graphics: gfx, opts })
     return edge.id
@@ -225,11 +301,67 @@ export class XenolithEditor {
   resetView(): void { this.#viewport.reset() }
   get viewport(): ViewportState { return this.#viewport.state }
   get app(): Application { return this.#app }
-  get theme(): XenTokens { return this.#theme }
+  get theme(): XenolithTheme { return this.#theme }
+  get tokens(): XenTokens { return this.#theme.tokens }
+
+  /**
+   * Swap the active theme at runtime. Re-renders every node and recreates the grid; edges and
+   * the ghost-edge (if any) pick up the new style on the next ticker frame. Selection, hover,
+   * collapsed state, and node positions are preserved.
+   *
+   * Accepts either a full `XenolithTheme` or a `DeepPartial<XenTokens>` to tweak the active
+   * theme's tokens while keeping its render hooks.
+   */
+  setTheme(input: XenolithTheme | DeepPartial<XenTokens>): void {
+    const next: XenolithTheme = (typeof input === 'object' && 'id' in input && 'tokens' in input)
+      ? input as XenolithTheme
+      : { ...this.#theme, tokens: mergeTheme(this.#theme.tokens, input as DeepPartial<XenTokens>) }
+    if (next === this.#theme) return
+    this.#theme = next
+
+    // Allocate/free backdrop RT to match the new theme's needs — Xen-style flat themes get the
+    // extra render pass turned off entirely.
+    if (next.needsBackdrop && !this.#backdropRT) {
+      this.#backdropRT = this.#createBackdropRT()
+    } else if (!next.needsBackdrop && this.#backdropRT) {
+      this.#backdropRT.destroy(true)
+      this.#backdropRT = null
+    }
+
+    // Canvas background follows the new theme.
+    this.#app.renderer.background.color = next.tokens.color.surface.canvas
+
+    // Re-create grid (themes may swap it for an entirely different visual).
+    if (this.#gridLayer) {
+      this.#gridLayer.parent?.removeChild(this.#gridLayer)
+      this.#gridLayer.destroy({ children: true })
+      this.#gridLayer = this.#createGrid()
+      this.#world.addChildAt(this.#gridLayer, 0)
+    }
+
+    // Re-render every node through the new theme. We rebuild each NodeView from the source-of-
+    // truth Node and discard the old container; collapsed state, position, and selection are
+    // restored from the Graph + Selection (which are theme-agnostic).
+    for (const [id, oldView] of [...this.#views]) {
+      const node = this.graph.getNode(id)
+      if (!node) continue
+      const wasCollapsed = oldView.isCollapsed()
+      const baseOpts = this.#renderOpts.get(id) ?? {}
+      const newView = this.#renderNode(node, { ...baseOpts, collapsed: wasCollapsed })
+      this.#nodesLayer.removeChild(oldView.container)
+      oldView.container.destroy({ children: true })
+      this.#views.set(id, newView)
+      this.#nodesLayer.addChild(newView.container)
+      this.#wireNodeInteraction(id, newView)
+    }
+    this.#updateVisualStates()
+    // Edges re-paint themselves through the ticker via #drawEdge — no explicit pass needed.
+  }
 
   destroy(): void {
     window.removeEventListener('keydown', this.#onKeyDown)
     this.#interaction?.detach()
+    this.#backdropRT?.destroy(true)
     this.#app.destroy(true, { children: true })
   }
 
@@ -260,13 +392,13 @@ export class XenolithEditor {
 
   #pinLayoutFor(node: Node, pinIndex: number): PinLayout {
     const layout = computeNodeLayout(node, {
-      node:   this.#theme.geometry.node,
+      node:   this.#theme.tokens.geometry.node,
       pin:    {
-        diameter:   this.#theme.geometry.pin.diameter,
-        rowSpacing: this.#theme.geometry.pin.rowSpacing,
-        rowHeight:  this.#theme.geometry.pin.rowHeight,
+        diameter:   this.#theme.tokens.geometry.pin.diameter,
+        rowSpacing: this.#theme.tokens.geometry.pin.rowSpacing,
+        rowHeight:  this.#theme.tokens.geometry.pin.rowHeight,
       },
-      header: { toPinsGap: this.#theme.geometry.header.toPinsGap },
+      header: { toPinsGap: this.#theme.tokens.geometry.header.toPinsGap },
     })
     const pin = node.pins[pinIndex]
     if (!pin) throw new Error(`pinLayoutFor: no pin at index ${pinIndex}`)
@@ -287,7 +419,7 @@ export class XenolithEditor {
     const fromPos = this.#pinWorldPosition(fromNode, rec.edge.from.pin)
     const toPos = this.#pinWorldPosition(toNode, rec.edge.to.pin)
     if (!fromPos || !toPos) return
-    drawEdge(rec.graphics, fromPos, toPos, this.#theme, rec.opts)
+    this.#drawEdge(rec.graphics, fromPos, toPos, rec.opts)
   }
 
   #pinWorldPosition(node: Node, pinId: string): PinLayout | null {
@@ -309,6 +441,29 @@ export class XenolithEditor {
     const idx = node.pins.findIndex((p) => p.id === pinId)
     if (idx < 0) return null
     return this.#pinLayoutFor({ ...node, position: livePos }, idx)
+  }
+
+  /** Return the EdgeId of the most-recently-added edge incident to this pin, or null. The Map's
+   *  insertion order gives us "newest first" by iterating in reverse. */
+  #findIncidentEdgeId(nodeId: NodeId, pinId: string): EdgeId | null {
+    const records = [...this.#edgeRecords.values()].reverse()
+    for (const rec of records) {
+      if ((rec.edge.from.node === nodeId && String(rec.edge.from.pin) === pinId) ||
+          (rec.edge.to.node   === nodeId && String(rec.edge.to.pin)   === pinId)) {
+        return rec.edge.id
+      }
+    }
+    return null
+  }
+
+  /** Remove an edge's Graphics from the scene and drop its bookkeeping. The command-bus
+   *  invocation (DisconnectEdge) is the caller's job. */
+  #disposeEdgeGraphics(edgeId: EdgeId): void {
+    const rec = this.#edgeRecords.get(edgeId)
+    if (!rec) return
+    rec.graphics.parent?.removeChild(rec.graphics)
+    rec.graphics.destroy()
+    this.#edgeRecords.delete(edgeId)
   }
 
   #countEdgesAtPin(nodeId: NodeId, pinId: string): number {
@@ -339,7 +494,18 @@ export class XenolithEditor {
       if (e.button !== 0) return
       const pin = readPinHandle(e.target)
       if (pin) {
-        this.#beginPinDrag(pin, e)
+        // Alt+pin on a connected pin = "tear off" the edge and continue dragging the loose
+        // end. UE Blueprint convention. If the pin has no incident edges, fall through to a
+        // fresh pin-drag from this pin.
+        if (e.altKey) {
+          const detached = this.#detachEdgeFromPin(pin)
+          if (detached) {
+            this.#beginPinDrag(detached.other, e, detached.original)
+            e.stopPropagation()
+            return
+          }
+        }
+        this.#beginPinDrag(pin, e, null)
         e.stopPropagation()
         return
       }
@@ -411,7 +577,7 @@ export class XenolithEditor {
           .stroke({ color: '#FCB400', width: 1 / this.#viewport.state.zoom, alpha: 0.8 })
         this.#marqueeHovered.clear()
         for (const node of this.graph.nodes()) {
-          if (rectIntersects(rect, nodeBounds(node, this.#theme))) {
+          if (rectIntersects(rect, nodeBounds(node, this.#theme.tokens))) {
             this.#marqueeHovered.add(node.id)
           }
         }
@@ -438,7 +604,7 @@ export class XenolithEditor {
       const rect = rectFromPoints(marquee.startWorld, currentWorld)
       const ids: NodeId[] = []
       for (const node of this.graph.nodes()) {
-        if (rectIntersects(rect, nodeBounds(node, this.#theme))) ids.push(node.id)
+        if (rectIntersects(rect, nodeBounds(node, this.#theme.tokens))) ids.push(node.id)
       }
       this.#marqueeHovered.clear()
       if (marquee.shift) {
@@ -505,12 +671,39 @@ export class XenolithEditor {
     }
   }
 
-  #beginPinDrag(source: PinHandle, e: FederatedPointerEvent): void {
+  /** Drop the (most recent) edge incident to `pin` and return a handle to the *other* endpoint
+   *  along with the original edge so the caller can restore it on cancel. */
+  #detachEdgeFromPin(pin: PinHandle): { other: PinHandle; original: Edge } | null {
+    const edgeId = this.#findIncidentEdgeId(pin.nodeId as NodeId, pin.pinId)
+    if (!edgeId) return null
+    const rec = this.#edgeRecords.get(edgeId)
+    if (!rec) return null
+    const original: Edge = { ...rec.edge, from: { ...rec.edge.from }, to: { ...rec.edge.to } }
+    const fromIsTorn = rec.edge.from.node === (pin.nodeId as NodeId) && String(rec.edge.from.pin) === pin.pinId
+    const otherEndRef = fromIsTorn ? rec.edge.to : rec.edge.from
+    const otherNode = this.graph.getNode(otherEndRef.node)
+    const otherPin: Pin | undefined = otherNode?.pins.find((p) => p.id === otherEndRef.pin)
+    if (!otherNode || !otherPin) return null
+    this.commandBus.apply(new DisconnectEdge(edgeId))
+    this.#disposeEdgeGraphics(edgeId)
+    return {
+      other: {
+        nodeId: String(otherNode.id),
+        pinId: String(otherPin.id),
+        direction: otherPin.direction,
+        kind: otherPin.kind,
+        type: String(otherPin.type),
+      },
+      original,
+    }
+  }
+
+  #beginPinDrag(source: PinHandle, e: FederatedPointerEvent, rewireOriginal: Edge | null): void {
     if (this.#dragState.kind !== 'idle') return
     const ghost = new Graphics()
     ghost.eventMode = 'none'
     this.#edgesLayer.addChild(ghost)
-    this.#dragState = { kind: 'pin-drag', source, ghost, hoveredTarget: null }
+    this.#dragState = { kind: 'pin-drag', source, ghost, hoveredTarget: null, rewireOriginal }
     this.#updatePinDrag({ x: e.global.x, y: e.global.y }, null)
   }
 
@@ -530,7 +723,7 @@ export class XenolithEditor {
     }
     const from = source.direction === 'out' ? sourcePos : cursorEndpoint
     const to = source.direction === 'out' ? cursorEndpoint : sourcePos
-    drawEdge(ghost, from, to, this.#theme, { sourceType: source.type })
+    this.#drawEdge(ghost, from, to, { sourceType: source.type })
 
     let validity: 'none' | 'valid' | 'invalid' = 'none'
     if (hoveredTarget) {
@@ -550,14 +743,15 @@ export class XenolithEditor {
     ghost.alpha = validity === 'none' ? 0.55 : 1
     ghost.tint = validity === 'invalid' ? 0xff5577 : 0xffffff
 
-    this.#dragState = { kind: 'pin-drag', source, ghost, hoveredTarget }
+    this.#dragState = { ...this.#dragState, hoveredTarget }
   }
 
   #endPinDrag(target: PinHandle | null): void {
     if (this.#dragState.kind !== 'pin-drag') return
-    const { source, ghost } = this.#dragState
+    const { source, ghost, rewireOriginal } = this.#dragState
     const sourceNode = this.graph.getNode(source.nodeId as NodeId)
     const sourcePin = sourceNode?.pins.find((p) => String(p.id) === source.pinId)
+    let committed = false
     if (target && sourceNode && sourcePin) {
       const targetNode = this.graph.getNode(target.nodeId as NodeId)
       const targetPin = targetNode?.pins.find((p) => String(p.id) === target.pinId)
@@ -586,22 +780,46 @@ export class XenolithEditor {
         const toPos = this.#pinWorldPosition(inNode, String(inPin.id))
         if (fromPos && toPos) {
           const opts: RenderEdgeOptions = { sourceType: String(outPin.type) }
-          const gfx = renderEdge(fromPos, toPos, this.#theme, opts)
+          const gfx = this.#renderEdge(fromPos, toPos, opts)
           this.#edgesLayer.addChild(gfx)
           this.#edgeRecords.set(edge.id, { edge, graphics: gfx, opts })
+          committed = true
         }
       }
     }
     ghost.parent?.removeChild(ghost)
     ghost.destroy()
     this.#dragState = { kind: 'idle' }
+    // Rewire dropped in empty space (or on incompatible) → snap the original edge back. Same
+    // behaviour as Esc; matches UE Blueprint where releasing into the void cancels the reroute.
+    if (!committed && rewireOriginal) this.#restoreEdge(rewireOriginal)
   }
 
   #cancelPinDrag(): void {
     if (this.#dragState.kind !== 'pin-drag') return
+    const { rewireOriginal } = this.#dragState
     this.#dragState.ghost.parent?.removeChild(this.#dragState.ghost)
     this.#dragState.ghost.destroy()
     this.#dragState = { kind: 'idle' }
+    if (rewireOriginal) this.#restoreEdge(rewireOriginal)
+  }
+
+  /** Re-create an edge that was removed at the start of a rewire when the drag is cancelled or
+   *  dropped in empty space. Pushes a ConnectPins command so it lands in undo history. */
+  #restoreEdge(edge: Edge): void {
+    const fromNode = this.graph.getNode(edge.from.node)
+    const toNode = this.graph.getNode(edge.to.node)
+    if (!fromNode || !toNode) return
+    const fromPin = fromNode.pins.find((p) => p.id === edge.from.pin)
+    if (!fromPin) return
+    this.commandBus.apply(new ConnectPins(edge))
+    const fromPos = this.#pinWorldPosition(fromNode, String(edge.from.pin))
+    const toPos = this.#pinWorldPosition(toNode, String(edge.to.pin))
+    if (!fromPos || !toPos) return
+    const opts: RenderEdgeOptions = { sourceType: String(fromPin.type) }
+    const gfx = this.#renderEdge(fromPos, toPos, opts)
+    this.#edgesLayer.addChild(gfx)
+    this.#edgeRecords.set(edge.id, { edge, graphics: gfx, opts })
   }
 
   #endNodeDrag(altOnRelease: boolean): void {

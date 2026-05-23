@@ -16,30 +16,32 @@ const playgroundPath = '/xenolith-graph/playground/'
 
 const t = (() => {
   if (lang === 'ru') return {
-    eyebrow: ['Node-graph редактор', 'PIXI v8', 'drop-in для веба'],
+    eyebrow: ['Node-graph редактор', 'PIXI v8 + GLSL', 'swappable темы'],
     h1a:     'Один',
     h1b:     'init',
     h1c:     '— и у вас редактор.',
-    sub:     'Полированный node-graph редактор для веба со встроенной Blueprint-эстетикой. Никаких CDN, никаких шагов настройки — npm-пакет, точка монтирования, готово. Тема — bundle Inter, палитра, формы, анимации.',
+    sub:     'Полированный node-graph редактор для веба со встроенной Blueprint-эстетикой и swappable-темами. Дефолт — Xen (дарк/голд). Liquid Glass — отдельная тема, рендерит ноды через PIXI Mesh + GLSL шейдер с настоящим backdrop sampling. Переключение в рантайме одной строкой.',
     ctaPrimary:   'Открыть документацию',
     ctaSecondary: 'GitHub',
-    showcaseA: 'Тема Xen — по умолчанию',
-    showcaseB: 'Override темы (5 строк JSON)',
-    showcaseSub: 'Одна и та же 18-нодная композиция, разная палитра. Полностью JSON-конфигурация — Xen-токены глубоко мержатся с дефолтами.',
+    showcaseA: 'Xen — по умолчанию',
+    showcaseB: 'Liquid Glass — WWDC25 шейдер',
+    showcaseSub: 'Один и тот же 18-нодный граф, две темы. Liquid Glass подменяет renderNode на custom Mesh+GLSL c SDF refraction и 13×13 gaussian blur по реальному backdrop snapshot.',
     metrics: [
-      { v: '1', l: 'строка init' },
-      { v: '0', l: 'внешних CDN' },
-      { v: 'PIXI', l: 'v8 рендер' },
+      { v: '2', l: 'темы из коробки' },
+      { v: 'GLSL', l: 'custom рендер' },
+      { v: 'PIXI', l: 'v8 + backdrop RT' },
     ],
     featuresTitle: 'Что внутри',
-    featuresSub: 'Базовый UX-фундамент любого визуального редактора — pan, zoom, drag, marquee, collapse, undo. Всё работает с первого вызова init.',
+    featuresSub: 'Базовый UX-фундамент любого визуального редактора + swappable-тема архитектура. Всё работает с первого вызова init.',
     features: [
-      { n: '01', h: 'Drop-in PIXI v8',         p: 'Один npm-пакет, один await init. Retina, анти-алиасинг, WebGL и WebGPU из коробки, бесшовный resize.' },
-      { n: '02', h: 'Bundled design system',    p: 'Шрифты Inter WOFF2, палитра, геометрия, анимации — внутри пакета. Никаких сетевых запросов к Google Fonts.' },
-      { n: '03', h: 'Глубокая темизация',      p: 'DeepPartial<XenTokens> override. Меняйте только то, что нужно — категории, типы пинов, цвета поверхностей, эффекты.' },
-      { n: '04', h: 'Collapse / Expand',        p: 'Любая нода сворачивается в pill-форму одним кликом по шеврону. Пины анимированно переезжают на дугу скругления.' },
-      { n: '05', h: 'Multi-drag со snap',       p: 'Marquee-selection, drag всей выборки сразу, snap к сетке 8px по умолчанию. Зажмите Alt — snap отключается.' },
-      { n: '06', h: 'Headless core',            p: 'Граф, команды, undo/redo, selection — zero runtime deps. Рендерер можно заменить без переписывания логики.' },
+      { n: '01', h: 'Drop-in PIXI v8',         p: 'Один npm-пакет, один await init. Retina, анти-алиасинг, WebGL и WebGPU авто-выбор, бесшовный resize.' },
+      { n: '02', h: 'Swappable темы',           p: 'XenolithTheme = tokens + renderNode + createGrid hooks. Liquid Glass подменяет рендер ноды на custom GLSL — не просто палитра, а другой материал. editor.setTheme() в рантайме.' },
+      { n: '03', h: 'Liquid Glass шейдер',      p: 'PIXI Mesh + GLSL: SDF rounded rect, edge refraction вдоль outward normal, 13×13 gaussian по backdrop snapshot, vertical tint, luminous rim. Темы без backdrop платят 0 extra-pass.' },
+      { n: '04', h: 'Collapse / Expand',        p: 'Любая нода сворачивается в pill-форму одним кликом по шеврону. Пины переезжают на дугу скругления.' },
+      { n: '05', h: 'Multi-drag со snap',       p: 'Marquee-selection, drag всей выборки сразу, snap к сетке 8px, anchor-based (не ломает relative offsets). Зажмите Alt — snap отключается.' },
+      { n: '06', h: 'Pin-drag / Alt-rewire',    p: 'Тащите с output пина на input — живой ghost edge с type-compat валидацией. Alt+drag за подключённый пин отрывает edge и продолжает как rewire. Esc / drop в пустоту восстанавливают оригинал.' },
+      { n: '07', h: 'Headless core',            p: 'Граф, команды, undo/redo, selection — zero runtime deps. Рендерер можно заменить без переписывания логики.' },
+      { n: '08', h: 'Mobile — скоро',           p: 'v0.3: полная поддержка touch с two-finger pan + pinch-zoom, finger-sized hit-area для пинов (уже в рендере), tap-to-tap connect режим. Ни один конкурент на iPad сегодня не работает нормально.' },
     ],
     quickStartTitle: 'Старт за 30 секунд',
     quickStartCode: `import { XenolithEditor } from '@xenolith/editor'
@@ -57,30 +59,32 @@ editor.connect(a, 0, b, 1, { sourceType: 'float' })
     finalCta: 'Документация →',
   }
   if (lang === 'zh') return {
-    eyebrow: ['节点图编辑器', 'PIXI v8', 'Web 直接可用'],
+    eyebrow: ['节点图编辑器', 'PIXI v8 + GLSL', '可切换主题'],
     h1a:     '一行',
     h1b:     'init',
     h1c:     '即得到一个编辑器。',
-    sub:     '面向 Web 的高质量节点图编辑器，开箱即用，附带 Blueprint 风格设计系统。无 CDN，无额外步骤——npm 包、挂载点、即可。主题已打包 Inter 字体、调色板、几何、动画。',
+    sub:     '面向 Web 的高质量节点图编辑器，附带 Blueprint 风格设计系统和可切换主题。默认 Xen（深色/金）。Liquid Glass 是独立主题，通过 PIXI Mesh + GLSL 着色器渲染节点，带真正的背景采样。运行时一行切换。',
     ctaPrimary:   '查看文档',
     ctaSecondary: 'GitHub',
-    showcaseA: '默认 Xen 主题',
-    showcaseB: '主题覆盖（5 行 JSON）',
-    showcaseSub: '相同的 18 个节点构图，不同调色板。完全 JSON 配置——Xen 令牌深度合并到默认值。',
+    showcaseA: 'Xen — 默认',
+    showcaseB: 'Liquid Glass — WWDC25 着色器',
+    showcaseSub: '同一个 18 节点图，两种主题。Liquid Glass 将 renderNode 替换为带 SDF 折射和 13×13 高斯模糊的自定义 Mesh+GLSL。',
     metrics: [
-      { v: '1', l: '行 init' },
-      { v: '0', l: '外部 CDN' },
-      { v: 'PIXI', l: 'v8 渲染' },
+      { v: '2', l: '内置主题' },
+      { v: 'GLSL', l: '自定义渲染' },
+      { v: 'PIXI', l: 'v8 + backdrop RT' },
     ],
     featuresTitle: '内置什么',
-    featuresSub:   '任何可视化编辑器的基础 UX——平移、缩放、拖动、框选、折叠、撤销，全部在 init 后立即可用。',
+    featuresSub:   '任何可视化编辑器的基础 UX + 可切换主题架构。init 后立即可用。',
     features: [
       { n: '01', h: '即插即用的 PIXI v8',  p: '一个 npm 包，一次 await init。Retina、抗锯齿、WebGL/WebGPU 自动选择，无缝 resize。' },
-      { n: '02', h: '打包的设计系统',     p: 'Inter WOFF2 字体、调色板、几何、动画都在包内。不向 Google Fonts 发起任何请求。' },
-      { n: '03', h: '深度主题化',         p: 'DeepPartial<XenTokens> 覆盖。只改你需要的部分——类别、引脚类型、表面色、效果。' },
+      { n: '02', h: '可切换主题',           p: 'XenolithTheme = tokens + renderNode + createGrid hooks。Liquid Glass 用自定义 GLSL 替换节点渲染——不仅是调色板，是不同的材质。editor.setTheme() 运行时切换。' },
+      { n: '03', h: 'Liquid Glass 着色器',  p: 'PIXI Mesh + GLSL：SDF 圆角矩形、沿外法线的边缘折射、13×13 高斯模糊基于背景快照、垂直渐变着色、发光边框。不需要 backdrop 的主题零额外开销。' },
       { n: '04', h: '折叠 / 展开',         p: '任何节点一键折叠为胶囊形态。引脚沿圆角动画就位。' },
-      { n: '05', h: '多选拖动 + 吸附',     p: '框选、整体拖动当前选中，默认吸附到 8px 网格。按住 Alt 关闭吸附。' },
-      { n: '06', h: '无头核心',            p: '图、命令、撤销/重做、选区——零运行时依赖。渲染器可在不重写逻辑的情况下替换。' },
+      { n: '05', h: '多选拖动 + 吸附',     p: '框选、整体拖动，默认吸附 8px 网格，锚点对齐（不破坏相对偏移）。按住 Alt 关闭吸附。' },
+      { n: '06', h: '引脚拖拽 / Alt 重连', p: '从输出引脚拖到输入——实时幽灵线 + 类型兼容验证。Alt+拖已连接引脚，断开并继续重连。Esc / 空白拖放恢复原边。' },
+      { n: '07', h: '无头核心',            p: '图、命令、撤销/重做、选区——零运行时依赖。渲染器可替换。' },
+      { n: '08', h: '移动端 — 即将',       p: 'v0.3：完整 touch 支持，双指平移 + 捏合缩放，手指大小的引脚命中区（已在渲染器中），点击-点击连接模式。今天 iPad 上没有竞品能正常工作。' },
     ],
     quickStartTitle: '30 秒上手',
     quickStartCode: `import { XenolithEditor } from '@xenolith/editor'
@@ -98,30 +102,32 @@ editor.connect(a, 0, b, 1, { sourceType: 'float' })
     finalCta: '文档 →',
   }
   return {
-    eyebrow: ['Node-graph editor', 'PIXI v8', 'drop-in for the web'],
+    eyebrow: ['Node-graph editor', 'PIXI v8 + GLSL', 'swappable themes'],
     h1a:     'One',
     h1b:     'init',
     h1c:     '— and you have an editor.',
-    sub:     'A polished node-graph editor for the web with a Blueprint-style design system inside the package. No CDN, no setup steps — npm install, mount point, done. The theme ships bundled Inter fonts, palette, shapes, animation.',
+    sub:     'A polished node-graph editor for the web with a Blueprint-style design system and swappable themes. Xen ships as the default (dark/gold). Liquid Glass is a separate theme — a custom PIXI Mesh + GLSL material with real backdrop sampling. Runtime swap in one line.',
     ctaPrimary:   'Open documentation',
     ctaSecondary: 'GitHub',
-    showcaseA: 'Default Xen theme',
-    showcaseB: 'Theme override (5 lines of JSON)',
-    showcaseSub: 'Same 18-node composition, different palette. Pure JSON configuration — Xen tokens are deep-merged into the defaults.',
+    showcaseA: 'Xen — default',
+    showcaseB: 'Liquid Glass — WWDC25 shader',
+    showcaseSub: 'Same 18-node composition, two themes. Liquid Glass replaces renderNode with a custom Mesh + GLSL — SDF refraction, 13×13 gaussian blur on a real backdrop snapshot, vertical tint, luminous rim.',
     metrics: [
-      { v: '1', l: 'line init' },
-      { v: '0', l: 'external CDNs' },
-      { v: 'PIXI', l: 'v8 renderer' },
+      { v: '2', l: 'themes in the box' },
+      { v: 'GLSL', l: 'custom material' },
+      { v: 'PIXI', l: 'v8 + backdrop RT' },
     ],
     featuresTitle: 'What is inside',
-    featuresSub: 'The whole UX baseline any canvas editor needs — pan, zoom, drag, marquee, collapse, undo. Everything works the moment init returns.',
+    featuresSub: 'The UX baseline any canvas editor needs plus a swappable-theme architecture. Everything works the moment init returns.',
     features: [
       { n: '01', h: 'Drop-in PIXI v8',     p: 'One npm package, one await init. Retina, anti-aliasing, WebGL/WebGPU auto-selected, seamless resize.' },
-      { n: '02', h: 'Bundled design system', p: 'Inter WOFF2 fonts, palette, geometry, animation — inside the package. Zero traffic to Google Fonts.' },
-      { n: '03', h: 'Deep theming',         p: 'DeepPartial<XenTokens> override. Change only what you need — categories, pin types, surfaces, effects.' },
-      { n: '04', h: 'Collapse / Expand',    p: 'Any node folds into pill mode with one chevron click. Pins animate to the rounded end-cap arcs.' },
-      { n: '05', h: 'Multi-drag with snap', p: 'Marquee selection, drag the whole selection at once, default 8px snap to grid. Hold Alt to disable.' },
-      { n: '06', h: 'Headless core',        p: 'Graph, commands, undo/redo, selection — zero runtime deps. Renderer is swappable without rewriting the logic.' },
+      { n: '02', h: 'Swappable themes',    p: 'XenolithTheme = tokens + renderNode + createGrid hooks. Liquid Glass replaces renderNode with custom GLSL — not a palette swap, a different material. editor.setTheme() at runtime.' },
+      { n: '03', h: 'Liquid Glass shader', p: 'PIXI Mesh + GLSL: SDF rounded rect, edge refraction along the outward normal, 13×13 gaussian over a backdrop snapshot, vertical tint, luminous rim. Backdrop pass is opt-in per theme — Xen pays zero extra cost.' },
+      { n: '04', h: 'Collapse / Expand',   p: 'Any node folds to pill form with one chevron click. Pins reposition onto the rounded end-cap arcs.' },
+      { n: '05', h: 'Multi-drag with snap', p: 'Marquee, drag the whole selection at once, default 8 px snap-to-grid, anchor-based (preserves relative offsets). Alt disables snap.' },
+      { n: '06', h: 'Pin drag / Alt rewire', p: 'Drag from an output to an input — live ghost edge with type-compat validation. Alt+drag on a connected pin tears the edge off and continues as rewire. Esc / drop in void snaps the original back.' },
+      { n: '07', h: 'Headless core',        p: 'Graph, commands, undo/redo, selection — zero runtime deps. Renderer is swappable without rewriting the logic.' },
+      { n: '08', h: 'Mobile — coming',     p: 'v0.3 ships full touch support: two-finger pan + pinch-zoom, finger-sized pin hit-areas (already in the renderer), tap-to-tap connect mode. No competitor handles tablets well today.' },
     ],
     quickStartTitle: '30-second start',
     quickStartCode: `import { XenolithEditor } from '@xenolith/editor'
@@ -140,28 +146,6 @@ editor.connect(a, 0, b, 1, { sourceType: 'float' })
   }
 })()
 
-const themeAJson = '{}'
-const themeBJson = JSON.stringify({
-  color: {
-    surface: { canvas: '#0E1626', node: '#101D33', headerEnd: '#1B2A44' },
-    text:    { primary: '#E6F2FF' },
-  },
-  background: {
-    color: '#0E1626',
-    grid:  { color: 'rgba(110, 180, 255, 0.18)', spacing: 24, size: 1 },
-  },
-  category: {
-    logic:   { accent: '#3FB8FF' },
-    data:    { accent: '#FF66C4' },
-    macro:   { accent: '#FFB347' },
-    utility: { accent: '#A5F3C5' },
-  },
-  pinType: {
-    float:  { color: '#3FB8FF', edgeColor: '#3FB8FF' },
-    object: { color: '#FF66C4', edgeColor: '#FF66C4' },
-    string: { color: '#FFB347', edgeColor: '#FFB347' },
-  },
-})
 ---
 
 <div class="xn-landing">
@@ -199,8 +183,8 @@ const themeBJson = JSON.stringify({
     <h2 class="xn-h2">{t.showcaseA} · {t.showcaseB}</h2>
     <p class="xn-h2-sub">{t.showcaseSub}</p>
     <div class="xn-showcase-row">
-      <EditorShowcase id="hero-default" label={t.showcaseA} themeJson={themeAJson} />
-      <EditorShowcase id="hero-override" label={t.showcaseB} themeJson={themeBJson} />
+      <EditorShowcase id="hero-xen"          label={t.showcaseA} themeName="xen" />
+      <EditorShowcase id="hero-liquid-glass" label={t.showcaseB} themeName="liquid-glass" />
     </div>
   </section>
 

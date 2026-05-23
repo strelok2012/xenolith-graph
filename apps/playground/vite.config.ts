@@ -23,7 +23,8 @@ export default defineConfig({
       { find: '@xenolith/core',         replacement: pkgSrc('core') },
       { find: '@xenolith/render-pixi',  replacement: pkgSrc('render-pixi') },
       { find: '@xenolith/editor',       replacement: pkgSrc('editor') },
-      { find: '@xenolith/theme-xen',    replacement: pkgSrc('theme-xen') },
+      { find: '@xenolith/theme-xen',          replacement: pkgSrc('theme-xen') },
+      { find: '@xenolith/theme-liquid-glass', replacement: pkgSrc('theme-liquid-glass') },
     ],
   },
 })

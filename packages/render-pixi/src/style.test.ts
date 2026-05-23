@@ -95,6 +95,18 @@ describe('hexToRgba', () => {
     expect(hexToRgba('#000000', -0.5)).toBe('rgba(0, 0, 0, 0)')
     expect(hexToRgba('#000000', 5)).toBe('rgba(0, 0, 0, 1)')
   })
+
+  it('expands 3-digit hex shorthand', () => {
+    expect(hexToRgba('#FFF', 0.5)).toBe('rgba(255, 255, 255, 0.5)')
+  })
+
+  it('re-emits rgb() input with the new alpha (channels preserved)', () => {
+    expect(hexToRgba('rgb(133, 194, 68)', 0.3)).toBe('rgba(133, 194, 68, 0.3)')
+  })
+
+  it('re-emits rgba() input with the new alpha overriding the original', () => {
+    expect(hexToRgba('rgba(255, 255, 255, 0.07)', 0.5)).toBe('rgba(255, 255, 255, 0.5)')
+  })
 })
 
 describe('resolveCategoryGradient', () => {

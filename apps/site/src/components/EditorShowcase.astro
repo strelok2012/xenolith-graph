@@ -2,16 +2,17 @@
 interface Props {
   id: string
   label: string
-  themeJson?: string
+  /** Built-in theme to mount in this showcase. */
+  themeName?: 'xen' | 'liquid-glass'
 }
-const { id, label, themeJson = '{}' } = Astro.props
+const { id, label, themeName = 'xen' } = Astro.props
 ---
 
 <div
   class="xn-showcase"
   id={id}
   data-xeno-showcase
-  data-xeno-theme={themeJson}
+  data-xeno-theme={themeName}
 >
   <span class="xn-showcase-label">{label}</span>
 </div>

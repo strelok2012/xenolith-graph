@@ -1,6 +1,7 @@
 import { XenolithEditor } from '@xenolith/editor'
 import { createNodeId, createPinId, type Node, type Pin } from '@xenolith/core'
-import type { DeepPartial, XenTokens } from '@xenolith/theme-xen'
+import { xenTheme, type XenolithTheme } from '@xenolith/render-pixi'
+import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
 
 function pin(direction: 'in' | 'out', type: string, label: string): Pin {
   return {
@@ -29,7 +30,12 @@ function mk(opts: {
   }
 }
 
-async function buildShowcase(mountEl: HTMLElement, theme: DeepPartial<XenTokens>) {
+const THEMES: Record<string, XenolithTheme> = {
+  xen: xenTheme,
+  'liquid-glass': liquidGlassTheme,
+}
+
+async function buildShowcase(mountEl: HTMLElement, theme: XenolithTheme) {
   // Don't use PIXI's `resizeTo` — at init time the mount can be 0px tall (aspect-ratio CSS
   // applies AFTER first layout pass), and PIXI then sticks with that 0px height. We size
   // manually via ResizeObserver below.
@@ -124,13 +130,8 @@ export function mountAllShowcases(): void {
   for (const el of Array.from(mounts)) {
     if (el.dataset['xenoMounted']) continue
     el.dataset['xenoMounted'] = '1'
-    const themeJson = el.dataset['xenoTheme'] ?? '{}'
-    let theme: DeepPartial<XenTokens> = {}
-    try {
-      theme = JSON.parse(themeJson) as DeepPartial<XenTokens>
-    } catch {
-      theme = {}
-    }
+    const themeName = el.dataset['xenoTheme'] ?? 'xen'
+    const theme = THEMES[themeName] ?? xenTheme
     void buildShowcase(el, theme).catch((err) => {
       console.error('[xeno-showcase] init failed', err)
     })

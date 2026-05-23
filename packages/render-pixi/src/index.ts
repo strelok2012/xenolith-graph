@@ -16,7 +16,7 @@ export {
 } from './style.js'
 export type { CategoryGradient } from './style.js'
 
-export { renderNode, readPinHandle } from './node-renderer.js'
+export { renderNode, readPinHandle, markPinInteractive } from './node-renderer.js'
 export type { RenderNodeOptions, NodeView, NodeVisualState, PinHandle } from './node-renderer.js'
 
 export { renderEdge, drawEdge } from './edge-renderer.js'
@@ -40,6 +40,9 @@ export { InteractionManager, wheelDeltaToZoomFactor } from './interaction.js'
 export type { InteractionManagerOptions } from './interaction.js'
 
 export { createGridSprite } from './grid.js'
+
+export type { XenolithTheme, ThemeRenderContext } from './theme.js'
+export { xenTheme } from './xen-theme.js'
 
 export { rectFromPoints, rectIntersects, nodeBounds } from './geom.js'
 export type { Rect as GeomRect, Vec2 as GeomVec2, NodeBoundsTokens } from './geom.js'

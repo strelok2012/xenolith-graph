@@ -42,12 +42,24 @@ export function resolveEdgeColor(sourceType: string, tokens: XenTokens): string 
   return lookupPin(sourceType, tokens.pinType)?.edgeColor ?? tokens.pinType.any.edgeColor
 }
 
-export function hexToRgba(hex: string, alpha: number): string {
-  const h = hex.startsWith('#') ? hex.slice(1) : hex
-  const r = parseInt(h.slice(0, 2), 16)
-  const g = parseInt(h.slice(2, 4), 16)
-  const b = parseInt(h.slice(4, 6), 16)
+/**
+ * Re-emit a colour as `rgba(...)` with the given alpha. Accepts hex (`#RRGGBB` or `#RGB`) or
+ * existing `rgb()/rgba()` input — themes can declare translucent surface tokens (e.g. Liquid
+ * Glass) and downstream gradient callers don't need to special-case them.
+ *
+ * Name kept for compatibility; semantically this is `withAlpha(color, a)`.
+ */
+export function hexToRgba(color: string, alpha: number): string {
   const a = Math.max(0, Math.min(1, alpha))
+  const rgbMatch = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i)
+  if (rgbMatch) {
+    return `rgba(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]}, ${a})`
+  }
+  const h = color.startsWith('#') ? color.slice(1) : color
+  const expanded = h.length === 3 ? h.split('').map((c) => c + c).join('') : h
+  const r = parseInt(expanded.slice(0, 2), 16)
+  const g = parseInt(expanded.slice(2, 4), 16)
+  const b = parseInt(expanded.slice(4, 6), 16)
   return `rgba(${r}, ${g}, ${b}, ${a})`
 }
 

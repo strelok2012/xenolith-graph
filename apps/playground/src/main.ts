@@ -1,5 +1,7 @@
 import { createNodeId, createPinId, type Node, type Pin } from '@xenolith/core'
 import { XenolithEditor } from '@xenolith/editor'
+import { xenTheme, type XenolithTheme } from '@xenolith/render-pixi'
+import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
 
 function pin(direction: 'in' | 'out', type: string, label: string): Pin {
   return { id: createPinId(), kind: 'data', direction, type, multiple: direction === 'out', label }
@@ -23,6 +25,7 @@ function mk(opts: {
 
 const editor = await XenolithEditor.init('#app', {
   viewport: { x: 60, y: 60, zoom: 0.85 },
+  theme: liquidGlassTheme,
 })
 
 const N = {
@@ -74,3 +77,49 @@ editor.connect(N.validate,  1, N.resolve,   2, { sourceType: 'wildcard' })
 editor.connect(N.resolve,   3, N.sink1,     0, { sourceType: 'string' })
 editor.connect(N.score,     1, N.sink2,     0, { sourceType: 'float'  })
 editor.connect(N.resolve,   3, N.sink3,     0, { sourceType: 'string' })
+
+// -----------------------------------------------------------------------------------------------
+// Theme switcher — proves runtime setTheme() works. Buttons in the top-left corner of the page.
+// -----------------------------------------------------------------------------------------------
+const themes: { label: string; theme: XenolithTheme }[] = [
+  { label: 'Liquid Glass', theme: liquidGlassTheme },
+  { label: 'Xen',          theme: xenTheme },
+]
+const switcher = document.createElement('div')
+switcher.style.cssText = `
+  position: fixed; top: 12px; left: 12px; z-index: 1000;
+  display: flex; gap: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 6px;
+  border-radius: 8px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+`
+let active = themes[0]!
+for (const entry of themes) {
+  const btn = document.createElement('button')
+  btn.textContent = entry.label
+  btn.style.cssText = `
+    padding: 6px 12px;
+    border-radius: 5px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: ${entry === active ? 'rgba(255, 255, 255, 0.18)' : 'transparent'};
+    color: #fff;
+    font: inherit;
+    cursor: pointer;
+  `
+  btn.addEventListener('click', () => {
+    if (entry === active) return
+    active = entry
+    editor.setTheme(entry.theme)
+    for (const child of switcher.children) {
+      const isActive = (child as HTMLElement).textContent === entry.label
+      ;(child as HTMLElement).style.background = isActive ? 'rgba(255, 255, 255, 0.18)' : 'transparent'
+    }
+  })
+  switcher.appendChild(btn)
+}
+document.body.appendChild(switcher)
