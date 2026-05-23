@@ -6,10 +6,16 @@ import { xenTokens, mergeTheme, type XenTokens, type DeepPartial } from '@xenoli
  * inherited from Xen so the graph reads identically — only the *material* of each node changes.
  */
 const liquidGlassOverride: DeepPartial<XenTokens> = {
+  category: {
+    logic:   { accent: '#4D9C75' },
+    data:    { accent: '#1B76C9' },
+    macro:   { accent: '#5B3FDA' },
+    utility: { accent: '#8291B7' },
+  },
   color: {
     surface: {
       // Cool, slightly blue dark canvas — gives the glass a subtle warm/cool play.
-      canvas:    '#0A0F18',
+      canvas:    '#112558',
       // Translucent white — the centrepiece of the look. Reads as frosted card over the canvas.
       node:      'rgba(255, 255, 255, 0.07)',
       panel:     'rgba(255, 255, 255, 0.05)',
@@ -69,7 +75,7 @@ const liquidGlassOverride: DeepPartial<XenTokens> = {
     },
   },
   background: {
-    color: '#0A0F18',
+    color: '#112558',
     grid: {
       // Subtler dots — they're meant to read *through* the frosted body, not compete with it.
       kind:    'dots',

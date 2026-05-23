@@ -26,10 +26,8 @@ export function createLiquidGlassBackdrop(tokens: XenTokens): Container {
     BAKE_SIZE / 2, BAKE_SIZE / 2, 0,
     BAKE_SIZE / 2, BAKE_SIZE / 2, BAKE_SIZE * 0.55,
   )
-  grad.addColorStop(0,    'rgba(56, 100, 180, 1.0)')   // bright navy core
-  grad.addColorStop(0.35, 'rgba(28, 50, 110, 1.0)')    // mid deep blue
-  grad.addColorStop(0.75, 'rgba(10, 18, 40, 1.0)')     // dark periphery
-  grad.addColorStop(1,    'rgba(6, 9, 22, 1.0)')       // near-black far out
+  grad.addColorStop(0, '#1D3573')
+  grad.addColorStop(1, '#112558')
   ctx.fillStyle = grad
   ctx.fillRect(0, 0, BAKE_SIZE, BAKE_SIZE)
 
