@@ -43,6 +43,24 @@ import {
 } from '@xenolith/render-pixi'
 import { xenTokens, loadXenFonts, mergeTheme, type DeepPartial, type XenTokens } from '@xenolith/theme-xen'
 import { canConnect } from './pin-compat.js'
+import {
+  parseXenolithGraph,
+  serializeXenolithGraph,
+  type XenolithGraphV1,
+} from './serialize.js'
+
+export {
+  parseXenolithGraph,
+  serializeXenolithGraph,
+  XENOLITH_GRAPH_VERSION,
+} from './serialize.js'
+export type {
+  XenolithGraphV1,
+  XenolithNodeV1,
+  XenolithPinV1,
+  XenolithEdgeV1,
+  XenolithGraphVersion,
+} from './serialize.js'
 
 export const VERSION = '0.0.0'
 
@@ -390,6 +408,68 @@ export class XenolithEditor {
     this.#edgesLayer.addChild(gfx)
     this.#edgeRecords.set(edge.id, { edge, graphics: gfx, opts })
     return edge.id
+  }
+
+  /** Serialize the current graph (nodes + edges + render opts + viewport) into the canonical
+   *  `xenolith.v1` envelope. The returned object is JSON-safe. */
+  toJSON(): XenolithGraphV1 {
+    return serializeXenolithGraph({
+      nodes:      Array.from(this.graph.nodes()),
+      edges:      Array.from(this.graph.edges()),
+      renderOpts: this.#renderOpts as ReadonlyMap<NodeId, RenderNodeOptions>,
+      edgeOpts:   new Map(Array.from(this.#edgeRecords).map(([id, r]) => [id, r.opts])),
+      viewport:   this.#viewport.state,
+    })
+  }
+
+  /** Replace the editor's contents with the contents of an `xenolith.v1` payload. Wipes the
+   *  existing graph, selection, and viewport before reloading. Throws on malformed input — the
+   *  editor is left in its previous state in that case. */
+  loadJSON(data: unknown): void {
+    const parsed = parseXenolithGraph(data)
+    this.#clearAll()
+    for (const node of parsed.nodes) {
+      const render = parsed.renderOpts.get(String(node.id)) ?? {}
+      this.addNode(node, render)
+    }
+    for (const edge of parsed.edges) {
+      const opts = parsed.edgeOpts.get(String(edge.id)) ?? {}
+      this.#loadEdge(edge, opts)
+    }
+    if (parsed.viewport) this.#viewport.setState(parsed.viewport)
+  }
+
+  /** Re-attach a deserialized edge using its preserved id and pin-id endpoints — bypasses the
+   *  fresh-edge-id path of public `connect()`. */
+  #loadEdge(edge: Edge, opts: RenderEdgeOptions): void {
+    const fromNode = this.graph.getNode(edge.from.node)
+    const toNode   = this.graph.getNode(edge.to.node)
+    if (!fromNode || !toNode) return
+    const fromIdx = fromNode.pins.findIndex((p) => p.id === edge.from.pin)
+    const toIdx   = toNode.pins.findIndex((p) => p.id === edge.to.pin)
+    if (fromIdx < 0 || toIdx < 0) return
+    const fromPin = this.#pinLayoutFor(fromNode, fromIdx)
+    const toPin   = this.#pinLayoutFor(toNode,   toIdx)
+    this.graph._addEdge(edge)
+    const gfx = this.#renderEdge(fromPin, toPin, opts)
+    this.#edgesLayer.addChild(gfx)
+    this.#edgeRecords.set(edge.id, { edge, graphics: gfx, opts })
+  }
+
+  #clearAll(): void {
+    for (const { graphics } of this.#edgeRecords.values()) graphics.destroy()
+    this.#edgeRecords.clear()
+    for (const view of this.#views.values()) view.container.destroy({ children: true })
+    this.#views.clear()
+    this.#renderOpts.clear()
+    for (const id of Array.from(this.graph.nodes()).map((n) => n.id)) this.graph._removeNode(id)
+    for (const id of Array.from(this.graph.edges()).map((e) => e.id)) this.graph._removeEdge(id)
+    this.selection.clear()
+    this.#hoveredId = null
+    this.#marqueeHovered.clear()
+    for (const rt of this.#perNodeBackdropRT.values()) rt.destroy(true)
+    this.#perNodeBackdropRT.clear()
+    this.#lastOverlapPlan = new Map()
   }
 
   pan(dx: number, dy: number): void { this.#viewport.pan(dx, dy) }
