@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { createNodeId, createPinId, type Node } from '@xenolith/core'
-import { rectFromPoints, rectIntersects, nodeBounds, type Rect } from './geom.js'
+import {
+  computeOverlapBackdropPlan,
+  rectFromPoints,
+  rectIntersects,
+  nodeBounds,
+  type Rect,
+} from './geom.js'
 
 describe('rectFromPoints', () => {
   it('builds a rect from two corner points regardless of order', () => {
@@ -59,6 +65,47 @@ describe('rectIntersects', () => {
         { x: 25, y: 25, width: 25,  height: 25 },
       ),
     ).toBe(true)
+  })
+})
+
+describe('computeOverlapBackdropPlan', () => {
+  it('no overlaps → empty plan', () => {
+    const plan = computeOverlapBackdropPlan([
+      { id: 'a', x:   0, y: 0, width: 50, height: 50 },
+      { id: 'b', x: 100, y: 0, width: 50, height: 50 },
+      { id: 'c', x: 200, y: 0, width: 50, height: 50 },
+    ])
+    expect(plan.size).toBe(0)
+  })
+
+  it('records only lower-paint-order overlapping neighbours', () => {
+    // c sits on top of a and b; a and b are side-by-side disjoint.
+    const plan = computeOverlapBackdropPlan([
+      { id: 'a', x:   0, y: 0, width: 100, height: 100 },
+      { id: 'b', x: 200, y: 0, width: 100, height: 100 },
+      { id: 'c', x:  50, y: 50, width: 200, height: 50 },
+    ])
+    expect(plan.size).toBe(1)
+    expect(plan.get('c')).toEqual(['a', 'b'])
+  })
+
+  it('preserves paint-order in each lower list', () => {
+    const plan = computeOverlapBackdropPlan([
+      { id: 'a', x: 0, y: 0, width: 100, height: 100 },
+      { id: 'b', x: 0, y: 0, width: 100, height: 100 },
+      { id: 'c', x: 0, y: 0, width: 100, height: 100 },
+    ])
+    expect(plan.get('b')).toEqual(['a'])
+    expect(plan.get('c')).toEqual(['a', 'b'])
+  })
+
+  it('bottom node is never in plan (nothing below it)', () => {
+    const plan = computeOverlapBackdropPlan([
+      { id: 'a', x: 0, y: 0, width: 100, height: 100 },
+      { id: 'b', x: 0, y: 0, width: 100, height: 100 },
+    ])
+    expect(plan.has('a')).toBe(false)
+    expect(plan.has('b')).toBe(true)
   })
 })
 

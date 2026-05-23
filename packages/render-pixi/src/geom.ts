@@ -40,6 +40,32 @@ export interface NodeBoundsTokens {
   }
 }
 
+/**
+ * For each node, compute the set of lower-paint-order nodes whose AABB overlaps it.
+ *
+ * Used by backdrop-sampling themes (Liquid Glass) to do painter's-order RT compositing:
+ * a node with non-empty `lower` entry needs its own RT with those lower nodes baked in, so
+ * its glass shader refracts what's visually underneath it. Nodes with empty `lower` share the
+ * single base backdrop (cheaper path).
+ *
+ * Input `rects` are ordered bottom-to-top in paint order (index 0 = bottom of stack).
+ */
+export function computeOverlapBackdropPlan(
+  rects: ReadonlyArray<{ id: string; x: number; y: number; width: number; height: number }>,
+): Map<string, string[]> {
+  const plan = new Map<string, string[]>()
+  for (let i = 1; i < rects.length; i++) {
+    const ri = rects[i]!
+    const lower: string[] = []
+    for (let j = 0; j < i; j++) {
+      const rj = rects[j]!
+      if (rectIntersects(ri, rj)) lower.push(rj.id)
+    }
+    if (lower.length > 0) plan.set(ri.id, lower)
+  }
+  return plan
+}
+
 /** World-space AABB of a node — used for marquee-selection hit-testing. */
 export function nodeBounds(node: Node, tokens: NodeBoundsTokens): Rect {
   const width = node.size?.x ?? tokens.geometry.node.minWidth

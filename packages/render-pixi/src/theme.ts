@@ -38,4 +38,10 @@ export interface XenolithTheme {
    *  per-frame uniforms across every mesh they created — e.g. uBackdropSize for Liquid Glass
    *  so its shader sampling stays correct when the canvas resizes. */
   onFrame?: (ctx: ThemeRenderContext) => void
+  /** Hook fired per-node when the editor renders a personal backdrop RT for that node — painter's-
+   *  order compositing for AABB-overlapping nodes (Liquid Glass refracts what's underneath). Themes
+   *  swap the per-node mesh's uBackdropTex resource to this texture so the shader samples the
+   *  node-specific composition rather than the shared empty backdrop. Called with `null` to revert
+   *  a node back to the shared backdrop when it stops overlapping. */
+  onNodeBackdrop?: (nodeId: string, texture: TextureSource | null) => void
 }

@@ -18,6 +18,7 @@ import {
 } from '@xenolith/core'
 import {
   computeNodeLayout,
+  computeOverlapBackdropPlan,
   createGridSprite,
   drawEdge,
   InteractionManager,
@@ -119,6 +120,13 @@ export class XenolithEditor {
    *  active theme opts in via `theme.needsBackdrop = true`. Themes that don't sample the
    *  backdrop pay zero extra render cost. */
   #backdropRT: RenderTexture | null = null
+  /** Per-node personal backdrop RTs for painter's-order compositing — allocated lazily for
+   *  nodes whose AABB overlaps a lower-paint-order node, so the glass shader refracts what's
+   *  visually underneath. Nodes with no overlap reuse the shared `#backdropRT`. */
+  readonly #perNodeBackdropRT = new Map<NodeId, RenderTexture>()
+  /** Last frame's overlap plan — used to revert nodes that stopped overlapping back to the
+   *  shared backdrop via `onNodeBackdrop(id, null)`. */
+  #lastOverlapPlan = new Map<string, string[]>()
   readonly #world: Container<ContainerChild>
   readonly #edgesLayer: Container<ContainerChild>
   readonly #nodesLayer: Container<ContainerChild>
@@ -241,20 +249,109 @@ export class XenolithEditor {
     })
   }
 
-  /** Render the world without the nodes layer into `#backdropRT`. No-op when the active theme
-   *  has `needsBackdrop = false` — the RT itself isn't even allocated in that case. One extra
-   *  render pass per frame when enabled; acceptable cost for the visual it buys. */
+  /** Render the world for backdrop sampling. Painter's-order compositing:
+   *
+   *   1. Shared base backdrop = world minus nodes (edges, grid, comments). One RT.
+   *   2. AABB-overlap plan via `computeOverlapBackdropPlan` against paint-order list of nodes.
+   *      Nodes with no lower-overlapping neighbours share the base RT (cheap path).
+   *   3. For each overlapping node in paint order: render base + lower-overlapping neighbours
+   *      into a personal RT, then notify the theme via `onNodeBackdrop(id, source)`. Lower
+   *      neighbours are already rendered with their own current backdrop textures (we process
+   *      bottom-up), so the composition refracts correctly through multiple stacked glass nodes.
+   *   4. Nodes that left the plan since last frame are reset to the shared backdrop via
+   *      `onNodeBackdrop(id, null)`.
+   *
+   * No-op when the active theme has `needsBackdrop = false`. */
   #updateBackdrop(): void {
     if (!this.#backdropRT) return
     const sw = Math.max(1, this.#app.screen.width)
     const sh = Math.max(1, this.#app.screen.height)
     if (this.#backdropRT.width !== sw || this.#backdropRT.height !== sh) {
       this.#backdropRT.resize(sw, sh)
+      for (const rt of this.#perNodeBackdropRT.values()) rt.resize(sw, sh)
     }
+
+    // Paint-order list of node IDs with their world-space AABBs. During a drag we use the
+    // container.position (live, snap-aware) instead of node.position (only committed on drop)
+    // so overlap detection works during the drag, not after.
+    const rects: { id: string; x: number; y: number; width: number; height: number }[] = []
+    const containerById = new Map<string, Container>()
+    for (const [id, view] of this.#views) {
+      const node = this.graph.getNode(id)
+      if (!node) continue
+      const size = node.size ?? { x: 150, y: 70 }
+      rects.push({
+        id:     String(id),
+        x:      view.container.position.x,
+        y:      view.container.position.y,
+        width:  size.x,
+        height: size.y,
+      })
+      containerById.set(String(id), view.container)
+    }
+    const plan = computeOverlapBackdropPlan(rects)
+
+    // Pass 1 — shared base backdrop: hide every node, render stage, restore.
     const nodesWereVisible = this.#nodesLayer.visible
     this.#nodesLayer.visible = false
     this.#app.renderer.render({ container: this.#app.stage, target: this.#backdropRT })
     this.#nodesLayer.visible = nodesWereVisible
+
+    // Pass 2 — per-overlapping-node personal backdrops. Restore nodesLayer; we'll toggle
+    // individual node containers' visibility instead of hiding the whole layer.
+    if (plan.size > 0) {
+      const visBackup = new Map<string, boolean>()
+      for (const [id, container] of containerById) {
+        visBackup.set(id, container.visible)
+        container.visible = false
+      }
+      // Iterate plan in paint order so lower nodes' personal RTs are committed before higher
+      // nodes that depend on them render. Map iteration order matches insertion order which
+      // matches the paint-order loop in computeOverlapBackdropPlan.
+      for (const [nodeId, lowerIds] of plan) {
+        let rt = this.#perNodeBackdropRT.get(nodeId as NodeId)
+        if (!rt) {
+          rt = RenderTexture.create({
+            width:      sw,
+            height:     sh,
+            resolution: this.#app.renderer.resolution,
+            antialias:  true,
+          })
+          this.#perNodeBackdropRT.set(nodeId as NodeId, rt)
+        }
+        for (const lid of lowerIds) {
+          const c = containerById.get(lid)
+          if (c) c.visible = true
+        }
+        this.#app.renderer.render({ container: this.#app.stage, target: rt })
+        for (const lid of lowerIds) {
+          const c = containerById.get(lid)
+          if (c) c.visible = false
+        }
+        this.#theme.onNodeBackdrop?.(nodeId, rt.source)
+      }
+      // Restore.
+      for (const [id, container] of containerById) {
+        container.visible = visBackup.get(id) ?? true
+      }
+    }
+
+    // Nodes that were in last frame's plan but not this frame: revert to shared backdrop.
+    // We pass the shared backdrop source explicitly (not null) so the theme just swaps the
+    // mesh's uBackdropTex back to it — passing null would fall back to Texture.WHITE and the
+    // glass body would render as a blank pale rectangle.
+    const sharedSource = this.#backdropRT.source
+    for (const oldId of this.#lastOverlapPlan.keys()) {
+      if (!plan.has(oldId)) {
+        this.#theme.onNodeBackdrop?.(oldId, sharedSource)
+        const rt = this.#perNodeBackdropRT.get(oldId as NodeId)
+        if (rt) {
+          rt.destroy(true)
+          this.#perNodeBackdropRT.delete(oldId as NodeId)
+        }
+      }
+    }
+    this.#lastOverlapPlan = plan
   }
 
   /** Theme hooks read this to drive backdrop-sampling shaders. */

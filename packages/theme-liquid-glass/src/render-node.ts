@@ -32,8 +32,10 @@ import { glassFragmentGLSL, glassVertexGLSL } from './glass-shader.js'
  *  artifact in any embedded canvas. */
 interface GlassMeshEntry {
   shader: Shader
+  nodeId: string
 }
 const liveGlassMeshes = new Set<GlassMeshEntry>()
+const meshesByNode = new Map<string, Set<GlassMeshEntry>>()
 
 export function syncLiquidGlassBackdropSize(w: number, h: number): void {
   for (const entry of liveGlassMeshes) {
@@ -45,11 +47,35 @@ export function syncLiquidGlassBackdropSize(w: number, h: number): void {
   }
 }
 
+/** Editor's painter's-order pass calls this per overlapping node to swap that node's mesh
+ *  shader resources to point at the freshly rendered personal backdrop. `source = null` reverts
+ *  to whatever the per-frame `onFrame` hook would otherwise sync (shared backdrop). */
+export function syncLiquidGlassBackdropTexture(
+  nodeId: string,
+  source: TextureSource | null,
+): void {
+  const set = meshesByNode.get(nodeId)
+  if (!set) return
+  for (const entry of set) {
+    entry.shader.resources['uBackdropTex'] = source ?? Texture.WHITE.source
+    if (source) {
+      const group = entry.shader.resources['glassUniforms']
+      if (group) {
+        const arr = group.uniforms.uBackdropSize as Float32Array
+        if (!arr || arr[0] !== source.width || arr[1] !== source.height) {
+          group.uniforms.uBackdropSize = new Float32Array([source.width, source.height])
+        }
+      }
+    }
+  }
+}
+
 
 /** Build one glass-material mesh sized to (w, h). The fragment shader samples
  *  `ctx.backdropTexture` (a per-frame snapshot of the world minus nodes) via screen UV, with
  *  refraction-offset taps, to give the body a real "see through frosted glass" feel. */
 function createGlassMesh(
+  nodeId: string,
   w: number,
   h: number,
   radius: number,
@@ -104,9 +130,22 @@ function createGlassMesh(
   mesh.cursor = 'pointer'
   mesh.hitArea = new Rectangle(0, 0, w, h)
 
-  const entry: GlassMeshEntry = { shader }
+  const entry: GlassMeshEntry = { shader, nodeId }
   liveGlassMeshes.add(entry)
-  mesh.on('destroyed', () => liveGlassMeshes.delete(entry))
+  let nodeSet = meshesByNode.get(nodeId)
+  if (!nodeSet) {
+    nodeSet = new Set()
+    meshesByNode.set(nodeId, nodeSet)
+  }
+  nodeSet.add(entry)
+  mesh.on('destroyed', () => {
+    liveGlassMeshes.delete(entry)
+    const s = meshesByNode.get(nodeId)
+    if (s) {
+      s.delete(entry)
+      if (s.size === 0) meshesByNode.delete(nodeId)
+    }
+  })
   return mesh
 }
 
@@ -146,8 +185,9 @@ export function renderNodeLiquidGlass(
   container.eventMode = 'static'
 
   // ===== Two body meshes — expanded (full size) and pill (compact, vertically centred) =======
-  const expandedBody = createGlassMesh(expandedW, expandedH, expandedRadius, tokens, ctx.backdropTexture)
-  const pillBody = createGlassMesh(pillW, pillH, pillR, tokens, ctx.backdropTexture)
+  const nodeIdStr = String(node.id)
+  const expandedBody = createGlassMesh(nodeIdStr, expandedW, expandedH, expandedRadius, tokens, ctx.backdropTexture)
+  const pillBody = createGlassMesh(nodeIdStr, pillW, pillH, pillR, tokens, ctx.backdropTexture)
   pillBody.position.set(0, pillOffsetY)
   container.addChild(expandedBody)
   container.addChild(pillBody)

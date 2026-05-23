@@ -44,5 +44,5 @@ export { createGridSprite } from './grid.js'
 export type { XenolithTheme, ThemeRenderContext } from './theme.js'
 export { xenTheme } from './xen-theme.js'
 
-export { rectFromPoints, rectIntersects, nodeBounds } from './geom.js'
+export { rectFromPoints, rectIntersects, nodeBounds, computeOverlapBackdropPlan } from './geom.js'
 export type { Rect as GeomRect, Vec2 as GeomVec2, NodeBoundsTokens } from './geom.js'
