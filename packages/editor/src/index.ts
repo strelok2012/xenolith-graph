@@ -1,13 +1,17 @@
 import { Application, Container, EventEmitter as PixiEventEmitter, FederatedPointerEvent, Graphics, RenderTexture, type ContainerChild, type TextureSource } from 'pixi.js'
 import {
+  AddNode,
   CommandBus,
   ConnectPins,
   DisconnectEdge,
   EventEmitter,
   Graph,
   MoveNode,
+  RemoveNode,
   Selection,
   createEdgeId,
+  createNodeId,
+  createPinId,
   type CoreEvents,
   type Edge,
   type EdgeId,
@@ -17,6 +21,7 @@ import {
   type PinId,
 } from '@xenolith/core'
 import {
+  clearGlowTextureCache,
   computeNodeLayout,
   computeOverlapBackdropPlan,
   createGridSprite,
@@ -93,6 +98,20 @@ interface EdgeRecord {
   edge: Edge
   graphics: Graphics
   opts: RenderEdgeOptions
+  /** Cached endpoint coords of the last drawn path. If the next frame's endpoints match these,
+   *  the bezier path hasn't moved and we can skip the redraw entirely — the dominant cost on
+   *  edge-heavy graphs where most edges are static between frames. */
+  lastFromX?: number
+  lastFromY?: number
+  lastToX?:   number
+  lastToY?:   number
+}
+
+interface ClipboardSnapshot {
+  nodes: Node[]
+  edges: Edge[]
+  renderOpts: Map<NodeId, RenderNodeOptions>
+  edgeOpts:   Map<EdgeId, RenderEdgeOptions>
 }
 
 type DragState =
@@ -132,6 +151,12 @@ export class XenolithEditor {
   readonly selection: Selection
   readonly commandBus: CommandBus
   readonly #app: Application
+  readonly #host: HTMLElement
+  /** Toggleable stats overlay (FPS, nodes, edges, selection, zoom). Hidden by default; press
+   *  backtick (`) to toggle, or call `setStatsVisible()`. */
+  #statsEl: HTMLDivElement | null = null
+  #statsVisible = false
+  #statsFrame = 0
   #theme: XenolithTheme
   #gridLayer: Container | null = null
   /** Live snapshot of the world MINUS the nodes layer — created lazily the first time the
@@ -157,13 +182,25 @@ export class XenolithEditor {
    *  re-issue the render with identical args after swapping the active theme. */
   readonly #renderOpts = new Map<NodeId, RenderNodeOptions>()
   readonly #edgeRecords = new Map<EdgeId, EdgeRecord>()
+  /** Render opts per edge, kept persistent so undo of a DisconnectEdge can re-materialise the
+   *  edge graphics with the same wire colour / type hint it had before. */
+  readonly #edgeOpts = new Map<EdgeId, RenderEdgeOptions>()
+  /** In-memory clipboard buffer set by `copySelection()` and consumed by `paste()`. Stores
+   *  references to live node/edge objects + render opts at copy time — survives selection
+   *  changes but not editor disposal. We skip JSON serialise/parse on the clipboard path; that
+   *  cost showed up clearly in profiling at high node counts. */
+  #clipboard: ClipboardSnapshot | null = null
+  /** Most recent pointer position in world coords — used by paste-at-cursor and the
+   *  ":pointermove" hook. */
+  #lastPointerWorld: { x: number; y: number } | null = null
   readonly #coreEvents = new EventEmitter<CoreEvents>()
   #hoveredId: NodeId | null = null
   readonly #marqueeHovered = new Set<NodeId>()
   #dragState: DragState = { kind: 'idle' }
 
-  private constructor(app: Application, theme: XenolithTheme, opts: XenolithEditorOptions) {
+  private constructor(app: Application, host: HTMLElement, theme: XenolithTheme, opts: XenolithEditorOptions) {
     this.#app = app
+    this.#host = host
     this.#theme = theme
     if (theme.needsBackdrop) {
       this.#backdropRT = this.#createBackdropRT()
@@ -205,13 +242,85 @@ export class XenolithEditor {
 
     this.selection.on(() => this.#updateVisualStates())
 
+    // View-sync: after every command apply/undo/redo, reconcile views with the graph model so
+    // undo of a Move/Connect/Remove visually reverts the canvas. We defer the reconcile to a
+    // microtask so a transaction that fires N command:applied events collapses to one O(N) sync
+    // instead of N × O(N+E) = O(N²) — critical for paste/duplicate at high node counts.
+    const scheduleSync = (): void => this.#scheduleSync()
+    this.#coreEvents.on('command:applied', scheduleSync)
+    this.#coreEvents.on('command:undone',  scheduleSync)
+    this.#coreEvents.on('command:redone',  scheduleSync)
+
     // Redraw every edge each frame so collapse/expand animations track pin positions live.
     // The cost is one drawEdge per edge per frame — cheap on Graphics in PIXI v8.
     app.ticker.add(() => {
       for (const edgeId of this.#edgeRecords.keys()) this.#redrawEdge(edgeId)
       this.#updateBackdrop()
       this.#theme.onFrame?.(this.#themeContext())
+      if (this.#statsVisible) this.#tickStats()
     })
+  }
+
+  /** Show or hide the stats overlay (FPS, node/edge/selection counts, zoom). Hotkey: backtick.
+   *  No render cost when hidden — the overlay is detached from the DOM. */
+  setStatsVisible(visible: boolean): void {
+    if (visible === this.#statsVisible) return
+    this.#statsVisible = visible
+    if (visible) {
+      if (!this.#statsEl) this.#statsEl = this.#createStatsOverlay()
+      // Ensure overlay positions relative to the host, not the page.
+      if (getComputedStyle(this.#host).position === 'static') {
+        this.#host.style.position = 'relative'
+      }
+      this.#host.appendChild(this.#statsEl)
+      this.#statsFrame = 0
+      this.#tickStats()
+    } else if (this.#statsEl?.parentElement) {
+      this.#statsEl.parentElement.removeChild(this.#statsEl)
+    }
+  }
+  toggleStats(): void { this.setStatsVisible(!this.#statsVisible) }
+
+  #createStatsOverlay(): HTMLDivElement {
+    const el = document.createElement('div')
+    el.setAttribute('data-xeno-stats', '')
+    Object.assign(el.style, {
+      position:        'absolute',
+      top:             '12px',
+      right:           '12px',
+      zIndex:          '1000',
+      fontFamily:      'ui-monospace, SFMono-Regular, Menlo, monospace',
+      fontSize:        '11px',
+      lineHeight:      '1.5',
+      color:           'rgba(255, 255, 255, 0.92)',
+      background:      'rgba(0, 0, 0, 0.55)',
+      backdropFilter:  'blur(8px)',
+      border:          '1px solid rgba(255, 255, 255, 0.12)',
+      borderRadius:    '6px',
+      padding:         '8px 12px',
+      pointerEvents:   'none',
+      whiteSpace:      'pre',
+      userSelect:      'none',
+    })
+    return el
+  }
+
+  #tickStats(): void {
+    // Throttle DOM updates to ~10 Hz so the readout stays legible and we don't burn CPU on
+    // textContent assignment 60 times a second.
+    this.#statsFrame++
+    if (this.#statsFrame % 6 !== 0) return
+    const el = this.#statsEl
+    if (!el) return
+    const fps  = this.#app.ticker.FPS.toFixed(0).padStart(3)
+    const ms   = this.#app.ticker.deltaMS.toFixed(1).padStart(5)
+    const vp   = this.#viewport.state
+    el.textContent =
+      `FPS    ${fps}  (${ms} ms)\n` +
+      `Nodes  ${this.graph.nodeCount}\n` +
+      `Edges  ${this.graph.edgeCount}\n` +
+      `Sel    ${this.selection.size}\n` +
+      `Zoom   ${vp.zoom.toFixed(2)}`
   }
 
   static async init(
@@ -237,7 +346,7 @@ export class XenolithEditor {
     if (opts.resizeToWindow !== false) initOpts.resizeTo = window
     await app.init(initOpts)
     el.appendChild(app.canvas)
-    return new XenolithEditor(app, theme, opts)
+    return new XenolithEditor(app, el, theme, opts)
   }
 
   // ----- theme hook wrappers ---------------------------------------------------------------
@@ -246,7 +355,8 @@ export class XenolithEditor {
   // is currently active.
 
   #renderNode(node: Node, opts: RenderNodeOptions): NodeView {
-    return this.#theme.renderNode?.(node, opts, this.#themeContext()) ?? renderNode(node, this.#theme.tokens, opts)
+    const enriched: RenderNodeOptions = { ...opts, renderer: this.#app.renderer as never }
+    return this.#theme.renderNode?.(node, enriched, this.#themeContext()) ?? renderNode(node, this.#theme.tokens, enriched)
   }
   #drawEdge(g: Graphics, from: PinLayout, to: PinLayout, opts: RenderEdgeOptions): Graphics {
     return this.#theme.drawEdge?.(g, from, to, opts) ?? drawEdge(g, from, to, this.#theme.tokens, opts)
@@ -394,8 +504,6 @@ export class XenolithEditor {
     toPinIndex: number,
     opts: RenderEdgeOptions = {},
   ): EdgeId {
-    const fromPin = this.#pinLayoutFor(fromNode, fromPinIndex)
-    const toPin = this.#pinLayoutFor(toNode, toPinIndex)
     const fromPinModel = fromNode.pins[fromPinIndex]!
     const toPinModel = toNode.pins[toPinIndex]!
     const edge: Edge = {
@@ -404,9 +512,7 @@ export class XenolithEditor {
       to:   { node: toNode.id,   pin: toPinModel.id   },
     }
     this.graph._addEdge(edge)
-    const gfx = this.#renderEdge(fromPin, toPin, opts)
-    this.#edgesLayer.addChild(gfx)
-    this.#edgeRecords.set(edge.id, { edge, graphics: gfx, opts })
+    this.#materializeEdge(edge, opts)
     return edge.id
   }
 
@@ -442,23 +548,14 @@ export class XenolithEditor {
   /** Re-attach a deserialized edge using its preserved id and pin-id endpoints — bypasses the
    *  fresh-edge-id path of public `connect()`. */
   #loadEdge(edge: Edge, opts: RenderEdgeOptions): void {
-    const fromNode = this.graph.getNode(edge.from.node)
-    const toNode   = this.graph.getNode(edge.to.node)
-    if (!fromNode || !toNode) return
-    const fromIdx = fromNode.pins.findIndex((p) => p.id === edge.from.pin)
-    const toIdx   = toNode.pins.findIndex((p) => p.id === edge.to.pin)
-    if (fromIdx < 0 || toIdx < 0) return
-    const fromPin = this.#pinLayoutFor(fromNode, fromIdx)
-    const toPin   = this.#pinLayoutFor(toNode,   toIdx)
     this.graph._addEdge(edge)
-    const gfx = this.#renderEdge(fromPin, toPin, opts)
-    this.#edgesLayer.addChild(gfx)
-    this.#edgeRecords.set(edge.id, { edge, graphics: gfx, opts })
+    if (!this.#materializeEdge(edge, opts)) this.graph._removeEdge(edge.id)
   }
 
   #clearAll(): void {
     for (const { graphics } of this.#edgeRecords.values()) graphics.destroy()
     this.#edgeRecords.clear()
+    this.#edgeOpts.clear()
     for (const view of this.#views.values()) view.container.destroy({ children: true })
     this.#views.clear()
     this.#renderOpts.clear()
@@ -470,6 +567,150 @@ export class XenolithEditor {
     for (const rt of this.#perNodeBackdropRT.values()) rt.destroy(true)
     this.#perNodeBackdropRT.clear()
     this.#lastOverlapPlan = new Map()
+    this.#clipboard = null
+  }
+
+  /** Undo the most recent committed command (drag-drop MoveNode, ConnectPins from pin-drag, etc).
+   *  Returns true if anything was undone. View sync happens automatically via the
+   *  `command:undone` listener. */
+  undo(): boolean { return this.commandBus.undo() }
+  /** Redo the most recently undone command. Returns true if anything was redone. */
+  redo(): boolean { return this.commandBus.redo() }
+
+  /** Delete every selected node along with its incident edges. Each removal goes through
+   *  `RemoveNode` so the whole operation is undoable as a single transaction. */
+  deleteSelected(): void {
+    const ids = this.selection.ids().slice()
+    if (ids.length === 0) return
+    this.commandBus.transaction(() => {
+      for (const id of ids) this.commandBus.apply(new RemoveNode(id))
+    })
+  }
+
+  /** Capture the current selection into the in-memory clipboard. Pins and edges between selected
+   *  nodes are preserved; edges that cross out of the selection are dropped. */
+  copySelection(): boolean {
+    const snapshot = this.#snapshotSelection()
+    if (!snapshot) return false
+    this.#clipboard = snapshot
+    return true
+  }
+
+  /** Paste the in-memory clipboard's nodes/edges into the graph with fresh IDs.
+   *
+   *  - `target = { x, y }` — world point where the clipboard's centroid should land
+   *    (paste-at-cursor); use `editor.lastPointerWorld()` from the keyboard handler.
+   *  - `target = { dx, dy }` — fixed offset from the original positions (legacy behaviour).
+   *  - default — offset (+24, +24).
+   *
+   *  Newly added nodes replace the current selection. Returns the new node IDs. */
+  paste(target?: { x: number; y: number } | { dx: number; dy: number }): NodeId[] {
+    if (!this.#clipboard) return []
+    return this.#cloneSnapshot(this.#clipboard, target)
+  }
+
+  /** Cmd+D — clone the current selection in place with an offset, replace selection with the
+   *  clones. Independent of the clipboard. */
+  duplicateSelected(offset: { dx: number; dy: number } = { dx: 24, dy: 24 }): NodeId[] {
+    const snapshot = this.#snapshotSelection()
+    if (!snapshot) return []
+    return this.#cloneSnapshot(snapshot, offset)
+  }
+
+  /** Last known cursor position in world coordinates, or null if pointer hasn't moved over the
+   *  canvas yet. Exposed so external keyboard handlers can drive paste-at-cursor. */
+  lastPointerWorld(): { x: number; y: number } | null {
+    return this.#lastPointerWorld ? { ...this.#lastPointerWorld } : null
+  }
+
+  #snapshotSelection(): ClipboardSnapshot | null {
+    const ids = new Set(this.selection.ids())
+    if (ids.size === 0) return null
+    const nodes: Node[] = []
+    const renderOpts = new Map<NodeId, RenderNodeOptions>()
+    for (const n of this.graph.nodes()) {
+      if (!ids.has(n.id)) continue
+      nodes.push(n as Node)
+      const r = this.#renderOpts.get(n.id)
+      if (r) renderOpts.set(n.id, { ...r })
+    }
+    const edges: Edge[] = []
+    const edgeOpts = new Map<EdgeId, RenderEdgeOptions>()
+    for (const e of this.graph.edges()) {
+      if (!ids.has(e.from.node) || !ids.has(e.to.node)) continue
+      edges.push(e as Edge)
+      const o = this.#edgeOpts.get(e.id)
+      if (o) edgeOpts.set(e.id, { ...o })
+    }
+    return { nodes, edges, renderOpts, edgeOpts }
+  }
+
+  /** In-process clone of a snapshot. Re-IDs every node/pin/edge, rewires edges to the new pin
+   *  IDs, applies as a single transaction (one microtask-batched view sync at the end). */
+  #cloneSnapshot(
+    snap: ClipboardSnapshot,
+    target?: { x: number; y: number } | { dx: number; dy: number },
+  ): NodeId[] {
+    if (snap.nodes.length === 0) return []
+    let translate: { dx: number; dy: number }
+    if (target && 'dx' in target) {
+      translate = { dx: target.dx, dy: target.dy }
+    } else if (target && 'x' in target) {
+      // Centroid → target point.
+      let cx = 0, cy = 0
+      for (const n of snap.nodes) { cx += n.position.x; cy += n.position.y }
+      cx /= snap.nodes.length
+      cy /= snap.nodes.length
+      translate = { dx: target.x - cx, dy: target.y - cy }
+    } else {
+      translate = { dx: 24, dy: 24 }
+    }
+
+    const nodeIdMap = new Map<NodeId, NodeId>()
+    const pinIdMap  = new Map<PinId, PinId>()
+    const newNodes: Node[] = []
+    for (const oldNode of snap.nodes) {
+      const newNodeId = createNodeId()
+      nodeIdMap.set(oldNode.id, newNodeId)
+      const newPins: Pin[] = oldNode.pins.map((p) => {
+        const newPinId = createPinId()
+        pinIdMap.set(p.id as PinId, newPinId)
+        return { ...p, id: newPinId }
+      })
+      const clone: Node = {
+        ...oldNode,
+        id: newNodeId,
+        position: { x: oldNode.position.x + translate.dx, y: oldNode.position.y + translate.dy },
+        pins: newPins,
+        state: { ...oldNode.state },
+      }
+      if (oldNode.size) clone.size = { ...oldNode.size }
+      newNodes.push(clone)
+      const render = snap.renderOpts.get(oldNode.id)
+      if (render) this.#renderOpts.set(newNodeId, { ...render })
+    }
+    const newEdges: Edge[] = []
+    for (const oldEdge of snap.edges) {
+      const fromNode = nodeIdMap.get(oldEdge.from.node)
+      const toNode   = nodeIdMap.get(oldEdge.to.node)
+      const fromPin  = pinIdMap.get(oldEdge.from.pin as PinId)
+      const toPin    = pinIdMap.get(oldEdge.to.pin   as PinId)
+      if (!fromNode || !toNode || !fromPin || !toPin) continue
+      const newEdgeId = createEdgeId()
+      newEdges.push({
+        id: newEdgeId,
+        from: { node: fromNode, pin: fromPin },
+        to:   { node: toNode,   pin: toPin   },
+      })
+      const opts = snap.edgeOpts.get(oldEdge.id)
+      if (opts) this.#edgeOpts.set(newEdgeId, { ...opts })
+    }
+    this.commandBus.transaction(() => {
+      for (const node of newNodes) this.commandBus.apply(new AddNode(node))
+      for (const edge of newEdges) this.commandBus.apply(new ConnectPins(edge))
+    })
+    this.selection.replaceWith(newNodes.map((n) => n.id))
+    return newNodes.map((n) => n.id)
   }
 
   pan(dx: number, dy: number): void { this.#viewport.pan(dx, dy) }
@@ -496,6 +737,20 @@ export class XenolithEditor {
       : { ...this.#theme, tokens: mergeTheme(this.#theme.tokens, input as DeepPartial<XenTokens>) }
     if (next === this.#theme) return
     this.#theme = next
+
+    // Drop baked glow textures — geometry tokens (radii, sizes via padding) may have changed,
+    // and any cached strokes from the previous theme would render with stale dimensions.
+    clearGlowTextureCache()
+
+    // Invalidate per-edge endpoint cache so the ticker repaints every wire with the new theme's
+    // drawEdge (colour / tension / etc) on the next frame — without this the skip-on-unchanged
+    // optimisation would keep showing the previous theme's wires until something moves.
+    for (const rec of this.#edgeRecords.values()) {
+      delete rec.lastFromX
+      delete rec.lastFromY
+      delete rec.lastToX
+      delete rec.lastToY
+    }
 
     // Allocate/free backdrop RT to match the new theme's needs — Xen-style flat themes get the
     // extra render pass turned off entirely.
@@ -546,6 +801,55 @@ export class XenolithEditor {
   readonly #onKeyDown = (e: KeyboardEvent): void => {
     if (e.key === 'Escape' && this.#dragState.kind === 'pin-drag') {
       this.#cancelPinDrag()
+      return
+    }
+
+    // Don't intercept when a text field has focus.
+    const target = e.target as { tagName?: string; isContentEditable?: boolean } | null
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+      return
+    }
+
+    const mod = e.metaKey || e.ctrlKey
+
+    if (!mod && e.key === '`') {
+      e.preventDefault()
+      this.toggleStats()
+      return
+    }
+    if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) {
+      if (this.selection.size === 0) return
+      e.preventDefault()
+      this.deleteSelected()
+      return
+    }
+    if (mod && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
+      e.preventDefault()
+      this.undo()
+      return
+    }
+    if (mod && ((e.key === 'z' || e.key === 'Z') && e.shiftKey || e.key === 'y' || e.key === 'Y')) {
+      e.preventDefault()
+      this.redo()
+      return
+    }
+    if (mod && (e.key === 'd' || e.key === 'D')) {
+      e.preventDefault()
+      this.duplicateSelected()
+      return
+    }
+    if (mod && (e.key === 'c' || e.key === 'C')) {
+      if (this.selection.size === 0) return
+      e.preventDefault()
+      this.copySelection()
+      return
+    }
+    if (mod && (e.key === 'v' || e.key === 'V')) {
+      if (!this.#clipboard) return
+      e.preventDefault()
+      const at = this.#lastPointerWorld
+      this.paste(at ?? undefined)
+      return
     }
   }
 
@@ -597,7 +901,19 @@ export class XenolithEditor {
     const fromPos = this.#pinWorldPosition(fromNode, rec.edge.from.pin)
     const toPos = this.#pinWorldPosition(toNode, rec.edge.to.pin)
     if (!fromPos || !toPos) return
+    // Skip the expensive bezier-sample + Graphics clear/stroke when endpoints haven't moved.
+    // Catches both idle frames (zero edge work on a static graph) and the non-dragging edges
+    // during a multi-node drag. Triggers naturally on collapse animation because
+    // pinLocalPosition shifts each animation frame.
+    if (
+      rec.lastFromX === fromPos.x && rec.lastFromY === fromPos.y &&
+      rec.lastToX   === toPos.x   && rec.lastToY   === toPos.y
+    ) return
     this.#drawEdge(rec.graphics, fromPos, toPos, rec.opts)
+    rec.lastFromX = fromPos.x
+    rec.lastFromY = fromPos.y
+    rec.lastToX   = toPos.x
+    rec.lastToY   = toPos.y
   }
 
   #pinWorldPosition(node: Node, pinId: string): PinLayout | null {
@@ -642,6 +958,79 @@ export class XenolithEditor {
     rec.graphics.parent?.removeChild(rec.graphics)
     rec.graphics.destroy()
     this.#edgeRecords.delete(edgeId)
+  }
+
+  /** Materialise an edge's Graphics from the model. Used by `connect()`, `#loadEdge()`, and the
+   *  command-driven sync path. Resolves pin layouts and writes an EdgeRecord into `#edgeRecords`.
+   *  Returns false if either endpoint is missing (stale edge in the model). */
+  #materializeEdge(edge: Edge, opts: RenderEdgeOptions): boolean {
+    const fromNode = this.graph.getNode(edge.from.node)
+    const toNode   = this.graph.getNode(edge.to.node)
+    if (!fromNode || !toNode) return false
+    const fromIdx = fromNode.pins.findIndex((p) => p.id === edge.from.pin)
+    const toIdx   = toNode.pins.findIndex((p) => p.id === edge.to.pin)
+    if (fromIdx < 0 || toIdx < 0) return false
+    const fromPin = this.#pinLayoutFor(fromNode, fromIdx)
+    const toPin   = this.#pinLayoutFor(toNode,   toIdx)
+    const gfx = this.#renderEdge(fromPin, toPin, opts)
+    this.#edgesLayer.addChild(gfx)
+    this.#edgeRecords.set(edge.id, { edge, graphics: gfx, opts })
+    this.#edgeOpts.set(edge.id, opts)
+    return true
+  }
+
+  #syncPending = false
+
+  /** Queue a single `#syncFromGraph()` for the next microtask. Idempotent — many calls in one
+   *  synchronous tick (e.g. a transaction firing N command:applied events) collapse into one
+   *  reconcile, turning paste/duplicate from O(N²) into O(N). */
+  #scheduleSync(): void {
+    if (this.#syncPending) return
+    this.#syncPending = true
+    queueMicrotask(() => {
+      this.#syncPending = false
+      this.#syncFromGraph()
+    })
+  }
+
+  /** Reconcile views with the graph model. Called after every command apply/undo/redo so that
+   *  user-driven mutations (Delete, Cmd+Z, Cmd+D, paste) immediately reflect on the canvas. */
+  #syncFromGraph(): void {
+    const seenNodes = new Set<NodeId>()
+    for (const node of this.graph.nodes()) {
+      seenNodes.add(node.id)
+      let view = this.#views.get(node.id)
+      if (!view) {
+        const opts = this.#renderOpts.get(node.id) ?? {}
+        view = this.#renderNode(node, opts)
+        this.#views.set(node.id, view)
+        this.#nodesLayer.addChild(view.container)
+        this.#wireNodeInteraction(node.id, view)
+      }
+      view.container.position.set(node.position.x, node.position.y)
+    }
+    let droppedFromSelection = false
+    for (const [id, view] of Array.from(this.#views)) {
+      if (seenNodes.has(id)) continue
+      view.container.destroy({ children: true })
+      this.#views.delete(id)
+      if (this.selection.contains(id)) droppedFromSelection = true
+      this.#marqueeHovered.delete(id)
+      if (this.#hoveredId === id) this.#hoveredId = null
+    }
+    if (droppedFromSelection) {
+      this.selection.replaceWith(this.selection.ids().filter((id) => seenNodes.has(id)))
+    }
+
+    const seenEdges = new Set<EdgeId>()
+    for (const edge of this.graph.edges()) {
+      seenEdges.add(edge.id)
+      if (this.#edgeRecords.has(edge.id)) continue
+      this.#materializeEdge(edge as Edge, this.#edgeOpts.get(edge.id) ?? {})
+    }
+    for (const id of Array.from(this.#edgeRecords.keys())) {
+      if (!seenEdges.has(id)) this.#disposeEdgeGraphics(id)
+    }
   }
 
   #countEdgesAtPin(nodeId: NodeId, pinId: string): number {
@@ -699,6 +1088,7 @@ export class XenolithEditor {
 
     stage.on('pointermove', (e: FederatedPointerEvent) => {
       const current = { x: e.global.x, y: e.global.y }
+      this.#lastPointerWorld = screenToWorld(current, this.#viewport.state)
 
       if (this.#dragState.kind === 'pin-drag') {
         const target = readPinHandle(e.target)
@@ -953,16 +1343,10 @@ export class XenolithEditor {
           from: { node: outNode.id, pin: outPin.id as PinId },
           to: { node: inNode.id, pin: inPin.id as PinId },
         }
+        const opts: RenderEdgeOptions = { sourceType: String(outPin.type) }
+        this.#edgeOpts.set(edge.id, opts)
         this.commandBus.apply(new ConnectPins(edge))
-        const fromPos = this.#pinWorldPosition(outNode, String(outPin.id))
-        const toPos = this.#pinWorldPosition(inNode, String(inPin.id))
-        if (fromPos && toPos) {
-          const opts: RenderEdgeOptions = { sourceType: String(outPin.type) }
-          const gfx = this.#renderEdge(fromPos, toPos, opts)
-          this.#edgesLayer.addChild(gfx)
-          this.#edgeRecords.set(edge.id, { edge, graphics: gfx, opts })
-          committed = true
-        }
+        committed = true
       }
     }
     ghost.parent?.removeChild(ghost)
@@ -986,18 +1370,12 @@ export class XenolithEditor {
    *  dropped in empty space. Pushes a ConnectPins command so it lands in undo history. */
   #restoreEdge(edge: Edge): void {
     const fromNode = this.graph.getNode(edge.from.node)
-    const toNode = this.graph.getNode(edge.to.node)
-    if (!fromNode || !toNode) return
+    if (!fromNode) return
     const fromPin = fromNode.pins.find((p) => p.id === edge.from.pin)
     if (!fromPin) return
-    this.commandBus.apply(new ConnectPins(edge))
-    const fromPos = this.#pinWorldPosition(fromNode, String(edge.from.pin))
-    const toPos = this.#pinWorldPosition(toNode, String(edge.to.pin))
-    if (!fromPos || !toPos) return
     const opts: RenderEdgeOptions = { sourceType: String(fromPin.type) }
-    const gfx = this.#renderEdge(fromPos, toPos, opts)
-    this.#edgesLayer.addChild(gfx)
-    this.#edgeRecords.set(edge.id, { edge, graphics: gfx, opts })
+    this.#edgeOpts.set(edge.id, opts)
+    this.commandBus.apply(new ConnectPins(edge))
   }
 
   #endNodeDrag(altOnRelease: boolean): void {

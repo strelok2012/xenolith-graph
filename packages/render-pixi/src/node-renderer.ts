@@ -1,4 +1,17 @@
-import { BlurFilter, Circle, Container, FillGradient, Graphics, Text, Ticker, type TextStyleFontWeight } from 'pixi.js'
+import {
+  BlurFilter,
+  Circle,
+  Container,
+  FillGradient,
+  Graphics,
+  RenderTexture,
+  Sprite,
+  Text,
+  Ticker,
+  type Renderer,
+  type Texture,
+  type TextStyleFontWeight,
+} from 'pixi.js'
 import type { StateStyle } from '@xenolith/theme-xen'
 import type { Node, Pin } from '@xenolith/core'
 import type { XenTokens } from '@xenolith/theme-xen'
@@ -54,6 +67,10 @@ export interface RenderNodeOptions {
   title?: string
   state?: NodeVisualState
   collapsed?: boolean
+  /** Active PIXI Renderer — when provided, selection/hover/active glow strokes are baked into
+   *  shared textures keyed by (size × radius × style). Without it, each glow falls back to a
+   *  live BlurFilter (acceptable for unit tests, expensive at scale). */
+  renderer?: Renderer | null
 }
 
 export interface NodeView {
@@ -99,24 +116,99 @@ function buildChevron(g: Graphics, cx: number, cy: number, size: number) {
     .lineTo(cx + halfW, cy - halfH)
 }
 
-function makeGlowLayer(style: StateStyle, w: number, h: number, radius: number): Container {
+/** Module-level cache of pre-blurred glow textures keyed by signature. The dominant cost in
+ *  selection rendering is the BlurFilter running per-node-per-frame — caching means each unique
+ *  (size × radius × style) combination is blurred ONCE and shared across every node that uses
+ *  it. For a 500-node graph with ~10 unique node sizes that's ~30 textures total (3 states),
+ *  down from 500×3 = 1500 per-frame filter passes. Collapsed pill is identical size for every
+ *  node → exactly 3 textures cover every pill in the graph. */
+const glowTextureCache = new Map<string, Texture>()
+
+/** Padding around the rounded rect inside the baked texture — the blur kernel extends past the
+ *  stroke and would clip if we baked at exactly (w × h). */
+function glowPadding(strength: number): number {
+  return Math.max(strength * 4, 32)
+}
+
+function glowSignature(style: StateStyle, w: number, h: number, radius: number): string {
+  return [
+    w, h, radius,
+    String(style.glow ?? ''),
+    style.glowBlur ?? 10,
+    style.glowWidth ?? 3,
+  ].join('|')
+}
+
+function bakeGlowTexture(
+  renderer: Renderer,
+  style: StateStyle & { glow: string },
+  w: number, h: number, radius: number,
+): Texture {
+  const strength = style.glowBlur ?? 10
+  const pad = glowPadding(strength)
+  const glow = new Graphics()
+    .roundRect(pad, pad, w, h, radius)
+    .stroke({ color: style.glow, width: style.glowWidth ?? 3, alignment: 0.5 })
+  const blur = new BlurFilter({ strength, quality: 4, antialias: 'on' })
+  blur.padding = pad
+  glow.filters = [blur]
+
+  const rt = RenderTexture.create({
+    width:      w + pad * 2,
+    height:     h + pad * 2,
+    resolution: renderer.resolution,
+    antialias:  true,
+  })
+  renderer.render({ container: glow, target: rt })
+  glow.destroy()
+  return rt
+}
+
+function makeGlowLayer(
+  style: StateStyle,
+  w: number, h: number, radius: number,
+  renderer: Renderer | null,
+): Container {
   const layer = new Container()
   layer.visible = false
-  if (style.glow !== undefined) {
-    // Glow source is a STROKE, not a fill. A blurred filled rectangle leaks brighter halos
-    // along the long edges than at the corners → halo looks squarer than the body. A blurred
-    // perimeter stroke traces the contour exactly; the body (drawn on top) hides the inward
-    // half, leaving a uniform-width outward halo regardless of how long any edge is.
+  if (style.glow === undefined) return layer
+
+  // Glow source is a STROKE, not a fill. A blurred filled rectangle leaks brighter halos along
+  // the long edges than at the corners. A blurred perimeter stroke traces the contour exactly;
+  // the body drawn on top hides the inward half, leaving a uniform outward halo regardless of
+  // edge length.
+  if (renderer) {
+    const sig = glowSignature(style, w, h, radius)
+    let tex = glowTextureCache.get(sig)
+    if (!tex) {
+      tex = bakeGlowTexture(renderer, style as StateStyle & { glow: string }, w, h, radius)
+      glowTextureCache.set(sig, tex)
+    }
     const strength = style.glowBlur ?? 10
-    const glow = new Graphics()
-      .roundRect(0, 0, w, h, radius)
-      .stroke({ color: style.glow, width: style.glowWidth ?? 3, alignment: 0.5 })
-    const blur = new BlurFilter({ strength, quality: 4, antialias: 'on' })
-    blur.padding = Math.max(strength * 4, 32)
-    glow.filters = [blur]
-    layer.addChild(glow)
+    const pad = glowPadding(strength)
+    const sprite = new Sprite(tex)
+    sprite.position.set(-pad, -pad)
+    layer.addChild(sprite)
+    return layer
   }
+
+  // Fallback path for environments without a renderer (unit tests etc.) — live BlurFilter.
+  const strength = style.glowBlur ?? 10
+  const glow = new Graphics()
+    .roundRect(0, 0, w, h, radius)
+    .stroke({ color: style.glow, width: style.glowWidth ?? 3, alignment: 0.5 })
+  const blur = new BlurFilter({ strength, quality: 4, antialias: 'on' })
+  blur.padding = glowPadding(strength)
+  glow.filters = [blur]
+  layer.addChild(glow)
   return layer
+}
+
+/** Drop the module-level cache — call when switching themes or on editor disposal to free the
+ *  GPU memory the baked glow textures hold. */
+export function clearGlowTextureCache(): void {
+  for (const tex of glowTextureCache.values()) tex.destroy(true)
+  glowTextureCache.clear()
 }
 
 function makeBorderLayer(style: StateStyle, w: number, h: number, radius: number): Container {
@@ -208,9 +300,9 @@ export function renderNode(
   const h = expandedLayout.body.height
 
   const glowLayers: Record<Exclude<NodeVisualState, 'default'>, Container> = {
-    hover:    makeGlowLayer(tokens.state.hover,    w, h, geo.node.radius),
-    selected: makeGlowLayer(tokens.state.selected, w, h, geo.node.radius),
-    active:   makeGlowLayer(tokens.state.active,   w, h, geo.node.radius),
+    hover:    makeGlowLayer(tokens.state.hover,    w, h, geo.node.radius, opts.renderer ?? null),
+    selected: makeGlowLayer(tokens.state.selected, w, h, geo.node.radius, opts.renderer ?? null),
+    active:   makeGlowLayer(tokens.state.active,   w, h, geo.node.radius, opts.renderer ?? null),
   }
   expanded.addChild(glowLayers.hover, glowLayers.selected, glowLayers.active)
 
@@ -365,9 +457,9 @@ export function renderNode(
 
   // Glow layers for pill form. Drawn behind the pill body so the halo bleeds outside the capsule.
   const pillGlowLayers: Record<Exclude<NodeVisualState, 'default'>, Container> = {
-    hover:    makeGlowLayer(tokens.state.hover,    pillW, pillH, pillR),
-    selected: makeGlowLayer(tokens.state.selected, pillW, pillH, pillR),
-    active:   makeGlowLayer(tokens.state.active,   pillW, pillH, pillR),
+    hover:    makeGlowLayer(tokens.state.hover,    pillW, pillH, pillR, opts.renderer ?? null),
+    selected: makeGlowLayer(tokens.state.selected, pillW, pillH, pillR, opts.renderer ?? null),
+    active:   makeGlowLayer(tokens.state.active,   pillW, pillH, pillR, opts.renderer ?? null),
   }
   for (const l of Object.values(pillGlowLayers)) l.position.set(0, pillOffsetY)
   collapsed.addChild(pillGlowLayers.hover, pillGlowLayers.selected, pillGlowLayers.active)

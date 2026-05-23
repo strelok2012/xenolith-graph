@@ -16,7 +16,7 @@ export {
 } from './style.js'
 export type { CategoryGradient } from './style.js'
 
-export { renderNode, readPinHandle, markPinInteractive } from './node-renderer.js'
+export { renderNode, readPinHandle, markPinInteractive, clearGlowTextureCache } from './node-renderer.js'
 export type { RenderNodeOptions, NodeView, NodeVisualState, PinHandle } from './node-renderer.js'
 
 export { renderEdge, drawEdge } from './edge-renderer.js'
