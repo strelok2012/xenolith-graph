@@ -6,7 +6,7 @@ An embeddable, drop-in node-graph editor for the web with a polished design syst
 
 <p>
   <img src="docs/screenshots/xen.png" alt="Xen — default dark/gold theme" width="49%" />
-  <img src="docs/screenshots/liquid-glass.png" alt="Liquid Glass — Apple WWDC25-style frosted material" width="49%" />
+  <img src="docs/screenshots/liquid-glass.png" alt="Liquid Glass — frosted glass material inspired by new Apple design" width="49%" />
 </p>
 
 ## What it does
