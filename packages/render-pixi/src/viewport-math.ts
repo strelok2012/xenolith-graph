@@ -59,6 +59,54 @@ export function zoomAt(
   }
 }
 
+export interface Rect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface FitViewOptions {
+  /** Screen-space margin (px) kept clear on every side. Default 64. */
+  padding?: number
+  /** Never zoom in past this level — keeps tiny graphs from filling the screen. Default 1. */
+  maxZoom?: number
+  /** Never zoom out past this level. Default 0.02. */
+  minZoom?: number
+}
+
+/**
+ * Compute the viewport that frames a world-space bounds rect centred inside a screen of the given
+ * size, leaving `padding` px clear on each edge. The zoom fits the more-constraining axis; the
+ * content centre is mapped to the screen centre. Zero-size bounds are handled without div-by-zero.
+ */
+export function fitView(
+  bounds: Rect,
+  screen: { width: number; height: number },
+  opts: FitViewOptions = {},
+): ViewportState {
+  const padding = opts.padding ?? 64
+  const maxZoom = opts.maxZoom ?? 1
+  const minZoom = opts.minZoom ?? 0.02
+
+  const availW = Math.max(1, screen.width - padding * 2)
+  const availH = Math.max(1, screen.height - padding * 2)
+
+  const fitZoom =
+    bounds.width > 0 && bounds.height > 0
+      ? Math.min(availW / bounds.width, availH / bounds.height)
+      : maxZoom
+  const zoom = clampZoom(fitZoom, minZoom, maxZoom)
+
+  const cx = bounds.x + bounds.width / 2
+  const cy = bounds.y + bounds.height / 2
+  return {
+    zoom,
+    x: screen.width / 2 - cx * zoom,
+    y: screen.height / 2 - cy * zoom,
+  }
+}
+
 /**
  * Snap a point to the nearest multiple of `cellSize` on each axis. Used by drag to give the
  * UE-style "feels continuous but actually quantised" feel. `cellSize === 1` rounds to integer

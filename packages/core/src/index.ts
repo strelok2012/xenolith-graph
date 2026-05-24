@@ -26,3 +26,11 @@ export { MoveNode, ResizeNode, SetNodeState } from './commands-mut.js'
 
 export { Selection } from './selection.js'
 export type { SelectionMode, SelectionChange } from './selection.js'
+
+export { NodeRegistry } from './node-registry.js'
+export type { NodeSchema, PinSchema, NodeSearchResult } from './node-registry.js'
+
+export { fuzzyMatch } from './fuzzy.js'
+export type { FuzzyMatch } from './fuzzy.js'
+
+export { REROUTE_TYPE, isReroute, createReroute, REROUTE_NODE_TYPE, rerouteNodeSchema } from './reroute.js'

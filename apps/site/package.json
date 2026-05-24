@@ -13,6 +13,7 @@
   "dependencies": {
     "@astrojs/starlight": "^0.30.0",
     "@xenolith/core": "workspace:*",
+    "@xenolith/demo": "workspace:*",
     "@xenolith/editor": "workspace:*",
     "@xenolith/render-pixi": "workspace:*",
     "@xenolith/theme-xen": "workspace:*",

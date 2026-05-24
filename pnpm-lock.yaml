@@ -30,11 +30,51 @@ importers:
         specifier: ^8.15.0
         version: 8.59.4(eslint@9.39.4)(typescript@5.9.3)
 
+  apps/comfy-demo:
+    dependencies:
+      '@xenolith/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@xenolith/demo':
+        specifier: workspace:*
+        version: link:../shared
+      '@xenolith/editor':
+        specifier: workspace:*
+        version: link:../../packages/editor
+      '@xenolith/render-pixi':
+        specifier: workspace:*
+        version: link:../../packages/render-pixi
+      '@xenolith/theme-liquid-glass':
+        specifier: workspace:*
+        version: link:../../packages/theme-liquid-glass
+      '@xenolith/theme-xen':
+        specifier: workspace:*
+        version: link:../../packages/theme-xen
+      pixi.js:
+        specifier: ^8.6.0
+        version: 8.18.1
+    devDependencies:
+      '@playwright/test':
+        specifier: ^1.49.0
+        version: 1.60.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.2(@types/node@24.12.4)
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@24.12.4)
+
   apps/playground:
     dependencies:
       '@xenolith/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@xenolith/demo':
+        specifier: workspace:*
+        version: link:../shared
       '@xenolith/editor':
         specifier: workspace:*
         version: link:../../packages/editor
@@ -61,6 +101,15 @@ importers:
         specifier: ^6.0.0
         version: 6.4.2(@types/node@24.12.4)
 
+  apps/shared:
+    dependencies:
+      '@xenolith/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@xenolith/editor':
+        specifier: workspace:*
+        version: link:../../packages/editor
+
   apps/site:
     dependencies:
       '@astrojs/starlight':
@@ -69,6 +118,9 @@ importers:
       '@xenolith/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@xenolith/demo':
+        specifier: workspace:*
+        version: link:../shared
       '@xenolith/editor':
         specifier: workspace:*
         version: link:../../packages/editor

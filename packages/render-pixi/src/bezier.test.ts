@@ -137,3 +137,34 @@ describe('sampleBezier', () => {
     expect(distance).toBeGreaterThan(10)
   })
 })
+
+import { bezierMidpoint } from './bezier.js'
+
+describe('bezierMidpoint', () => {
+  it('is the curve point at t=0.5', () => {
+    const path: EdgePath = {
+      start: { x: 0, y: 0 }, c1: { x: 0, y: 0 }, c2: { x: 0, y: 0 }, end: { x: 0, y: 0 },
+    }
+    // straight degenerate path → midpoint at origin
+    expect(bezierMidpoint(path)).toEqual({ x: 0, y: 0 })
+  })
+
+  it('matches the analytic 1/8·3/8·3/8·1/8 weighting', () => {
+    const path: EdgePath = {
+      start: { x: 0, y: 0 }, c1: { x: 0, y: 100 }, c2: { x: 200, y: 100 }, end: { x: 200, y: 0 },
+    }
+    const m = bezierMidpoint(path)
+    expect(m.x).toBeCloseTo(100, 6)
+    expect(m.y).toBeCloseTo(75, 6) // 0.375*100 + 0.375*100 = 75
+  })
+
+  it('agrees with the middle sampleBezier sample', () => {
+    const path: EdgePath = {
+      start: { x: 10, y: 20 }, c1: { x: 60, y: 20 }, c2: { x: 150, y: 80 }, end: { x: 200, y: 80 },
+    }
+    const mid = sampleBezier(path, 2)[1]!
+    const m = bezierMidpoint(path)
+    expect(m.x).toBeCloseTo(mid.x, 6)
+    expect(m.y).toBeCloseTo(mid.y, 6)
+  })
+})

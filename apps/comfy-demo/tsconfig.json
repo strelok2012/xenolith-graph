@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "composite": true,
+    "noEmit": true,
+    "types": ["vitest/globals"]
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../packages/core" },
+    { "path": "../../packages/render-pixi" },
+    { "path": "../../packages/editor" },
+    { "path": "../../packages/theme-xen" }
+  ]
+}

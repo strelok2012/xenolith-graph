@@ -7,16 +7,21 @@ A `XenolithTheme` bundles three things:
 
 ```ts
 interface XenolithTheme {
-  id:             string
-  tokens:         XenTokens                              // design tokens
-  needsBackdrop?: boolean                                // opt into per-frame backdrop RT
-  renderNode?:    (node, opts, ctx) => NodeView          // custom node rendering
-  drawEdge?:      (g, from, to, opts) => Graphics        // custom wire rendering
-  createGrid?:    () => Container                        // custom canvas backdrop
+  id:                 string
+  tokens:             XenTokens                          // design tokens
+  paletteStyle?:      PaletteStyle                       // DOM styling for palette / menus / overlay
+  needsBackdrop?:     boolean                            // opt into per-frame backdrop RT
+  renderNode?:        (node, opts, ctx) => NodeView      // custom node rendering
+  renderReroute?:     (node, opts, ctx) => NodeView      // custom inline reroute-knot rendering
+  renderRerouteNode?: (node, opts, ctx) => NodeView      // custom pullable Reroute-node rendering
+  drawEdge?:          (g, from, to, opts) => Graphics    // custom wire rendering
+  createGrid?:        () => Container                    // custom canvas backdrop
 }
 ```
 
 Each hook is optional. When omitted, the editor falls back to Xen's built-in renderer for that element — so a "theme" can be anything from a 5-line palette tweak to a fully custom Mesh + GLSL material.
+
+`renderReroute` styles the inline `$reroute` knot (a wire passing through a dot); `renderRerouteNode` styles the pullable rectangular `Reroute` node. Liquid Glass overrides both with glass discs/boxes tinted by the wire's pin type. `paletteStyle` drives the DOM chrome — the insert palette, the edge context menu, **and** the "Rendering…" busy overlay — so they all restyle with the active theme.
 
 ## Built-in themes
 
@@ -33,7 +38,7 @@ const editor = await XenolithEditor.init('#app')
 
 Original dark/gold design system: `#0F110E` node bodies, gold accents, category-tinted headers, typed-pin colour-coded wires, animated collapse to pill. Lives in `@xenolith/theme-xen`.
 
-### Liquid Glass — Apple WWDC25 frosted shader
+### Liquid Glass — frosted glass inspired by new Apple design
 
 ```ts
 import { XenolithEditor } from '@xenolith/editor'
@@ -95,7 +100,7 @@ The full type lives in `@xenolith/theme-xen` and is `XenTokens`. Top-level group
 | `category`     | Header accent + Figma gradient per category (`logic`, `data`, `macro`, `utility`). |
 | `pill`         | Pill-form accent gradient CSS strings (`green`, `orange`, ...).          |
 | `state`        | `hover`, `selected`, `active`, `disabled` — border + glow tokens.        |
-| `geometry`     | Node, pin, header, edge, comment dimensions.                             |
+| `geometry`     | Node, pin, header, edge, comment, **reroute** (`radius`, `ringWidth`) and edge `midpointRadius` dimensions. |
 | `typography`   | Inter family + heading / label / comment styles.                         |
 | `effect`       | Header inner shadow, backdrop blur, rim highlight, drop shadow.          |
 | `background`   | Canvas colour and dot-grid configuration.                                |

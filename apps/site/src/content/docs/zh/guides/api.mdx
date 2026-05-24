@@ -1,0 +1,96 @@
+---
+title: 编辑器 API 与交互
+description: 构建图、加载与保存、自适应视图、插入节点与 reroute、显示加载遮罩。
+---
+
+以下都是 `XenolithEditor.init(...)` 返回的 `editor` 对象上的方法。
+
+## 构建图
+
+```ts
+// 添加你自己构造的节点。
+editor.addNode(node, { category: 'logic', title: 'Source', collapsed: false })
+
+// 连接输出引脚到输入引脚（节点 `pins` 数组的索引）。
+editor.connect(source, 0, sink, 1, { sourceType: 'float' })
+```
+
+不过大多数应用不会手动构造节点——它们加载一个文档。
+
+## 加载与保存（`xenolith.v1` 格式）
+
+编辑器使用一种规范的 JSON 格式。`loadJSON` 替换整个图、选区和视口；`toJSON` 再序列化回去。
+
+```ts
+editor.loadJSON(graphDoc)          // 从 xenolith.v1 文档替换场景
+const doc = editor.toJSON()        // 序列化节点 + 连线 + 渲染选项 + 视口
+```
+
+文档为 `{ version: 'xenolith.v1', nodes: [...], edges: [...], viewport? }`。引脚、尺寸、折叠状态、category/title 以及每条连线的 `sourceType` 都会序列化。推荐用这种方式初始化图——把它写成数据，注册对应 schema，然后加载：
+
+```ts
+for (const schema of schemas) editor.registry.register(schema)  // 让 Tab 能生成它们
+editor.loadJSON(graphDoc)
+editor.fitView()
+```
+
+## 自适应视图
+
+`fitView` 计算所有节点的包围盒并在画布中框住它——无论图多大，都能可靠地展示刚加载的图。
+
+```ts
+editor.fitView()                                  // 64px 边距，不会放大超过 1×
+editor.fitView({ padding: 80, maxZoom: 1 })
+editor.resetView()                                // 回到单位视图
+```
+
+| 选项      | 默认值          | 含义                                       |
+|-----------|-----------------|--------------------------------------------|
+| `padding` | `64`            | 四周保留的屏幕边距                         |
+| `maxZoom` | `1`             | 不放大超过此值（避免小图占满屏幕）         |
+| `minZoom` | 编辑器的缩放下限 | 不缩小超过此值                             |
+
+## 插入节点与 reroute
+
+```ts
+// 在世界坐标生成已注册的 schema（可撤销，并选中）。
+editor.insertNode('Transform', { x: 320, y: 200 })
+editor.insertNode('Transform', midpoint, { center: true })  // 以该点为中心
+
+// 在世界坐标处用内联 reroute 切分连线。
+editor.insertRerouteOnEdge(edgeId, worldPos)
+
+// 仅删除一条连线；悬空的内联 reroute 会被自动清理。
+editor.deleteEdge(edgeId)
+```
+
+### 两种 reroute
+
+- **内联节点**（`$reroute`）——通过切分连线创建。不可拉拽的圆点，传递连线并取连线的类型颜色。它无法独立存在：删除最后一条连接就会移除它。
+- **Reroute 节点**（`Reroute`）——可移动的矩形中继，*可以*从中拉出新连线。它是内置 schema，始终出现在插入面板中。
+
+## 开箱即用的交互
+
+| 手势 | 操作 |
+|------|------|
+| `Tab` / 双击空白画布 | 打开插入面板（模糊搜索；内置节点排在前面） |
+| 右键连线中点圆点 | 上下文菜单：**Add Node**（仅兼容类型）· **Add Reroute** · **Delete** |
+| 从引脚拖拽 | 实时幽灵连线，带类型兼容校验 |
+| `Alt`+拖拽已连接引脚 | 断开连线并重连 |
+| 拖拽节点 / 框选 | 移动（8px 吸附，`Alt` 关闭）/ 框选 |
+| `Delete` · `⌘Z` / `⌘⇧Z` · `⌘C`/`⌘V` · `⌘D` · `⌘A` | 删除 · 撤销/重做 · 复制/粘贴 · 复制副本 · 全选 |
+
+## 加载遮罩
+
+繁重的首次渲染（大图）可以包裹在可主题化的模糊 + 加载圈遮罩中。它先绘制，在模糊背后执行你的工作，然后淡出——大图平滑显现，而不是先卡住再弹出。由当前主题的 `paletteStyle` 控制样式。
+
+```ts
+await editor.withOverlay('Rendering…', () => {
+  editor.loadJSON(bigGraph)
+  editor.fitView()
+})
+
+// 或手动控制：
+editor.showOverlay('Loading…')
+editor.hideOverlay()
+```

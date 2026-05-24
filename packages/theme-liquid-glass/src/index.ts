@@ -2,6 +2,8 @@ import type { XenolithTheme } from '@xenolith/render-pixi'
 import { liquidGlassTokens } from './tokens.js'
 import {
   renderNodeLiquidGlass,
+  renderRerouteLiquidGlass,
+  renderRerouteNodeBoxLiquidGlass,
   syncLiquidGlassBackdropSize,
   syncLiquidGlassBackdropTexture,
 } from './render-node.js'
@@ -20,7 +22,25 @@ export const liquidGlassTheme: XenolithTheme = {
   id: 'liquid-glass',
   tokens: liquidGlassTokens,
   needsBackdrop: true,
+  // CSS frosted-glass approximation for DOM chrome (insert palette). Translucent cool-white
+  // panel + heavy backdrop blur + luminous 1px rim + soft inner highlight — the WWDC25 look
+  // without the backdrop-sampling shader (overkill for chrome).
+  paletteStyle: {
+    backdropFilter:        'blur(18px) saturate(160%)',
+    panelBackground:       'rgba(28, 42, 74, 0.55)',
+    panelBorder:           'rgba(255, 255, 255, 0.28)',
+    panelShadow:           '0 16px 50px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.35)',
+    panelRadius:           '16px',
+    textColor:             'rgba(255, 255, 255, 0.95)',
+    mutedColor:            'rgba(220, 232, 255, 0.6)',
+    accent:                '#9AD6E3',
+    rowSelectedBackground: 'rgba(255, 255, 255, 0.16)',
+    inputBackground:       'rgba(255, 255, 255, 0.1)',
+    inputBorder:           'rgba(255, 255, 255, 0.22)',
+  },
   renderNode: (node, opts, ctx) => renderNodeLiquidGlass(node, liquidGlassTokens, opts, ctx),
+  renderReroute: (node, opts, ctx) => renderRerouteLiquidGlass(node, liquidGlassTokens, opts, ctx),
+  renderRerouteNode: (node, opts, ctx) => renderRerouteNodeBoxLiquidGlass(node, liquidGlassTokens, opts, ctx),
   createGrid: () => createLiquidGlassBackdrop(liquidGlassTokens),
   onFrame: (ctx) => {
     const tex = ctx.backdropTexture

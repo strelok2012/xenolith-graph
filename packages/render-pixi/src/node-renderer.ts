@@ -1,5 +1,6 @@
 import {
   BlurFilter,
+  CanvasTextMetrics,
   Circle,
   Container,
   FillGradient,
@@ -7,6 +8,7 @@ import {
   RenderTexture,
   Sprite,
   Text,
+  TextStyle,
   Ticker,
   type Renderer,
   type Texture,
@@ -453,9 +455,16 @@ export function renderNode(
   collapsed.alpha = 0
   container.addChild(collapsed)
 
-  const pillW = geo.node.pillMinWidth
   const pillH = geo.node.pillHeight
   const pillR = geo.node.pillRadius
+  // Pill width fits the collapsed title (chevron at x≈16, title just past it) plus a trailing cap,
+  // not a fixed minimum — long titles otherwise overflow the capsule.
+  const pillTitleStartX = 16 + geo.header.chevronSize / 2 + geo.header.titleGap
+  const pillTitleWidth = CanvasTextMetrics.measureText(
+    opts.title ?? node.type,
+    new TextStyle({ fontFamily: tokens.typography.fontFamily, fontSize: tokens.typography.heading.size, fontWeight: '700' }),
+  ).width
+  const pillW = Math.max(geo.node.pillMinWidth, pillTitleStartX + pillTitleWidth + pillR)
   // Centre the pill vertically within the (taller) expanded body so the node's anchor doesn't shift.
   const pillOffsetY = (h - pillH) / 2
 

@@ -7,8 +7,13 @@ import {
   EventEmitter,
   Graph,
   MoveNode,
+  NodeRegistry,
   RemoveNode,
   Selection,
+  isReroute,
+  createReroute,
+  rerouteNodeSchema,
+  REROUTE_NODE_TYPE,
   createEdgeId,
   createNodeId,
   createPinId,
@@ -21,19 +26,30 @@ import {
   type PinId,
 } from '@xenolith/core'
 import {
+  bezierMidpoint,
   clearGlowTextureCache,
+  computeEdgePath,
   computeNodeLayout,
   computeOverlapBackdropPlan,
   createGridSprite,
+  createPixiTextMeasurer,
   drawEdge,
+  measureNodeSize,
   InteractionManager,
   nodeBounds,
   rectFromPoints,
   rectIntersects,
   renderNode,
+  renderRerouteNode,
+  renderRerouteNodeBox,
+  rerouteSize,
+  rerouteBoxSize,
   computeGroupSnappedDelta,
+  fitView,
   readPinHandle,
+  resolvePinFill,
   screenToWorld,
+  snapToGrid,
   Viewport,
   xenTheme,
   type NodeView,
@@ -41,6 +57,8 @@ import {
   type PinLayout,
   type RenderEdgeOptions,
   type RenderNodeOptions,
+  type NodeSizeTokens,
+  type TextMeasurer,
   type ThemeRenderContext,
   type ViewportState,
   type XenolithTheme,
@@ -48,6 +66,10 @@ import {
 } from '@xenolith/render-pixi'
 import { xenTokens, loadXenFonts, mergeTheme, type DeepPartial, type XenTokens } from '@xenolith/theme-xen'
 import { canConnect } from './pin-compat.js'
+import { computeRerouteBridges } from './reroute-bridge.js'
+import { spliceCompatible, danglingRerouteRemovalPlan } from './edge-insert.js'
+import { InsertPalette } from './palette.js'
+import { EdgeContextMenu } from './edge-menu.js'
 import {
   parseXenolithGraph,
   serializeXenolithGraph,
@@ -66,6 +88,9 @@ export type {
   XenolithEdgeV1,
   XenolithGraphVersion,
 } from './serialize.js'
+
+export { NodeRegistry } from '@xenolith/core'
+export type { NodeSchema, PinSchema, NodeSearchResult } from '@xenolith/core'
 
 export const VERSION = '0.0.0'
 
@@ -157,6 +182,12 @@ export class XenolithEditor {
   #statsEl: HTMLDivElement | null = null
   #statsVisible = false
   #statsFrame = 0
+  /** Themeable "Rendering…" busy overlay shown over the canvas during heavy loads so the first
+   *  (blocking) render of a big graph is hidden behind a blur + spinner, then faded out. */
+  #overlayEl: HTMLDivElement | null = null
+  #overlayCard: HTMLDivElement | null = null
+  #overlaySpinner: HTMLDivElement | null = null
+  #overlayLabel: HTMLDivElement | null = null
   /** Render-on-demand dirty flag. The ticker only repaints (and reruns edge redraw + backdrop +
    *  shader onFrame) on frames where this is set. A static graph costs ~0 — no GPU work, no
    *  shader passes. Starts true so the first frame paints. */
@@ -167,6 +198,10 @@ export class XenolithEditor {
    *  active theme opts in via `theme.needsBackdrop = true`. Themes that don't sample the
    *  backdrop pay zero extra render cost. */
   #backdropRT: RenderTexture | null = null
+  /** World-space ring shown over the edge midpoint dot the cursor is hovering (affordance for the
+   *  right-click menu). Null target = hidden. */
+  #edgeHoverGfx!: Graphics
+  #hoveredEdgeMid: EdgeId | null = null
   /** Per-node personal backdrop RTs for painter's-order compositing — allocated lazily for
    *  nodes whose AABB overlaps a lower-paint-order node, so the glass shader refracts what's
    *  visually underneath. Nodes with no overlap reuse the shared `#backdropRT`. */
@@ -185,6 +220,10 @@ export class XenolithEditor {
   /** Per-node render options (category, title, collapsed). Captured at addNode so setTheme can
    *  re-issue the render with identical args after swapping the active theme. */
   readonly #renderOpts = new Map<NodeId, RenderNodeOptions>()
+  /** Measures label/title text so `addNode` can backfill a missing `node.size` from content.
+   *  Bound to PIXI's CanvasTextMetrics; falls back to a char-width estimate if that throws (e.g.
+   *  a headless environment without a 2D canvas). */
+  readonly #textMeasure: TextMeasurer
   readonly #edgeRecords = new Map<EdgeId, EdgeRecord>()
   /** Render opts per edge, kept persistent so undo of a DisconnectEdge can re-materialise the
    *  edge graphics with the same wire colour / type hint it had before. */
@@ -197,6 +236,18 @@ export class XenolithEditor {
   /** Most recent pointer position in world coords — used by paste-at-cursor and the
    *  ":pointermove" hook. */
   #lastPointerWorld: { x: number; y: number } | null = null
+  /** Most recent pointer position in canvas/screen coords — used to open the palette at cursor. */
+  #lastPointerScreen: { x: number; y: number } | null = null
+  /** Registry of node schemas the insert palette searches. Hosts populate it via `editor.registry`. */
+  readonly #registry = new NodeRegistry()
+  /** Built-in schemas always available in the palette, independent of (and unaffected by clearing)
+   *  the host registry — currently just the Reroute node. */
+  readonly #builtins = new NodeRegistry()
+  #palette: InsertPalette | null = null
+  /** When the palette was opened via an edge's "Add Node" menu: the edge to splice into plus its
+   *  endpoint types (so the palette filters to compatible nodes). Consumed by `#insertFromPalette`. */
+  #pendingEdgeSplice: { edgeId: EdgeId; srcType: string; dstType: string } | null = null
+  #edgeMenu: EdgeContextMenu | null = null
   readonly #coreEvents = new EventEmitter<CoreEvents>()
   #hoveredId: NodeId | null = null
   readonly #marqueeHovered = new Set<NodeId>()
@@ -206,6 +257,8 @@ export class XenolithEditor {
     this.#app = app
     this.#host = host
     this.#theme = theme
+    this.#textMeasure = this.#makeTextMeasure(theme)
+    this.#builtins.register(rerouteNodeSchema)
     if (theme.needsBackdrop) {
       this.#backdropRT = this.#createBackdropRT()
     }
@@ -223,6 +276,11 @@ export class XenolithEditor {
       this.#world.addChild(this.#gridLayer)
     }
     this.#world.addChild(this.#edgesLayer, this.#nodesLayer)
+    // Edge midpoint hover ring — drawn just above edges, below nodes, in world space so it tracks
+    // pan/zoom. Cleared/repositioned as the cursor enters/leaves a midpoint dot.
+    this.#edgeHoverGfx = new Graphics()
+    this.#edgeHoverGfx.eventMode = 'none'
+    this.#world.addChildAt(this.#edgeHoverGfx, this.#world.getChildIndex(this.#nodesLayer))
     app.stage.addChild(this.#world)
 
     this.#viewport = new Viewport(this.#world, opts.viewport)
@@ -240,6 +298,8 @@ export class XenolithEditor {
       app.stage.hitArea = app.screen
       this.#wireStageInteraction()
       window.addEventListener('keydown', this.#onKeyDown)
+      ;(app.canvas as HTMLCanvasElement).addEventListener('dblclick', this.#onDoubleClick)
+      ;(app.canvas as HTMLCanvasElement).addEventListener('contextmenu', this.#onContextMenu)
     } else {
       this.#interaction = null
     }
@@ -280,6 +340,47 @@ export class XenolithEditor {
   #requestRender = (): void => { this.#needsRender = true }
   readonly #onResize = (): void => { this.#requestRender() }
 
+  /** Double-click on empty canvas opens the insert palette at the cursor. Skipped when the
+   *  cursor is over a node (so double-clicking a node body never spawns a palette on top of it). */
+  readonly #onDoubleClick = (e: MouseEvent): void => {
+    if (this.#hoveredId !== null) return
+    this.openPalette({ x: e.offsetX, y: e.offsetY })
+  }
+
+  /** Right-click on (or near) an edge opens its context menu — Add Reroute / Add Node. Right-click
+   *  on empty canvas is ignored (lets the browser menu through is undesirable on a canvas, so we
+   *  simply suppress and do nothing). */
+  readonly #onContextMenu = (e: MouseEvent): void => {
+    const screen = { x: e.offsetX, y: e.offsetY }
+    const world = screenToWorld(screen, this.#viewport.state)
+    // Grab radius around the midpoint dot — the dot radius plus a small forgiving pad (world units).
+    const tolerance = this.#theme.tokens.geometry.edge.midpointRadius + 5
+    const edgeId = this.#pickEdgeAt(world, tolerance)
+    if (!edgeId) return
+    e.preventDefault()
+    this.#openEdgeMenu(edgeId, screen)
+  }
+
+  /** Open the edge context menu at `screen` for `edgeId`. */
+  #openEdgeMenu(edgeId: EdgeId, screen: { x: number; y: number }): void {
+    const edge = this.graph.getEdge(edgeId)
+    if (!edge) return
+    const srcNode = this.graph.getNode(edge.from.node)
+    const dstNode = this.graph.getNode(edge.to.node)
+    const srcType = String(srcNode?.pins.find((p) => String(p.id) === String(edge.from.pin))?.type ?? 'any')
+    const dstType = String(dstNode?.pins.find((p) => String(p.id) === String(edge.to.pin))?.type ?? 'any')
+    const world = screenToWorld(screen, this.#viewport.state)
+    if (!this.#edgeMenu) this.#edgeMenu = new EdgeContextMenu(this.#host, this.#theme.paletteStyle)
+    this.#edgeMenu.open(screen, [
+      { label: 'Add Reroute', hint: 'dot', onSelect: () => { this.insertRerouteOnEdge(edgeId, world); this.#requestRender() } },
+      { label: 'Add Node', hint: 'search', onSelect: () => {
+          this.#pendingEdgeSplice = { edgeId, srcType, dstType }
+          this.openPalette(screen)
+        } },
+      { label: 'Delete', hint: 'break', onSelect: () => { this.deleteEdge(edgeId); this.#requestRender() } },
+    ])
+  }
+
   /** Force a repaint on the next frame regardless of internal dirty tracking. Hosts can call
    *  this after mutating the canvas element / DPR or any state the editor can't observe. */
   requestRender(): void { this.#requestRender() }
@@ -303,6 +404,118 @@ export class XenolithEditor {
     }
   }
   toggleStats(): void { this.setStatsVisible(!this.#statsVisible) }
+
+  // ===== Themeable busy/rendering overlay ======================================================
+
+  #ensureOverlay(): void {
+    if (this.#overlayEl) return
+    if (!document.getElementById('xeno-overlay-style')) {
+      const style = document.createElement('style')
+      style.id = 'xeno-overlay-style'
+      style.textContent = '@keyframes xeno-spin { to { transform: rotate(360deg) } }'
+      document.head.appendChild(style)
+    }
+    const el = document.createElement('div')
+    el.setAttribute('data-xeno-overlay', '')
+    Object.assign(el.style, {
+      position: 'absolute', inset: '0', zIndex: '1500',
+      display: 'none', alignItems: 'center', justifyContent: 'center',
+      opacity: '0', pointerEvents: 'none',
+      transition: 'opacity 260ms ease',
+    } as Partial<CSSStyleDeclaration>)
+
+    const card = document.createElement('div')
+    Object.assign(card.style, {
+      display: 'flex', alignItems: 'center', gap: '12px',
+      padding: '14px 20px', borderRadius: '12px',
+      font: "600 14px 'Inter', system-ui, sans-serif", letterSpacing: '0.02em',
+    } as Partial<CSSStyleDeclaration>)
+
+    const spinner = document.createElement('div')
+    Object.assign(spinner.style, {
+      width: '20px', height: '20px', borderRadius: '50%',
+      borderStyle: 'solid', borderWidth: '2.5px',
+      animation: 'xeno-spin 0.7s linear infinite',
+    } as Partial<CSSStyleDeclaration>)
+
+    const label = document.createElement('div')
+    label.textContent = 'Rendering…'
+
+    card.append(spinner, label)
+    el.appendChild(card)
+    if (getComputedStyle(this.#host).position === 'static') this.#host.style.position = 'relative'
+    this.#host.appendChild(el)
+    this.#overlayEl = el
+    this.#overlayCard = card
+    this.#overlaySpinner = spinner
+    this.#overlayLabel = label
+    this.#styleOverlay()
+  }
+
+  /** Apply the active theme's PaletteStyle to the overlay (frosted card for Liquid Glass, dark for
+   *  Xen) plus an accent-coloured spinner. */
+  #styleOverlay(): void {
+    if (!this.#overlayEl) return
+    const s = this.#theme.paletteStyle
+    const accent = s?.accent ?? '#FCB400'
+    const text = s?.textColor ?? '#FFFFFF'
+    const muted = s?.mutedColor ?? 'rgba(255,255,255,0.25)'
+    // Scrim: always a soft blur over the scene so the heavy first render is hidden.
+    Object.assign(this.#overlayEl.style, {
+      background: 'rgba(0, 0, 0, 0.28)',
+      backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
+    } as Partial<CSSStyleDeclaration>)
+    Object.assign(this.#overlayCard!.style, {
+      background: s?.panelBackground ?? 'rgba(20,20,20,0.7)',
+      border: `1px solid ${s?.panelBorder ?? 'rgba(255,255,255,0.12)'}`,
+      boxShadow: s?.panelShadow ?? '0 12px 40px rgba(0,0,0,0.5)',
+      backdropFilter: s?.backdropFilter ?? 'none', WebkitBackdropFilter: s?.backdropFilter ?? 'none',
+      color: text,
+    } as Partial<CSSStyleDeclaration>)
+    Object.assign(this.#overlaySpinner!.style, { borderColor: muted, borderTopColor: accent } as Partial<CSSStyleDeclaration>)
+  }
+
+  #overlayHideTimer: ReturnType<typeof setTimeout> | null = null
+
+  /** Show the busy overlay with `label`, immediately (no fade-in) so it covers a blocking render. */
+  showOverlay(label = 'Rendering…'): void {
+    this.#ensureOverlay()
+    if (this.#overlayHideTimer) { clearTimeout(this.#overlayHideTimer); this.#overlayHideTimer = null }
+    if (this.#overlayLabel) this.#overlayLabel.textContent = label
+    const el = this.#overlayEl!
+    el.style.display = 'flex'
+    el.style.transition = 'none'
+    el.style.opacity = '1'
+    // Force reflow so a subsequent fade-out animates from opacity 1.
+    void el.offsetHeight
+    el.style.transition = 'opacity 260ms ease'
+  }
+
+  /** Fade the busy overlay out, then fully detach it (`display:none`) so its backdrop blur stops
+   *  costing GPU once hidden. */
+  hideOverlay(): void {
+    if (!this.#overlayEl) return
+    const el = this.#overlayEl
+    el.style.opacity = '0'
+    if (this.#overlayHideTimer) clearTimeout(this.#overlayHideTimer)
+    this.#overlayHideTimer = setTimeout(() => { el.style.display = 'none'; this.#overlayHideTimer = null }, 300)
+  }
+
+  /** Run `work` (a possibly-heavy, possibly-async load) behind the themeable busy overlay: the
+   *  overlay paints first, then `work` runs, then we wait for the resulting render frame to paint,
+   *  then fade the overlay out. Keeps big-graph loads smooth instead of a frozen pop-in. */
+  async withOverlay<T>(label: string, work: () => T | Promise<T>): Promise<T> {
+    this.showOverlay(label)
+    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
+    try {
+      return await work()
+    } finally {
+      this.#requestRender()
+      // Wait for the (heavy) render frame to actually paint before revealing the scene.
+      await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
+      this.hideOverlay()
+    }
+  }
 
   #createStatsOverlay(): HTMLDivElement {
     const el = document.createElement('div')
@@ -383,6 +596,14 @@ export class XenolithEditor {
       renderer: this.#app.renderer as never,
       requestRender: this.#requestRender,
     }
+    if (isReroute(node)) {
+      return this.#theme.renderReroute?.(node, enriched, this.#themeContext())
+        ?? renderRerouteNode(node, this.#theme.tokens, enriched)
+    }
+    if (node.type === REROUTE_NODE_TYPE) {
+      return this.#theme.renderRerouteNode?.(node, enriched, this.#themeContext())
+        ?? renderRerouteNodeBox(node, this.#theme.tokens, enriched)
+    }
     return this.#theme.renderNode?.(node, enriched, this.#themeContext()) ?? renderNode(node, this.#theme.tokens, enriched)
   }
   #drawEdge(g: Graphics, from: PinLayout, to: PinLayout, opts: RenderEdgeOptions): Graphics {
@@ -446,10 +667,15 @@ export class XenolithEditor {
     }
     const plan = computeOverlapBackdropPlan(rects)
 
+    // Clear the backdrop RTs to the canvas colour, not transparent/black — the world backdrop
+    // (gradient + grid) is finite, so anything a glass node samples beyond its extent must read as
+    // the background, otherwise far-out nodes refract a black void.
+    const clearColor = this.#theme.tokens.color.surface.canvas
+
     // Pass 1 — shared base backdrop: hide every node, render stage, restore.
     const nodesWereVisible = this.#nodesLayer.visible
     this.#nodesLayer.visible = false
-    this.#app.renderer.render({ container: this.#app.stage, target: this.#backdropRT })
+    this.#app.renderer.render({ container: this.#app.stage, target: this.#backdropRT, clearColor })
     this.#nodesLayer.visible = nodesWereVisible
 
     // Pass 2 — per-overlapping-node personal backdrops. Restore nodesLayer; we'll toggle
@@ -478,7 +704,7 @@ export class XenolithEditor {
           const c = containerById.get(lid)
           if (c) c.visible = true
         }
-        this.#app.renderer.render({ container: this.#app.stage, target: rt })
+        this.#app.renderer.render({ container: this.#app.stage, target: rt, clearColor })
         for (const lid of lowerIds) {
           const c = containerById.get(lid)
           if (c) c.visible = false
@@ -514,7 +740,47 @@ export class XenolithEditor {
     return { backdropTexture: this.#backdropRT?.source ?? null }
   }
 
+  /** Build a text measurer from the active theme's font family. Falls back to a crude char-width
+   *  estimate when CanvasTextMetrics is unavailable (no 2D canvas — e.g. some test envs). */
+  #makeTextMeasure(theme: XenolithTheme): TextMeasurer {
+    const fontFamily = theme.tokens.typography.fontFamily
+    try {
+      const pixi = createPixiTextMeasurer(fontFamily)
+      pixi('test', 12, 700) // probe — throws here if there is no canvas backend
+      return pixi
+    } catch {
+      return (text, fontSize) => text.length * fontSize * 0.55
+    }
+  }
+
+  #sizeTokens(): NodeSizeTokens {
+    const g = this.#theme.tokens.geometry
+    const t = this.#theme.tokens.typography
+    return {
+      node:   { minWidth: g.node.minWidth, headerHeight: g.node.headerHeight, headerPadding: g.node.headerPadding },
+      pin:    { diameter: g.pin.diameter, rowSpacing: g.pin.rowSpacing, rowHeight: g.pin.rowHeight, labelGap: g.pin.labelGap },
+      header: { toPinsGap: g.header.toPinsGap, chevronSize: g.header.chevronSize, titleGap: g.header.titleGap },
+      typography: {
+        titleSize: t.heading.size, titleWeight: t.heading.weight,
+        labelSize: t.label.size,   labelWeight: t.label.weight,
+      },
+    }
+  }
+
+  /** Backfill a content-derived size when the host/command gave none (palette inserts, ComfyUI
+   *  imports, reroute splices). One resolved size keeps renderer, geom bounds, edge endpoints and
+   *  backdrop in sync. Called from both `addNode` and the command-driven sync path. */
+  #ensureSize(node: Node, render: RenderNodeOptions): void {
+    if (node.size) return
+    node.size = isReroute(node)
+      ? rerouteSize(this.#theme.tokens)
+      : node.type === REROUTE_NODE_TYPE
+        ? rerouteBoxSize(this.#theme.tokens)
+        : measureNodeSize(node, render.title ?? node.type, this.#sizeTokens(), this.#textMeasure)
+  }
+
   addNode(node: Node, render: RenderNodeOptions = {}): Node {
+    this.#ensureSize(node, render)
     this.graph._addNode(node)
     this.#renderOpts.set(node.id, render)
     const view = this.#renderNode(node, render)
@@ -545,6 +811,207 @@ export class XenolithEditor {
     return edge.id
   }
 
+  /** Registry of node schemas. Hosts register their node types here; the insert palette searches
+   *  it. e.g. `editor.registry.register({ type: 'Transform', title: 'Transform', pins: [...] })`. */
+  get registry(): NodeRegistry { return this.#registry }
+
+  /** Open the insert palette. `screen` is a canvas-relative point (defaults to last pointer
+   *  position, then canvas centre). No-op if the registry is empty. */
+  openPalette(screen?: { x: number; y: number }): void {
+    if (this.#registry.size === 0 && this.#builtins.size === 0) return
+    if (!this.#palette) {
+      this.#palette = new InsertPalette(this.#host, this.#theme.paletteStyle, {
+        search: (q) => this.#searchSchemas(q),
+        insert: (type, at) => this.#insertFromPalette(type, at),
+        pinColor: (type) => resolvePinFill(type, this.#theme.tokens),
+      })
+    }
+    const at = screen
+      ?? this.#lastPointerScreen
+      ?? { x: this.#app.screen.width / 2, y: this.#app.screen.height / 2 }
+    this.#palette.open(at)
+  }
+  closePalette(): void { this.#pendingEdgeSplice = null; this.#palette?.close() }
+  get isPaletteOpen(): boolean { return this.#palette?.isOpen ?? false }
+
+  /** Palette search across both the host registry and the built-in schemas. Host types win on a
+   *  type collision; results stay sorted by descending fuzzy score. */
+  #searchSchemas(query: string): ReturnType<NodeRegistry['search']> {
+    const host = this.#registry.search(query).sort((a, b) => b.score - a.score)
+    const seen = new Set(host.map((r) => r.schema.type))
+    // Built-in core nodes (Reroute) rank ABOVE host matches so they're easy to find.
+    const builtins = this.#builtins.search(query)
+      .filter((r) => !seen.has(r.schema.type))
+      .sort((a, b) => b.score - a.score)
+    let merged = [...builtins, ...host]
+    // When opened from an edge's "Add Node", show only nodes that can be spliced into that wire.
+    const splice = this.#pendingEdgeSplice
+    if (splice) merged = merged.filter((r) => spliceCompatible(r.schema, splice.srcType, splice.dstType))
+    return merged
+  }
+
+  /** The registry that owns a type (host registry takes precedence over built-ins). */
+  #registryFor(type: string): NodeRegistry | null {
+    if (this.#registry.has(type)) return this.#registry
+    if (this.#builtins.has(type)) return this.#builtins
+    return null
+  }
+
+  /** Instantiate a registered schema at a world position and add it through the command bus
+   *  (undoable). Selects the new node. Returns it, or null if the type isn't registered. */
+  insertNode(type: string, worldPos: { x: number; y: number }, opts: { center?: boolean } = {}): Node | null {
+    const reg = this.#registryFor(type)
+    if (!reg) return null
+    const schema = reg.get(type)!
+    const node = reg.instantiate(type, worldPos)
+    const render: RenderNodeOptions = {}
+    if (schema.category !== undefined) render.category = schema.category
+    if (schema.title !== undefined) render.title = schema.title
+    // Centre the node on worldPos (used when splicing into an edge at its midpoint) rather than
+    // anchoring its top-left there. Needs the resolved size up front.
+    if (opts.center) {
+      this.#ensureSize(node, render)
+      node.position = { x: worldPos.x - node.size!.x / 2, y: worldPos.y - node.size!.y / 2 }
+    }
+    this.#renderOpts.set(node.id, render)
+    this.commandBus.apply(new AddNode(node))
+    this.selection.replaceWith([node.id])
+    return node
+  }
+
+  #insertFromPalette(type: string, screen: { x: number; y: number }): void {
+    const world = screenToWorld(screen, this.#viewport.state)
+    const splice = this.#pendingEdgeSplice
+    this.#pendingEdgeSplice = null
+    const node = splice
+      ? this.insertNode(type, world, { center: true })
+      : this.insertNode(type, snapToGrid(world, this.#snapSize))
+    if (node && splice) {
+      const edge = this.graph.getEdge(splice.edgeId)
+      if (edge) {
+        // The node was already added by insertNode; splice rewires the original edge through it.
+        this.#spliceIntoEdge(edge as Edge, node, { nodeAlreadyAdded: true })
+      }
+    }
+  }
+
+  /** Insert an inline reroute dot at `worldPos`, splitting `edgeId` so the wire passes through it.
+   *  Undoable as one transaction. Returns the new reroute's id, or null if the edge is gone. */
+  insertRerouteOnEdge(edgeId: EdgeId, worldPos: { x: number; y: number }): NodeId | null {
+    const edge = this.graph.getEdge(edgeId)
+    if (!edge) return null
+    const srcNode = this.graph.getNode(edge.from.node)
+    const srcPin = srcNode?.pins.find((p) => String(p.id) === String(edge.from.pin))
+    const type = String(srcPin?.type ?? 'any')
+    const r = this.#theme.tokens.geometry.reroute.radius
+    // Centre the disc on the click point (createReroute positions by top-left corner).
+    const reroute = createReroute({ x: worldPos.x - r, y: worldPos.y - r }, { type })
+    if (!this.#spliceIntoEdge(edge as Edge, reroute, { nodeAlreadyAdded: false })) return null
+    this.selection.replaceWith([reroute.id])
+    return reroute.id
+  }
+
+  /** Delete a single edge. Removes only that edge; any inline reroute it leaves with no remaining
+   *  connections is removed too (inline reroutes can't exist standalone), but reroutes that still
+   *  relay something survive — the chain isn't chopped. Undoable as one transaction. */
+  deleteEdge(edgeId: EdgeId): boolean {
+    if (!this.graph.getEdge(edgeId)) return false
+    const edges = Array.from(this.graph.edges()) as Edge[]
+    const plan = danglingRerouteRemovalPlan(
+      edges, (id) => { const n = this.graph.getNode(id); return !!n && isReroute(n) }, edgeId,
+    )
+    this.commandBus.transaction(() => {
+      // RemoveNode drops a reroute's own incident edges; explicitly disconnect the rest.
+      for (const id of plan.edgeIds) {
+        const e = this.graph.getEdge(id as EdgeId)
+        if (e && !plan.rerouteIds.some((r) => r === e.from.node || r === e.to.node)) {
+          this.commandBus.apply(new DisconnectEdge(id as EdgeId))
+        }
+      }
+      for (const id of plan.rerouteIds) this.commandBus.apply(new RemoveNode(id))
+    })
+    return true
+  }
+
+  /** Rewire `edge` (source → target) to run source → node → target. Picks the node's first
+   *  type-compatible in/out pins. When `nodeAlreadyAdded` is false the node is added inside the
+   *  same transaction. Returns false if the node lacks a usable in or out pin. */
+  #spliceIntoEdge(edge: Edge, node: Node, opts: { nodeAlreadyAdded: boolean }): boolean {
+    const srcNode = this.graph.getNode(edge.from.node)
+    const dstNode = this.graph.getNode(edge.to.node)
+    const srcPin = srcNode?.pins.find((p) => String(p.id) === String(edge.from.pin)) ?? null
+    const dstPin = dstNode?.pins.find((p) => String(p.id) === String(edge.to.pin)) ?? null
+    const inPin =
+      (srcPin && node.pins.find((p) => p.direction === 'in' && canConnect(srcPin, p, false))) ||
+      node.pins.find((p) => p.direction === 'in')
+    const outPin =
+      (dstPin && node.pins.find((p) => p.direction === 'out' && canConnect(p, dstPin, false))) ||
+      node.pins.find((p) => p.direction === 'out')
+    if (!inPin || !outPin) return false
+
+    const srcType = String(srcPin?.type ?? 'any')
+    const upstream: Edge = { id: createEdgeId(), from: { ...edge.from }, to: { node: node.id, pin: inPin.id } }
+    const downstream: Edge = { id: createEdgeId(), from: { node: node.id, pin: outPin.id }, to: { ...edge.to } }
+    this.#edgeOpts.set(upstream.id, { sourceType: srcType })
+    this.#edgeOpts.set(downstream.id, { sourceType: String(outPin.type === 'any' ? srcType : outPin.type) })
+
+    this.commandBus.transaction(() => {
+      this.commandBus.apply(new DisconnectEdge(edge.id))
+      if (!opts.nodeAlreadyAdded) this.commandBus.apply(new AddNode(node))
+      this.commandBus.apply(new ConnectPins(upstream))
+      this.commandBus.apply(new ConnectPins(downstream))
+    })
+    return true
+  }
+
+  /** Edge whose midpoint handle is within `tolerance` world units of `world`, or null. The handle
+   *  dot — not the whole wire — is the interaction target, so right-click only triggers on the dot.
+   *  O(edges); only called on right-click. */
+  #pickEdgeAt(world: { x: number; y: number }, tolerance: number): EdgeId | null {
+    let best: EdgeId | null = null
+    let bestDist = tolerance
+    const edgeTokens = this.#theme.tokens.geometry.edge
+    for (const edge of this.graph.edges()) {
+      const fromNode = this.graph.getNode(edge.from.node)
+      const toNode = this.graph.getNode(edge.to.node)
+      if (!fromNode || !toNode) continue
+      const from = this.#pinWorldPosition(fromNode as Node, String(edge.from.pin))
+      const to = this.#pinWorldPosition(toNode as Node, String(edge.to.pin))
+      if (!from || !to) continue
+      const mid = bezierMidpoint(computeEdgePath(from, to, edgeTokens))
+      const d = Math.hypot(world.x - mid.x, world.y - mid.y)
+      if (d < bestDist) { bestDist = d; best = edge.id }
+    }
+    return best
+  }
+
+  /** Highlight the edge midpoint dot under the cursor with a ring + pointer cursor. No-op churn
+   *  when the hovered edge hasn't changed. */
+  #updateEdgeMidpointHover(world: { x: number; y: number }): void {
+    const tol = this.#theme.tokens.geometry.edge.midpointRadius + 5
+    const id = this.#pickEdgeAt(world, tol)
+    if (id === this.#hoveredEdgeMid) return
+    this.#hoveredEdgeMid = id
+    this.#edgeHoverGfx.clear()
+    const canvas = this.#app.canvas as HTMLCanvasElement
+    if (!id) { canvas.style.cursor = ''; this.#requestRender(); return }
+    const edge = this.graph.getEdge(id)
+    const fromNode = edge && this.graph.getNode(edge.from.node)
+    const toNode = edge && this.graph.getNode(edge.to.node)
+    if (edge && fromNode && toNode) {
+      const from = this.#pinWorldPosition(fromNode as Node, String(edge.from.pin))
+      const to = this.#pinWorldPosition(toNode as Node, String(edge.to.pin))
+      if (from && to) {
+        const mid = bezierMidpoint(computeEdgePath(from, to, this.#theme.tokens.geometry.edge))
+        const rr = this.#theme.tokens.geometry.edge.midpointRadius + 3
+        this.#edgeHoverGfx.circle(mid.x, mid.y, rr)
+          .stroke({ color: 0xffffff, width: 1.5 / this.#viewport.state.zoom, alpha: 0.9 })
+      }
+    }
+    canvas.style.cursor = 'pointer'
+    this.#requestRender()
+  }
+
   /** Serialize the current graph (nodes + edges + render opts + viewport) into the canonical
    *  `xenolith.v1` envelope. The returned object is JSON-safe. */
   toJSON(): XenolithGraphV1 {
@@ -572,6 +1039,8 @@ export class XenolithEditor {
       this.#loadEdge(edge, opts)
     }
     if (parsed.viewport) this.#viewport.setState(parsed.viewport)
+    // loadJSON bypasses the command bus, so run the reroute type propagation explicitly.
+    this.#propagateRerouteTypes()
   }
 
   /** Re-attach a deserialized edge using its preserved id and pin-id endpoints — bypasses the
@@ -606,12 +1075,33 @@ export class XenolithEditor {
   /** Redo the most recently undone command. Returns true if anything was redone. */
   redo(): boolean { return this.commandBus.redo() }
 
+  /** Select every node in the graph. */
+  selectAll(): void {
+    this.selection.replaceWith(Array.from(this.graph.nodes()).map((n) => n.id))
+  }
+
   /** Delete every selected node along with its incident edges. Each removal goes through
    *  `RemoveNode` so the whole operation is undoable as a single transaction. */
   deleteSelected(): void {
     const ids = this.selection.ids().slice()
     if (ids.length === 0) return
+    const removing = new Set(ids)
     this.commandBus.transaction(() => {
+      // Reroutes are pure relays — deleting one should heal the wire it carried rather than sever
+      // it. Bridge each reroute's upstream feed to its downstream targets before removing it.
+      const edges = Array.from(this.graph.edges()) as Edge[]
+      for (const id of ids) {
+        const node = this.graph.getNode(id)
+        if (!node || !isReroute(node)) continue
+        for (const bridge of computeRerouteBridges(edges, id, removing)) {
+          const edge: Edge = { id: createEdgeId(), from: bridge.from, to: bridge.to }
+          // Carry the downstream wire's render opts (colour/type) onto the healed edge.
+          const downstream = edges.find((e) => e.from.node === id && e.to.node === bridge.to.node)
+          const opts = (downstream && this.#edgeOpts.get(downstream.id)) ?? {}
+          this.#edgeOpts.set(edge.id, { ...opts })
+          this.commandBus.apply(new ConnectPins(edge))
+        }
+      }
       for (const id of ids) this.commandBus.apply(new RemoveNode(id))
     })
   }
@@ -747,6 +1237,31 @@ export class XenolithEditor {
     this.#viewport.zoomAt(focal, factor, this.#zoomBounds)
   }
   resetView(): void { this.#viewport.reset() }
+
+  /**
+   * Frame the whole graph: compute the world-space AABB of every node and set the viewport so it
+   * sits centred inside the canvas with `padding` px of margin. No-op on an empty graph. `maxZoom`
+   * defaults to 1 so small graphs aren't blown up; `minZoom` defaults to the editor's zoom floor.
+   */
+  fitView(opts: { padding?: number; maxZoom?: number; minZoom?: number } = {}): void {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    let count = 0
+    for (const node of this.graph.nodes()) {
+      const b = nodeBounds(node, this.#theme.tokens)
+      minX = Math.min(minX, b.x); minY = Math.min(minY, b.y)
+      maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height)
+      count++
+    }
+    if (count === 0) return
+    this.#viewport.setState(
+      fitView(
+        { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
+        { width: Math.max(1, this.#app.screen.width), height: Math.max(1, this.#app.screen.height) },
+        { padding: opts.padding ?? 64, maxZoom: opts.maxZoom ?? 1, minZoom: opts.minZoom ?? this.#zoomBounds[0] },
+      ),
+    )
+  }
+
   get viewport(): ViewportState { return this.#viewport.state }
   get app(): Application { return this.#app }
   get theme(): XenolithTheme { return this.#theme }
@@ -818,12 +1333,18 @@ export class XenolithEditor {
     }
     this.#updateVisualStates()
     // Edges re-paint themselves through the ticker via #drawEdge — no explicit pass needed.
+    this.#palette?.setStyle(next.paletteStyle)
+    this.#edgeMenu?.setStyle(next.paletteStyle)
+    this.#styleOverlay()
     this.#requestRender()
   }
 
   destroy(): void {
     window.removeEventListener('keydown', this.#onKeyDown)
     window.removeEventListener('resize', this.#onResize)
+    ;(this.#app.canvas as HTMLCanvasElement | undefined)?.removeEventListener('dblclick', this.#onDoubleClick)
+    ;(this.#app.canvas as HTMLCanvasElement | undefined)?.removeEventListener('contextmenu', this.#onContextMenu)
+    this.#palette?.destroy()
     this.#interaction?.detach()
     this.#backdropRT?.destroy(true)
     this.#app.destroy(true, { children: true })
@@ -848,6 +1369,12 @@ export class XenolithEditor {
       this.toggleStats()
       return
     }
+    if (!mod && e.key === 'Tab') {
+      e.preventDefault()
+      if (this.isPaletteOpen) this.closePalette()
+      else this.openPalette()
+      return
+    }
     if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) {
       if (this.selection.size === 0) return
       e.preventDefault()
@@ -862,6 +1389,11 @@ export class XenolithEditor {
     if (mod && ((e.key === 'z' || e.key === 'Z') && e.shiftKey || e.key === 'y' || e.key === 'Y')) {
       e.preventDefault()
       this.redo()
+      return
+    }
+    if (mod && (e.key === 'a' || e.key === 'A')) {
+      e.preventDefault()
+      this.selectAll()
       return
     }
     if (mod && (e.key === 'd' || e.key === 'D')) {
@@ -998,15 +1530,22 @@ export class XenolithEditor {
     const fromNode = this.graph.getNode(edge.from.node)
     const toNode   = this.graph.getNode(edge.to.node)
     if (!fromNode || !toNode) return false
-    const fromIdx = fromNode.pins.findIndex((p) => p.id === edge.from.pin)
-    const toIdx   = toNode.pins.findIndex((p) => p.id === edge.to.pin)
-    if (fromIdx < 0 || toIdx < 0) return false
-    const fromPin = this.#pinLayoutFor(fromNode, fromIdx)
-    const toPin   = this.#pinLayoutFor(toNode,   toIdx)
-    const gfx = this.#renderEdge(fromPin, toPin, opts)
+    // Resolve via the live NodeView so non-layout pin geometry (reroute knots, collapsed pills)
+    // attaches correctly; falls back to computeNodeLayout when a view isn't mounted yet.
+    const fromPin = this.#pinWorldPosition(fromNode, String(edge.from.pin))
+    const toPin   = this.#pinWorldPosition(toNode,   String(edge.to.pin))
+    if (!fromPin || !toPin) return false
+    // Default the wire colour to the source pin's type when the host didn't specify one, so a
+    // typed wire is never drawn grey just because opts omitted sourceType.
+    let resolved = opts
+    if (resolved.sourceType === undefined) {
+      const sp = (fromNode as Node).pins.find((p) => String(p.id) === String(edge.from.pin))
+      if (sp) resolved = { ...resolved, sourceType: String(sp.type) }
+    }
+    const gfx = this.#renderEdge(fromPin, toPin, resolved)
     this.#edgesLayer.addChild(gfx)
-    this.#edgeRecords.set(edge.id, { edge, graphics: gfx, opts })
-    this.#edgeOpts.set(edge.id, opts)
+    this.#edgeRecords.set(edge.id, { edge, graphics: gfx, opts: resolved })
+    this.#edgeOpts.set(edge.id, resolved)
     return true
   }
 
@@ -1033,6 +1572,7 @@ export class XenolithEditor {
       let view = this.#views.get(node.id)
       if (!view) {
         const opts = this.#renderOpts.get(node.id) ?? {}
+        this.#ensureSize(node as Node, opts)
         view = this.#renderNode(node, opts)
         this.#views.set(node.id, view)
         this.#nodesLayer.addChild(view.container)
@@ -1062,6 +1602,78 @@ export class XenolithEditor {
     for (const id of Array.from(this.#edgeRecords.keys())) {
       if (!seenEdges.has(id)) this.#disposeEdgeGraphics(id)
     }
+
+    this.#propagateRerouteTypes()
+    // Newly materialised views must reflect current selection immediately (e.g. a node inserted +
+    // selected in the same tick) — the selection change fired before its view existed, and
+    // render-on-demand won't repaint on its own.
+    this.#updateVisualStates()
+    this.#requestRender()
+  }
+
+  /** Rebuild a single node's view in place (e.g. after its pin types changed). Preserves position,
+   *  collapse state and selection. */
+  #rerenderNode(id: NodeId): void {
+    const node = this.graph.getNode(id)
+    const oldView = this.#views.get(id)
+    if (!node || !oldView) return
+    const opts = { ...(this.#renderOpts.get(id) ?? {}), collapsed: oldView.isCollapsed() }
+    const newView = this.#renderNode(node as Node, opts)
+    this.#nodesLayer.removeChild(oldView.container)
+    oldView.container.destroy({ children: true })
+    this.#views.set(id, newView)
+    this.#nodesLayer.addChild(newView.container)
+    this.#wireNodeInteraction(id, newView)
+  }
+
+  /** Propagate wire types through reroutes: a reroute adopts the type of whatever feeds its input,
+   *  on both pins, so its dot/box colour, its output pin, and its outgoing wires all match the
+   *  incoming wire (no colour mismatch / confusion). Cascades through reroute chains. Cheap no-op
+   *  when nothing changed (e.g. freshly imported graphs already carry resolved types). */
+  #propagateRerouteTypes(): void {
+    // Index topology once; types are read live from the pins as the fixpoint iterates.
+    const incoming = new Map<NodeId, Edge>()
+    const outgoing = new Map<NodeId, Edge[]>()
+    for (const e of this.graph.edges()) {
+      incoming.set(e.to.node, e as Edge)
+      const arr = outgoing.get(e.from.node); if (arr) arr.push(e as Edge); else outgoing.set(e.from.node, [e as Edge])
+    }
+    const reroutes: Node[] = []
+    for (const n of this.graph.nodes()) {
+      if (isReroute(n) || n.type === REROUTE_NODE_TYPE) reroutes.push(n as Node)
+    }
+    if (reroutes.length === 0) return
+
+    let changed = true
+    let guard = 0
+    while (changed && guard++ < 16) {
+      changed = false
+      for (const node of reroutes) {
+        const inPin = node.pins.find((p) => p.direction === 'in')
+        const outPin = node.pins.find((p) => p.direction === 'out')
+        if (!inPin || !outPin) continue
+        const feed = incoming.get(node.id)
+        let type = 'any'
+        if (feed) {
+          const sn = this.graph.getNode(feed.from.node)
+          const sp = sn?.pins.find((p) => String(p.id) === String(feed.from.pin))
+          if (sp) type = String(sp.type)
+        }
+        if (String(inPin.type) === type && String(outPin.type) === type) continue
+        inPin.type = type
+        outPin.type = type
+        changed = true
+        this.#rerenderNode(node.id)
+        for (const e of outgoing.get(node.id) ?? []) {
+          const opts = { ...(this.#edgeOpts.get(e.id) ?? {}), sourceType: type }
+          this.#edgeOpts.set(e.id, opts)
+          const rec = this.#edgeRecords.get(e.id)
+          if (rec) rec.opts = opts
+          this.#redrawEdge(e.id)
+        }
+      }
+    }
+    if (guard > 1) this.#requestRender()
   }
 
   #countEdgesAtPin(nodeId: NodeId, pinId: string): number {
@@ -1120,7 +1732,15 @@ export class XenolithEditor {
 
     stage.on('pointermove', (e: FederatedPointerEvent) => {
       const current = { x: e.global.x, y: e.global.y }
+      this.#lastPointerScreen = current
       this.#lastPointerWorld = screenToWorld(current, this.#viewport.state)
+      // Edge midpoint hover affordance — only while fully idle (no drag / marquee).
+      if (this.#dragState.kind === 'idle' && marquee.kind === 'idle') {
+        this.#updateEdgeMidpointHover(this.#lastPointerWorld)
+      } else if (this.#hoveredEdgeMid) {
+        this.#hoveredEdgeMid = null
+        this.#edgeHoverGfx.clear()
+      }
       // Note: no blanket requestRender here. Bare cursor movement over the canvas changes
       // nothing on screen — hover transitions repaint via the node pointerover/pointerout
       // handlers. We only mark dirty inside the branches that actually mutate visuals (active
@@ -1333,7 +1953,7 @@ export class XenolithEditor {
     }
     const from = source.direction === 'out' ? sourcePos : cursorEndpoint
     const to = source.direction === 'out' ? cursorEndpoint : sourcePos
-    this.#drawEdge(ghost, from, to, { sourceType: source.type })
+    this.#drawEdge(ghost, from, to, { sourceType: source.type, noMidpoint: true })
 
     let validity: 'none' | 'valid' | 'invalid' = 'none'
     if (hoveredTarget) {

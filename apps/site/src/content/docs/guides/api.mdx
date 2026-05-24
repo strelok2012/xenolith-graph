@@ -1,0 +1,96 @@
+---
+title: Editor API & interactions
+description: Build graphs, load and save, fit the view, insert nodes and reroutes, and show a busy overlay.
+---
+
+Everything below is a method on the `editor` returned by `XenolithEditor.init(...)`.
+
+## Building a graph
+
+```ts
+// Add a node you constructed yourself.
+editor.addNode(node, { category: 'logic', title: 'Source', collapsed: false })
+
+// Connect an output pin to an input pin (indices into each node's `pins`).
+editor.connect(source, 0, sink, 1, { sourceType: 'float' })
+```
+
+Most apps don't hand-build nodes, though — they load a document.
+
+## Load & save (the `xenolith.v1` format)
+
+The editor speaks one canonical JSON format. `loadJSON` replaces the whole graph, selection, and viewport; `toJSON` round-trips it back out.
+
+```ts
+editor.loadJSON(graphDoc)          // replace the scene from a xenolith.v1 document
+const doc = editor.toJSON()        // serialise nodes + edges + render opts + viewport
+```
+
+A document is `{ version: 'xenolith.v1', nodes: [...], edges: [...], viewport? }`. Pins, sizes, collapsed state, category/title render options, and per-edge `sourceType` all serialise. This is the recommended way to seed a graph — author it as data, register the matching schemas, then load it:
+
+```ts
+for (const schema of schemas) editor.registry.register(schema)  // so Tab can spawn them
+editor.loadJSON(graphDoc)
+editor.fitView()
+```
+
+## Framing the view
+
+`fitView` computes the bounding box of every node and frames it in the canvas — the reliable way to reveal a freshly loaded graph, however large.
+
+```ts
+editor.fitView()                                  // 64px padding, never zooms past 1×
+editor.fitView({ padding: 80, maxZoom: 1 })       // more margin
+editor.resetView()                                // back to identity
+```
+
+| Option    | Default              | Meaning                                    |
+|-----------|----------------------|--------------------------------------------|
+| `padding` | `64`                 | Screen-space margin kept clear on each side |
+| `maxZoom` | `1`                  | Never zoom **in** past this (keeps small graphs from filling the screen) |
+| `minZoom` | the editor's zoom floor | Never zoom **out** past this              |
+
+## Inserting nodes & reroutes
+
+```ts
+// Spawn a registered schema at a world position (undoable, selects it).
+editor.insertNode('Transform', { x: 320, y: 200 })
+editor.insertNode('Transform', midpoint, { center: true })  // centre on the point
+
+// Split an edge with an inline reroute knot at a world point.
+editor.insertRerouteOnEdge(edgeId, worldPos)
+
+// Remove just one edge; dangling inline reroutes are cleaned up automatically.
+editor.deleteEdge(edgeId)
+```
+
+### Two kinds of reroute
+
+- **Inline knot** (`$reroute`) — created by splitting an edge. A non-pullable dot that carries the wire through and takes the wire's type colour. It can't exist on its own: deleting its last connection removes it.
+- **Reroute node** (`Reroute`) — a movable rectangular relay you *can* pull fresh wires from. It's a built-in schema, so it always appears in the insert palette.
+
+## Interactions out of the box
+
+| Gesture | Action |
+|---------|--------|
+| `Tab` / double-click empty canvas | Open the insert palette (fuzzy search; built-in nodes rank first) |
+| Right-click an edge's midpoint dot | Context menu: **Add Node** (filtered to compatible types) · **Add Reroute** · **Delete** |
+| Drag from a pin | Live ghost edge with type-compatibility validation |
+| `Alt`+drag a connected pin | Tear the edge off and re-wire it |
+| Drag node / marquee | Move (8px snap, `Alt` to disable) / box-select |
+| `Delete` · `⌘Z` / `⌘⇧Z` · `⌘C`/`⌘V` · `⌘D` · `⌘A` | Delete · undo/redo · copy/paste · duplicate · select-all |
+
+## Busy overlay
+
+Heavy first renders (large graphs) can be wrapped in a themeable blur-and-spinner overlay. It paints first, runs your work behind the blur, then fades out — so big graphs reveal smoothly instead of freezing then popping in. It's styled by the active theme's `paletteStyle`.
+
+```ts
+await editor.withOverlay('Rendering…', () => {
+  editor.loadJSON(bigGraph)
+  editor.fitView()
+})
+
+// Or drive it manually:
+editor.showOverlay('Loading…')
+editor.hideOverlay()
+```

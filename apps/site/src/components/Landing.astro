@@ -13,19 +13,21 @@ const { lang } = Astro.props
 
 const docPath = lang === 'en' ? '/xenolith-graph/guides/install/' : `/xenolith-graph/${lang}/guides/install/`
 const playgroundPath = '/xenolith-graph/playground/'
+const demosPath = '/xenolith-graph/demos/'
+const demosLabel = lang === 'ru' ? 'ComfyUI демо' : lang === 'zh' ? 'ComfyUI 演示' : 'ComfyUI demo'
 
 const t = (() => {
   if (lang === 'ru') return {
     eyebrow: ['Node-graph редактор', 'PIXI v8 + GLSL', 'swappable темы'],
-    h1a:     'Один',
+    h1a:     'Вызовите',
     h1b:     'init',
-    h1c:     '— и у вас редактор.',
-    sub:     'Полированный node-graph редактор для веба со встроенной Blueprint-эстетикой и swappable-темами. Дефолт — Xen (дарк/голд). Liquid Glass — отдельная тема, рендерит ноды через PIXI Mesh + GLSL шейдер с настоящим backdrop sampling. Переключение в рантайме одной строкой.',
+    h1c:     'один раз — и получите редактор, который полюбят.',
+    sub:     'Красивый редактор узловых графов для веба — из коробки, без сборки дизайна с нуля. Перетаскивайте ноды, тяните связи, переключайте темы в один клик. Откройте playground или живое ComfyUI-демо и попробуйте сами за 10 секунд.',
     ctaPrimary:   'Открыть документацию',
     ctaSecondary: 'GitHub',
-    showcaseA: 'Xen — по умолчанию',
-    showcaseB: 'Liquid Glass — WWDC25 шейдер',
-    showcaseSub: 'Один и тот же 18-нодный граф, две темы. Liquid Glass подменяет renderNode на custom Mesh+GLSL c SDF refraction и 13×13 gaussian blur по реальному backdrop snapshot.',
+    showcaseA: 'Xen — тема по умолчанию',
+    showcaseB: 'Liquid Glass — вдохновлено новым дизайном Apple',
+    showcaseSub: 'Один и тот же граф, две совершенно разные темы — переключаются в рантайме одной строкой. Liquid Glass даёт нодам настоящий стеклянный материал с преломлением и размытием фона.',
     metrics: [
       { v: '2', l: 'темы из коробки' },
       { v: 'GLSL', l: 'custom рендер' },
@@ -60,15 +62,15 @@ editor.connect(a, 0, b, 1, { sourceType: 'float' })
   }
   if (lang === 'zh') return {
     eyebrow: ['节点图编辑器', 'PIXI v8 + GLSL', '可切换主题'],
-    h1a:     '一行',
+    h1a:     '调用一次',
     h1b:     'init',
-    h1c:     '即得到一个编辑器。',
-    sub:     '面向 Web 的高质量节点图编辑器，附带 Blueprint 风格设计系统和可切换主题。默认 Xen（深色/金）。Liquid Glass 是独立主题，通过 PIXI Mesh + GLSL 着色器渲染节点，带真正的背景采样。运行时一行切换。',
+    h1c:     '，即可交付让人喜爱的节点编辑器。',
+    sub:     '面向 Web 的精美节点图编辑器，开箱即用，无需从零搭建设计。拖拽节点、拉出连线、一键切换主题。打开 playground 或实时 ComfyUI 演示，10 秒上手。',
     ctaPrimary:   '查看文档',
     ctaSecondary: 'GitHub',
-    showcaseA: 'Xen — 默认',
-    showcaseB: 'Liquid Glass — WWDC25 着色器',
-    showcaseSub: '同一个 18 节点图，两种主题。Liquid Glass 将 renderNode 替换为带 SDF 折射和 13×13 高斯模糊的自定义 Mesh+GLSL。',
+    showcaseA: 'Xen — 默认主题',
+    showcaseB: 'Liquid Glass — 灵感源自苹果全新设计',
+    showcaseSub: '同一个图，两种截然不同的主题，运行时一行切换。Liquid Glass 为节点赋予真实的玻璃材质，带折射与背景模糊。',
     metrics: [
       { v: '2', l: '内置主题' },
       { v: 'GLSL', l: '自定义渲染' },
@@ -103,15 +105,15 @@ editor.connect(a, 0, b, 1, { sourceType: 'float' })
   }
   return {
     eyebrow: ['Node-graph editor', 'PIXI v8 + GLSL', 'swappable themes'],
-    h1a:     'One',
+    h1a:     'Call',
     h1b:     'init',
-    h1c:     '— and you have an editor.',
-    sub:     'A polished node-graph editor for the web with a Blueprint-style design system and swappable themes. Xen ships as the default (dark/gold). Liquid Glass is a separate theme — a custom PIXI Mesh + GLSL material with real backdrop sampling. Runtime swap in one line.',
+    h1c:     'once — and ship a node editor people love.',
+    sub:     'A beautiful node-graph editor for the web — gorgeous out of the box, no design work required. Drag nodes, pull connections, swap the whole look with one click. Open the playground or the live ComfyUI demo and try it yourself in ten seconds.',
     ctaPrimary:   'Open documentation',
     ctaSecondary: 'GitHub',
-    showcaseA: 'Xen — default',
-    showcaseB: 'Liquid Glass — WWDC25 shader',
-    showcaseSub: 'Same 18-node composition, two themes. Liquid Glass replaces renderNode with a custom Mesh + GLSL — SDF refraction, 13×13 gaussian blur on a real backdrop snapshot, vertical tint, luminous rim.',
+    showcaseA: 'Xen — the default theme',
+    showcaseB: 'Liquid Glass — inspired by new Apple design',
+    showcaseSub: 'The same graph, two completely different looks — swapped at runtime in a single line. Liquid Glass gives every node a real glass material with refraction and a blurred backdrop.',
     metrics: [
       { v: '2', l: 'themes in the box' },
       { v: 'GLSL', l: 'custom material' },
@@ -161,6 +163,7 @@ editor.connect(a, 0, b, 1, { sourceType: 'float' })
       <div class="xn-cta-row">
         <a class="xn-btn xn-btn-primary" href={docPath}>{t.ctaPrimary} <span aria-hidden="true">→</span></a>
         <a class="xn-btn xn-btn-ghost" href={playgroundPath}>{lang === 'ru' ? 'Открыть playground' : lang === 'zh' ? '打开 playground' : 'Open playground'}</a>
+        <a class="xn-btn xn-btn-ghost" href={demosPath}>{demosLabel}</a>
         <a class="xn-btn xn-btn-ghost" href="https://github.com/XenolithEngine/xenolith-graph">{t.ctaSecondary}</a>
       </div>
     </div>

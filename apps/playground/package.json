@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@xenolith/core": "workspace:*",
+    "@xenolith/demo": "workspace:*",
     "@xenolith/editor": "workspace:*",
     "@xenolith/render-pixi": "workspace:*",
     "@xenolith/theme-xen": "workspace:*",

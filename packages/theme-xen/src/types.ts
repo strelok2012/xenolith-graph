@@ -107,12 +107,17 @@ export interface XenTokens {
       minHorizontalSpread: number
       hitPadding: number
       pulseEnabled: boolean
+      midpointRadius: number
     }
     comment: {
       radius: number
       headerHeight: number
       minWidth: number
       minHeight: number
+    }
+    reroute: {
+      radius: number
+      ringWidth: number
     }
   }
   typography: {

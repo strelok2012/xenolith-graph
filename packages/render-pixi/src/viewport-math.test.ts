@@ -7,6 +7,7 @@ import {
   clampZoom,
   computeDragTarget,
   computeGroupSnappedDelta,
+  fitView,
   type ViewportState,
 } from './viewport-math.js'
 
@@ -119,6 +120,48 @@ describe('computeDragTarget', () => {
 
   it('throws if snap is non-positive', () => {
     expect(() => computeDragTarget({ x: 0, y: 0 }, { x: 0, y: 0 }, 0)).toThrow(/cellSize/i)
+  })
+})
+
+describe('fitView — frame a world-space bounds inside a screen viewport', () => {
+  const screen = { width: 800, height: 600 }
+
+  it('centres the content bounds in the viewport', () => {
+    const bounds = { x: 0, y: 0, width: 400, height: 300 }
+    const v = fitView(bounds, screen)
+    // The bounds centre (200,150) must map to the screen centre (400,300).
+    const c = worldToScreen({ x: 200, y: 150 }, v)
+    expect(c.x).toBeCloseTo(400, 4)
+    expect(c.y).toBeCloseTo(300, 4)
+  })
+
+  it('zooms so the content (plus padding) fits within the smaller axis', () => {
+    // 400×300 content into 800×600 screen with 0 padding: limiting axis is whichever ratio is
+    // smaller — both are 2.0 here, so zoom = 2.0.
+    const bounds = { x: 0, y: 0, width: 400, height: 300 }
+    const v = fitView(bounds, screen, { padding: 0, maxZoom: 4 })
+    expect(v.zoom).toBeCloseTo(2, 4)
+  })
+
+  it('respects padding by shrinking the usable screen area', () => {
+    const bounds = { x: 0, y: 0, width: 400, height: 300 }
+    const noPad = fitView(bounds, screen, { padding: 0, maxZoom: 4 })
+    const pad = fitView(bounds, screen, { padding: 100, maxZoom: 4 })
+    expect(pad.zoom).toBeLessThan(noPad.zoom)
+  })
+
+  it('clamps zoom to the provided bounds (never blows past maxZoom for tiny content)', () => {
+    const bounds = { x: 0, y: 0, width: 10, height: 10 }
+    const v = fitView(bounds, screen, { padding: 0, maxZoom: 1.5 })
+    expect(v.zoom).toBe(1.5)
+  })
+
+  it('returns a centred identity-ish view for empty/zero-size bounds without dividing by zero', () => {
+    const v = fitView({ x: 100, y: 100, width: 0, height: 0 }, screen, { maxZoom: 1 })
+    expect(Number.isFinite(v.x)).toBe(true)
+    expect(Number.isFinite(v.y)).toBe(true)
+    expect(Number.isFinite(v.zoom)).toBe(true)
+    expect(v.zoom).toBeGreaterThan(0)
   })
 })
 

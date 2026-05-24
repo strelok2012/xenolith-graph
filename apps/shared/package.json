@@ -1,0 +1,15 @@
+{
+  "name": "@xenolith/demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./demo-graph.ts",
+    "./comfy": "./comfy-import.ts"
+  },
+  "types": "./demo-graph.ts",
+  "dependencies": {
+    "@xenolith/core": "workspace:*",
+    "@xenolith/editor": "workspace:*"
+  }
+}

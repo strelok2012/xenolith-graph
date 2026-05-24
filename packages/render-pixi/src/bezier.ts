@@ -32,6 +32,15 @@ export function computeEdgePath(from: PinLayout, to: PinLayout, tokens: EdgeToke
   }
 }
 
+/** Point on the cubic bezier at t=0.5 — the wire's visual midpoint, where the edge handle dot is
+ *  drawn and right-click picking is anchored. */
+export function bezierMidpoint(path: EdgePath): Vec2 {
+  return {
+    x: 0.125 * path.start.x + 0.375 * path.c1.x + 0.375 * path.c2.x + 0.125 * path.end.x,
+    y: 0.125 * path.start.y + 0.375 * path.c1.y + 0.375 * path.c2.y + 0.125 * path.end.y,
+  }
+}
+
 export function sampleBezier(path: EdgePath, steps: number): Vec2[] {
   if (steps < 1) throw new Error(`sampleBezier: steps must be >= 1, got ${steps}`)
   const out: Vec2[] = []

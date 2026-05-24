@@ -4,7 +4,9 @@ export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
+  retries: process.env.CI ? 2 : 1,
+  timeout: 20_000,
+  expect: { timeout: 5_000 },
   reporter: process.env.CI ? 'github' : 'line',
   use: {
     baseURL: 'http://localhost:5173',

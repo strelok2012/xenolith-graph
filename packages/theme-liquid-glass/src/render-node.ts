@@ -1,4 +1,6 @@
 import {
+  CanvasTextMetrics,
+  Circle,
   Container,
   Geometry,
   Graphics,
@@ -6,6 +8,7 @@ import {
   Rectangle,
   Shader,
   Text,
+  TextStyle,
   Texture,
   type TextStyleFontWeight,
   type TextureSource,
@@ -15,6 +18,7 @@ import type { XenTokens } from '@xenolith/theme-xen'
 import {
   computeNodeLayout,
   markPinInteractive,
+  rerouteStateColor,
   resolveCategoryAccent,
   resolvePinFill,
   resolvePinStroke,
@@ -174,9 +178,16 @@ export function renderNodeLiquidGlass(
   const expandedW = layout.body.width
   const expandedH = layout.body.height
   const expandedRadius = geo.node.radius
-  const pillW = geo.node.pillMinWidth
   const pillH = geo.node.pillHeight
   const pillR = geo.node.pillRadius
+  // Pill width must fit the title (it sits at x=34) plus a trailing cap, not a fixed minimum —
+  // otherwise long titles like "Workflow Information" overflow the capsule.
+  const titleText = opts.title ?? node.type
+  const titleW = CanvasTextMetrics.measureText(
+    titleText,
+    new TextStyle({ fontFamily: tokens.typography.fontFamily, fontSize: tokens.typography.heading.size, fontWeight: '700' }),
+  ).width
+  const pillW = Math.max(geo.node.pillMinWidth, 34 + titleW + pillR)
   // Xen canon: pill is vertically centred within the expanded body's bounds when collapsed.
   const pillOffsetY = (expandedH - pillH) / 2
 
@@ -191,6 +202,15 @@ export function renderNodeLiquidGlass(
   pillBody.position.set(0, pillOffsetY)
   container.addChild(expandedBody)
   container.addChild(pillBody)
+  // Clip each glass mesh to its exact rounded-rect silhouette. The shader's rounded-rect AA can
+  // leave the quad corners faintly square ("clipped" look); a hard mask guarantees crisp rounded
+  // corners — same fix proven on the reroute knots.
+  const expandedMask = new Graphics().roundRect(0, 0, expandedW, expandedH, expandedRadius).fill({ color: 0xffffff })
+  container.addChild(expandedMask)
+  expandedBody.mask = expandedMask
+  const pillMask = new Graphics().roundRect(0, pillOffsetY, pillW, pillH, pillR).fill({ color: 0xffffff })
+  container.addChild(pillMask)
+  pillBody.mask = pillMask
 
   // ===== Inner content (header tint + pin labels + chevron+title for expanded form) ==========
   const expandedInner = new Container({ label: 'expanded-inner' })
@@ -204,7 +224,15 @@ export function renderNodeLiquidGlass(
     .fill({ color: accent, alpha: 0.45 })
   expandedInner.addChild(headerTint)
 
-  const titleText = opts.title ?? node.type
+  // Collapsed pill carries the category accent across its whole body (the glass alone reads as
+  // "some node" — this is the type cue, mirroring the header tint of the expanded form). Only
+  // visible in pill form; sits above the glass, below the pill title.
+  const pillTint = new Graphics()
+    .roundRect(0, pillOffsetY, pillW, pillH, pillR)
+    .fill({ color: accent, alpha: 0.4 })
+  pillTint.visible = false
+  container.addChild(pillTint)
+
   const title = new Text({
     text: titleText,
     style: {
@@ -332,6 +360,7 @@ export function renderNodeLiquidGlass(
       pillBody.visible = true
       expandedInner.visible = false
       pillTitle.visible = true
+      pillTint.visible = true
       selectionRim.clear()
         .roundRect(0, pillOffsetY, pillW, pillH, pillR)
         .stroke({ color: '#FFFFFF', width: 1.5, alignment: 0.5 })
@@ -343,6 +372,7 @@ export function renderNodeLiquidGlass(
       pillBody.visible = false
       expandedInner.visible = true
       pillTitle.visible = false
+      pillTint.visible = false
       selectionRim.clear()
         .roundRect(0, 0, expandedW, expandedH, expandedRadius)
         .stroke({ color: '#FFFFFF', width: 1.5, alignment: 0.5 })
@@ -376,6 +406,137 @@ export function renderNodeLiquidGlass(
     pinLocalPosition(pinId) {
       return (collapsed ? pillPinPositions : expandedPinPositions).get(pinId) ?? null
     },
+  }
+}
+
+/** Liquid Glass reroute knot — a glass disc. The glass shader draws a rounded rect; with a square
+ *  the size of the dot and a corner radius equal to half its side, that rounded rect is a perfect
+ *  circle that refracts the backdrop just like a full node. */
+export function renderRerouteLiquidGlass(
+  node: Node,
+  tokens: XenTokens,
+  opts: RenderNodeOptions = {},
+  ctx: ThemeRenderContext = { backdropTexture: null },
+): NodeView {
+  const r = tokens.geometry.reroute.radius
+  const d = 2 * r
+  const cy = r
+
+  const container = new Container({ label: `reroute-liquid-glass:${node.id}` })
+  container.position.set(node.position.x, node.position.y)
+  container.eventMode = 'static'
+
+  const disc = createGlassMesh(String(node.id), d, d, r, tokens, ctx.backdropTexture)
+  disc.hitArea = new Circle(r, r, r)
+  container.addChild(disc)
+  // Clip the glass mesh to a hard circle so the knot is unambiguously round (the shader's
+  // rounded-rect AA can leave the quad corners faintly visible at this small size).
+  const discMask = new Graphics().circle(r, r, r).fill({ color: 0xffffff })
+  container.addChild(discMask)
+  disc.mask = discMask
+
+  const outPin = node.pins.find((p) => p.direction === 'out')
+  const inPin = node.pins.find((p) => p.direction === 'in')
+  const wireType = String(outPin?.type ?? inPin?.type ?? 'any')
+  // Tint the whole glass disc with a soft type-coloured fill — the same treatment a collapsed node
+  // gets (a wash over the glass, not a bright inner ring), so the knot reads as glass first and its
+  // wire type second. Clipped to the same circle so it never bleeds past the disc edge.
+  const tint = new Graphics()
+    .circle(r, r, r)
+    .fill({ color: resolvePinFill(wireType, tokens), alpha: 0.4 })
+  container.addChild(tint)
+
+  const rim = new Graphics()
+    .circle(r, r, r + 1)
+    .stroke({ color: 0xffffff, width: 1.5, alignment: 0.5 })
+  rim.alpha = 0
+  container.addChild(rim)
+
+  // Inline reroute: anchor points only, no interactive (pullable) pin handles — the glass disc
+  // body stays the grab target and new wires can't be started from the knot.
+  const pinLocal = new Map<string, { x: number; y: number }>()
+  for (const pin of node.pins) {
+    pinLocal.set(String(pin.id), { x: pin.direction === 'in' ? 0 : d, y: cy })
+  }
+
+  return {
+    container,
+    setVisualState(state) {
+      const c = rerouteStateColor(state, tokens)
+      if (!c) { rim.alpha = 0; return }
+      rim.tint = c
+      rim.alpha = state === 'hover' ? 0.6 : 0.95
+    },
+    setCollapsed: () => {},
+    isCollapsed: () => false,
+    pinLocalPosition: (pinId) => pinLocal.get(pinId) ?? null,
+  }
+}
+
+/** Liquid Glass palette Reroute node — a compact glass body with pullable In/Out pins. Mirrors the
+ *  Xen `renderRerouteNodeBox` but with the glass material. */
+export function renderRerouteNodeBoxLiquidGlass(
+  node: Node,
+  tokens: XenTokens,
+  opts: RenderNodeOptions = {},
+  ctx: ThemeRenderContext = { backdropTexture: null },
+): NodeView {
+  const h = tokens.geometry.pin.diameter + 16
+  const w = 56
+  const radius = Math.min(tokens.geometry.node.radius, h / 2)
+  const cy = h / 2
+
+  const container = new Container({ label: `reroute-node-liquid-glass:${node.id}` })
+  container.position.set(node.position.x, node.position.y)
+  container.eventMode = 'static'
+
+  const body = createGlassMesh(String(node.id), w, h, radius, tokens, ctx.backdropTexture)
+  body.hitArea = new Rectangle(0, 0, w, h)
+  container.addChild(body)
+  const bodyMask = new Graphics().roundRect(0, 0, w, h, radius).fill({ color: 0xffffff })
+  container.addChild(bodyMask)
+  body.mask = bodyMask
+
+  // Tint the glass relay by the type flowing through it (resolved from the out pin, falling back to
+  // the in pin) — the same soft wash the inline knot and collapsed pills carry. Itself a rounded
+  // rect of the body shape, so it stays within the glass edge without a shared mask.
+  const inPin = node.pins.find((p) => p.direction === 'in')
+  const outPin = node.pins.find((p) => p.direction === 'out')
+  const wireType = String(outPin?.type ?? inPin?.type ?? 'any')
+  container.addChild(
+    new Graphics().roundRect(0, 0, w, h, radius).fill({ color: resolvePinFill(wireType, tokens), alpha: 0.4 }),
+  )
+
+  const rim = new Graphics()
+    .roundRect(-1, -1, w + 2, h + 2, radius + 1)
+    .stroke({ color: 0xffffff, width: 1.5, alignment: 0.5 })
+  rim.alpha = 0
+  container.addChild(rim)
+
+  const pinLocal = new Map<string, { x: number; y: number }>()
+  const pinRadius = tokens.geometry.pin.diameter / 2
+  for (const pin of node.pins) {
+    const px = pin.direction === 'in' ? 0 : w
+    pinLocal.set(String(pin.id), { x: px, y: cy })
+    const g = new Graphics()
+      .circle(px, cy, pinRadius)
+      .fill({ color: resolvePinFill(String(pin.type), tokens) })
+      .stroke({ color: resolvePinStroke(String(pin.type), tokens), width: tokens.geometry.pin.stroke })
+    markPinInteractive(g, pin, String(node.id), px, cy, pinRadius)
+    container.addChild(g)
+  }
+
+  return {
+    container,
+    setVisualState(state) {
+      const c = rerouteStateColor(state, tokens)
+      if (!c) { rim.alpha = 0; return }
+      rim.tint = c
+      rim.alpha = state === 'hover' ? 0.6 : 0.95
+    },
+    setCollapsed: () => {},
+    isCollapsed: () => false,
+    pinLocalPosition: (pinId) => pinLocal.get(pinId) ?? null,
   }
 }
 

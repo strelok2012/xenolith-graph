@@ -19,10 +19,32 @@ export interface ThemeRenderContext {
   backdropTexture: TextureSource | null
 }
 
+/** CSS-level styling for DOM chrome (the insert palette, future panels). Themes provide this so
+ *  the HTML overlays restyle alongside the PIXI canvas. Liquid Glass uses a frosted-glass
+ *  approximation here (backdrop-filter blur) rather than the real backdrop-sampling shader —
+ *  CSS is enough for chrome. Any omitted field falls back to a Xen-derived default. */
+export interface PaletteStyle {
+  /** CSS backdrop-filter value, e.g. 'blur(14px) saturate(140%)'. Omit / 'none' for flat themes. */
+  backdropFilter?: string
+  panelBackground: string
+  panelBorder: string
+  panelShadow?: string
+  panelRadius?: string
+  textColor: string
+  mutedColor: string
+  /** Highlight colour for matched query characters and the active row accent. */
+  accent: string
+  rowSelectedBackground: string
+  inputBackground: string
+  inputBorder?: string
+}
+
 export interface XenolithTheme {
   /** Stable identifier used for diffing in setTheme and for telemetry. */
   id: string
   tokens: XenTokens
+  /** CSS styling for DOM chrome (insert palette). Falls back to a Xen-derived default. */
+  paletteStyle?: PaletteStyle
   /** Opt-in flag — when true, the editor maintains a per-frame backdrop RenderTexture and
    *  surfaces it via `ThemeRenderContext.backdropTexture`. Themes that don't sample the
    *  backdrop (Xen, vanilla flat themes) leave this false so the editor skips the extra render
@@ -30,6 +52,12 @@ export interface XenolithTheme {
   needsBackdrop?: boolean
   /** Custom node rendering pipeline. Themes that need backdrop sampling read ctx.backdropTexture. */
   renderNode?: (node: Node, opts: RenderNodeOptions, ctx: ThemeRenderContext) => NodeView
+  /** Custom reroute-knot rendering. Falls back to the Xen disc (`renderRerouteNode`) when omitted.
+   *  Liquid Glass draws a glass disc here. */
+  renderReroute?: (node: Node, opts: RenderNodeOptions, ctx: ThemeRenderContext) => NodeView
+  /** Custom palette Reroute-node rendering (the compact headerless box). Falls back to the Xen box
+   *  (`renderRerouteNodeBox`) when omitted. */
+  renderRerouteNode?: (node: Node, opts: RenderNodeOptions, ctx: ThemeRenderContext) => NodeView
   /** Custom wire rendering. Returns the same `Graphics` so the editor can reuse the instance. */
   drawEdge?: (g: Graphics, from: PinLayout, to: PinLayout, opts: RenderEdgeOptions) => Graphics
   /** Custom canvas background / grid. Return an empty Container to mean "no grid at all". */

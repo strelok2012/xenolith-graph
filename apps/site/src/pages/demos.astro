@@ -1,0 +1,160 @@
+---
+import '../styles/fonts.css'
+import '../styles/theme.css'
+const base = import.meta.env.BASE_URL
+---
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>XenolithGraph — Demos · ComfyUI</title>
+    <link rel="icon" href={`${base}favicon-64.png`} />
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #1A1A1A; color: #FFFFFF; overflow: hidden; }
+      body { font-family: var(--xn-sans); }
+      #app { position: fixed; inset: 0; }
+      .d-bar {
+        position: fixed; top: 16px; left: 16px; z-index: 10;
+        display: flex; gap: 12px; align-items: center;
+        font-family: var(--xn-display);
+        font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; font-weight: 500;
+        color: var(--xn-gold);
+        background: rgba(20, 20, 20, 0.78);
+        border: 1px solid var(--xn-hair);
+        backdrop-filter: blur(8px);
+        padding: 8px 14px; border-radius: 10px;
+      }
+      .d-bar a {
+        color: var(--xn-bone-dim); text-decoration: none;
+        font-family: var(--xn-sans); letter-spacing: 0; text-transform: none; font-size: 13px;
+      }
+      .d-bar a:hover { color: var(--xn-gold-bright); }
+      .d-bar .sep { color: var(--xn-hair); }
+      .d-group {
+        position: fixed; top: 16px; z-index: 10;
+        display: flex; gap: 4px;
+        background: rgba(0, 0, 0, 0.45);
+        backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        padding: 4px; border-radius: 8px;
+      }
+      #workflow-switcher { right: 200px; }
+      #theme-switcher    { right: 16px; }
+      .d-group button {
+        font-family: var(--xn-display);
+        font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 500;
+        background: transparent; border: none; color: rgba(255, 255, 255, 0.7);
+        padding: 6px 12px; border-radius: 5px; cursor: pointer; white-space: nowrap;
+      }
+      .d-group button.active { background: rgba(255, 255, 255, 0.16); color: #fff; }
+      .d-hint {
+        position: fixed; bottom: 16px; left: 16px; z-index: 10;
+        font-size: 12px; color: rgba(255,255,255,0.55); max-width: 60ch;
+        font-family: var(--xn-sans);
+        background: rgba(20, 20, 20, 0.78);
+        border: 1px solid var(--xn-hair-soft);
+        padding: 10px 14px; border-radius: 8px;
+        backdrop-filter: blur(8px);
+        line-height: 1.5;
+      }
+      .d-hint strong { color: var(--xn-gold); font-weight: 600; }
+      kbd {
+        font-family: var(--xn-mono); font-size: 11px;
+        background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 4px; padding: 1px 5px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="d-bar">
+      <strong>Demos · ComfyUI</strong>
+      <span class="sep">/</span>
+      <a href={base}>← Site</a>
+      <a href={`${base}/playground/`}>Playground</a>
+    </div>
+    <div class="d-group" id="workflow-switcher">
+      <button data-wf="medium" class="active">Searge · 110</button>
+      <button data-wf="xxl">Searge · 298</button>
+    </div>
+    <div class="d-group" id="theme-switcher">
+      <button data-theme="xen" class="active">Xen</button>
+      <button data-theme="liquid-glass">Liquid Glass</button>
+    </div>
+    <div id="app"></div>
+    <div class="d-hint">
+      <strong>Real ComfyUI workflow</strong>, imported into Xenolith via <code>importComfyWorkflow</code> →
+      <code>editor.loadJSON</code>. ComfyUI <code>Reroute</code> nodes map onto Xenolith's inline knots;
+      pin types carry their wire colour. Drop your own ComfyUI <kbd>.json</kbd> onto the canvas to import it.
+    </div>
+    <script>
+      import { XenolithEditor } from '@xenolith/editor'
+      import { xenTheme } from '@xenolith/render-pixi'
+      import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
+      import { importComfyWorkflow } from '@xenolith/demo/comfy'
+
+      // BASE_URL may arrive with or without a trailing slash depending on context — normalise.
+      const BASE = import.meta.env.BASE_URL.replace(/\/?$/, '/')
+      const THEMES = { xen: xenTheme, 'liquid-glass': liquidGlassTheme }
+      const WORKFLOWS = {
+        medium: { url: `${BASE}workflows/searge-medium.json`, label: 'Searge Medium' },
+        xxl:    { url: `${BASE}workflows/searge-xxl.json`,    label: 'Searge XXL' },
+      }
+
+      const editor = await XenolithEditor.init('#app', {
+        theme: xenTheme,
+        zoomBounds: [0.04, 2],
+      })
+
+      function importAndFit(workflow) {
+        const { graph, schemas } = importComfyWorkflow(workflow)
+        editor.registry.clear()
+        for (const s of schemas) editor.registry.register(s)
+        editor.loadJSON(graph)
+        editor.fitView({ padding: 80, maxZoom: 1 })
+      }
+
+      async function loadFromUrl(url, label) {
+        await editor.withOverlay(`Loading ${label}…`, async () => {
+          const res = await fetch(url)
+          importAndFit(await res.json())
+        })
+      }
+
+      // Wire the workflow + theme switchers.
+      const wfSwitcher = document.getElementById('workflow-switcher')
+      wfSwitcher?.addEventListener('click', (e) => {
+        const btn = e.target instanceof HTMLButtonElement ? e.target : null
+        const key = btn?.dataset.wf
+        const wf = key && WORKFLOWS[key]
+        if (!wf) return
+        for (const b of wfSwitcher.querySelectorAll('button')) b.classList.toggle('active', b.dataset.wf === key)
+        void loadFromUrl(wf.url, wf.label)
+      })
+
+      const themeSwitcher = document.getElementById('theme-switcher')
+      themeSwitcher?.addEventListener('click', (e) => {
+        const btn = e.target instanceof HTMLButtonElement ? e.target : null
+        const name = btn?.dataset.theme
+        const theme = name && THEMES[name]
+        if (!theme) return
+        editor.setTheme(theme)
+        for (const b of themeSwitcher.querySelectorAll('button')) b.classList.toggle('active', b.dataset.theme === name)
+      })
+
+      // Drag-and-drop your own workflow.
+      window.addEventListener('dragover', (e) => e.preventDefault())
+      window.addEventListener('drop', (e) => {
+        e.preventDefault()
+        const file = e.dataTransfer?.files?.[0]
+        if (!file) return
+        void file.text().then((txt) =>
+          editor.withOverlay(`Importing ${file.name}…`, () => importAndFit(JSON.parse(txt))),
+        )
+      })
+
+      await loadFromUrl(WORKFLOWS.medium.url, WORKFLOWS.medium.label)
+      ;(window as any).__xenoEditor = editor
+    </script>
+  </body>
+</html>

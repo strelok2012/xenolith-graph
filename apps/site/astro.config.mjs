@@ -56,6 +56,7 @@ export default defineConfig({
           items: [
             { slug: 'guides/install' },
             { slug: 'guides/init' },
+            { slug: 'guides/api' },
           ],
         },
         {
