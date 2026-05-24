@@ -71,6 +71,10 @@ export interface RenderNodeOptions {
    *  shared textures keyed by (size × radius × style). Without it, each glow falls back to a
    *  live BlurFilter (acceptable for unit tests, expensive at scale). */
   renderer?: Renderer | null
+  /** Called whenever the view mutates outside the editor's knowledge — currently the internal
+   *  collapse/expand animation, which drives itself on Ticker.shared. The editor uses this to
+   *  mark its render-on-demand loop dirty so animation frames actually paint. */
+  requestRender?: () => void
 }
 
 export interface NodeView {
@@ -616,6 +620,7 @@ export function renderNode(
     if (!animated) {
       collapseFraction = targetFraction
       applyFraction(targetFraction)
+      opts.requestRender?.()
       return
     }
     if (animationTicker) {
@@ -632,6 +637,7 @@ export function renderNode(
       const eased = 1 - Math.pow(1 - t, 3)
       collapseFraction = start + delta * eased
       applyFraction(collapseFraction)
+      opts.requestRender?.()
       if (t >= 1 && animationTicker) {
         Ticker.shared.remove(animationTicker)
         animationTicker = null

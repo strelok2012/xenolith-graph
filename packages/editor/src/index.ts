@@ -157,6 +157,10 @@ export class XenolithEditor {
   #statsEl: HTMLDivElement | null = null
   #statsVisible = false
   #statsFrame = 0
+  /** Render-on-demand dirty flag. The ticker only repaints (and reruns edge redraw + backdrop +
+   *  shader onFrame) on frames where this is set. A static graph costs ~0 — no GPU work, no
+   *  shader passes. Starts true so the first frame paints. */
+  #needsRender = true
   #theme: XenolithTheme
   #gridLayer: Container | null = null
   /** Live snapshot of the world MINUS the nodes layer — created lazily the first time the
@@ -240,26 +244,45 @@ export class XenolithEditor {
       this.#interaction = null
     }
 
-    this.selection.on(() => this.#updateVisualStates())
+    this.selection.on(() => { this.#updateVisualStates(); this.#requestRender() })
+    this.#viewport.on(() => this.#requestRender())
 
     // View-sync: after every command apply/undo/redo, reconcile views with the graph model so
     // undo of a Move/Connect/Remove visually reverts the canvas. We defer the reconcile to a
     // microtask so a transaction that fires N command:applied events collapses to one O(N) sync
     // instead of N × O(N+E) = O(N²) — critical for paste/duplicate at high node counts.
-    const scheduleSync = (): void => this.#scheduleSync()
+    const scheduleSync = (): void => { this.#scheduleSync(); this.#requestRender() }
     this.#coreEvents.on('command:applied', scheduleSync)
     this.#coreEvents.on('command:undone',  scheduleSync)
     this.#coreEvents.on('command:redone',  scheduleSync)
 
-    // Redraw every edge each frame so collapse/expand animations track pin positions live.
-    // The cost is one drawEdge per edge per frame — cheap on Graphics in PIXI v8.
+    // Render-on-demand: drop PIXI's unconditional per-frame render and drive it ourselves only
+    // when the scene is dirty. On a static graph the ticker callback does a single boolean check
+    // and returns — no edge redraw, no backdrop RT pass, no shader work, no GPU submit.
+    app.ticker.remove(app.render, app)
     app.ticker.add(() => {
+      if (this.#statsVisible) this.#tickStats()
+      if (!this.#needsRender) return
+      this.#needsRender = false
       for (const edgeId of this.#edgeRecords.keys()) this.#redrawEdge(edgeId)
       this.#updateBackdrop()
       this.#theme.onFrame?.(this.#themeContext())
-      if (this.#statsVisible) this.#tickStats()
+      this.#app.render()
     })
+
+    if (opts.resizeToWindow !== false) {
+      window.addEventListener('resize', this.#onResize)
+    }
   }
+
+  /** Mark the scene dirty so the next ticker frame repaints. Cheap to call repeatedly — the flag
+   *  collapses many calls in one frame into a single render. */
+  #requestRender = (): void => { this.#needsRender = true }
+  readonly #onResize = (): void => { this.#requestRender() }
+
+  /** Force a repaint on the next frame regardless of internal dirty tracking. Hosts can call
+   *  this after mutating the canvas element / DPR or any state the editor can't observe. */
+  requestRender(): void { this.#requestRender() }
 
   /** Show or hide the stats overlay (FPS, node/edge/selection counts, zoom). Hotkey: backtick.
    *  No render cost when hidden — the overlay is detached from the DOM. */
@@ -355,7 +378,11 @@ export class XenolithEditor {
   // is currently active.
 
   #renderNode(node: Node, opts: RenderNodeOptions): NodeView {
-    const enriched: RenderNodeOptions = { ...opts, renderer: this.#app.renderer as never }
+    const enriched: RenderNodeOptions = {
+      ...opts,
+      renderer: this.#app.renderer as never,
+      requestRender: this.#requestRender,
+    }
     return this.#theme.renderNode?.(node, enriched, this.#themeContext()) ?? renderNode(node, this.#theme.tokens, enriched)
   }
   #drawEdge(g: Graphics, from: PinLayout, to: PinLayout, opts: RenderEdgeOptions): Graphics {
@@ -494,6 +521,7 @@ export class XenolithEditor {
     this.#views.set(node.id, view)
     this.#nodesLayer.addChild(view.container)
     this.#wireNodeInteraction(node.id, view)
+    this.#requestRender()
     return node
   }
 
@@ -513,6 +541,7 @@ export class XenolithEditor {
     }
     this.graph._addEdge(edge)
     this.#materializeEdge(edge, opts)
+    this.#requestRender()
     return edge.id
   }
 
@@ -789,10 +818,12 @@ export class XenolithEditor {
     }
     this.#updateVisualStates()
     // Edges re-paint themselves through the ticker via #drawEdge — no explicit pass needed.
+    this.#requestRender()
   }
 
   destroy(): void {
     window.removeEventListener('keydown', this.#onKeyDown)
+    window.removeEventListener('resize', this.#onResize)
     this.#interaction?.detach()
     this.#backdropRT?.destroy(true)
     this.#app.destroy(true, { children: true })
@@ -1059,6 +1090,7 @@ export class XenolithEditor {
 
     stage.on('pointerdown', (e: FederatedPointerEvent) => {
       if (e.button !== 0) return
+      this.#requestRender()
       const pin = readPinHandle(e.target)
       if (pin) {
         // Alt+pin on a connected pin = "tear off" the edge and continue dragging the loose
@@ -1089,10 +1121,15 @@ export class XenolithEditor {
     stage.on('pointermove', (e: FederatedPointerEvent) => {
       const current = { x: e.global.x, y: e.global.y }
       this.#lastPointerWorld = screenToWorld(current, this.#viewport.state)
+      // Note: no blanket requestRender here. Bare cursor movement over the canvas changes
+      // nothing on screen — hover transitions repaint via the node pointerover/pointerout
+      // handlers. We only mark dirty inside the branches that actually mutate visuals (active
+      // drag, pin-drag ghost, marquee rect).
 
       if (this.#dragState.kind === 'pin-drag') {
         const target = readPinHandle(e.target)
         this.#updatePinDrag(current, target)
+        this.#requestRender()
         return
       }
 
@@ -1124,6 +1161,7 @@ export class XenolithEditor {
           view.container.position.set(initial.x + snappedDelta.x, initial.y + snappedDelta.y)
         }
         for (const edgeId of this.#dragState.affectedEdges) this.#redrawEdge(edgeId)
+        this.#requestRender()
         return
       }
 
@@ -1150,10 +1188,12 @@ export class XenolithEditor {
           }
         }
         this.#updateVisualStates()
+        this.#requestRender()
       }
     })
 
     const endStage = (e: FederatedPointerEvent): void => {
+      this.#requestRender()
       if (this.#dragState.kind === 'pin-drag') {
         this.#endPinDrag(readPinHandle(e.target))
         return
@@ -1196,10 +1236,12 @@ export class XenolithEditor {
     view.container.on('pointerover', () => {
       this.#hoveredId = id
       this.#updateVisualStates()
+      this.#requestRender()
     })
     view.container.on('pointerout', () => {
       if (this.#hoveredId === id) this.#hoveredId = null
       this.#updateVisualStates()
+      this.#requestRender()
     })
     view.container.on('pointerdown', (e: FederatedPointerEvent) => {
       if (e.button !== 0) return
