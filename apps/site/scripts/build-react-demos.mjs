@@ -11,8 +11,11 @@ const repoRoot = resolve(here, '..', '..', '..')
 const demoDist = resolve(repoRoot, 'apps', 'demo-react', 'dist')
 const out = resolve(here, '..', 'public', 'react-demos')
 
-console.log('[react-demos] building @xenolith/demo-react…')
-execSync('pnpm --filter @xenolith/demo-react build', { stdio: 'inherit', cwd: repoRoot })
+// Run vite directly (NOT the package's `build`, which prefixes `tsc -b`). Like the docs site itself,
+// vite resolves @xenolith/* via aliases to each package's src — so no built .d.ts/dist is required,
+// which the CI build-site job (packages unbuilt) doesn't have. Typecheck stays in the `test` job.
+console.log('[react-demos] building @xenolith/demo-react (vite)…')
+execSync('pnpm --filter @xenolith/demo-react exec vite build', { stdio: 'inherit', cwd: repoRoot })
 
 rmSync(out, { recursive: true, force: true })
 cpSync(demoDist, out, { recursive: true })
