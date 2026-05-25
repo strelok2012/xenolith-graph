@@ -1,4 +1,4 @@
-import { Application, Container, EventEmitter as PixiEventEmitter, FederatedPointerEvent, Graphics, RenderTexture, type ContainerChild, type TextureSource } from 'pixi.js'
+import { Application, BitmapFontManager, Container, EventEmitter as PixiEventEmitter, FederatedPointerEvent, Graphics, Rectangle, RenderTexture, Sprite, Texture, type ContainerChild, type TextureSource } from 'pixi.js'
 import {
   AddNode,
   CommandBus,
@@ -10,6 +10,7 @@ import {
   NodeRegistry,
   RemoveNode,
   Selection,
+  SetNodeState,
   isReroute,
   createReroute,
   rerouteNodeSchema,
@@ -17,13 +18,18 @@ import {
   createEdgeId,
   createNodeId,
   createPinId,
+  clampWidgetValue,
+  widgetValue,
+  comboOptions,
   type CoreEvents,
+  type WidgetStyle,
   type Edge,
   type EdgeId,
   type Node,
   type NodeId,
   type Pin,
   type PinId,
+  type WidgetSpec,
 } from '@xenolith/core'
 import {
   bezierMidpoint,
@@ -45,14 +51,24 @@ import {
   rerouteSize,
   rerouteBoxSize,
   computeGroupSnappedDelta,
+  computeWidgetRects,
   fitView,
+  isDomWidgetController,
   readPinHandle,
   resolvePinFill,
   screenToWorld,
   snapToGrid,
   Viewport,
   xenTheme,
+  resolveWidgetStyle,
+  widgetCssVars,
+  themeCssVars,
+  type CanvasWidgetController,
+  type CustomWidgetController,
+  type DomWidgetController,
+  type WidgetLayoutTokens,
   type NodeView,
+  type WidgetHit,
   type PinHandle,
   type PinLayout,
   type RenderEdgeOptions,
@@ -70,6 +86,9 @@ import { computeRerouteBridges } from './reroute-bridge.js'
 import { spliceCompatible, danglingRerouteRemovalPlan } from './edge-insert.js'
 import { InsertPalette } from './palette.js'
 import { EdgeContextMenu } from './edge-menu.js'
+import { WidgetOverlay, type OverlayRect } from './widget-overlay.js'
+import { Minimap, type MinimapPosition } from './minimap.js'
+import { createGraphEventBridge, type EditorEvents } from './events.js'
 import {
   parseXenolithGraph,
   serializeXenolithGraph,
@@ -90,7 +109,10 @@ export type {
 } from './serialize.js'
 
 export { NodeRegistry } from '@xenolith/core'
-export type { NodeSchema, PinSchema, NodeSearchResult } from '@xenolith/core'
+export type { NodeSchema, PinSchema, NodeSearchResult, WidgetSpec, WidgetStyle, WidgetType, Node, Edge, NodeId, EdgeId, PinId } from '@xenolith/core'
+export type { CustomWidgetController, CanvasWidgetController, DomWidgetController, CustomWidgetContext, ViewportState } from '@xenolith/render-pixi'
+export type { MinimapPosition } from './minimap.js'
+export type { EditorEvents } from './events.js'
 
 export const VERSION = '0.0.0'
 
@@ -111,6 +133,9 @@ export interface XenolithEditorOptions {
   disableGrid?: boolean
   /** Snap cell size in world pixels when dragging. Hold Alt during drag to disable. Default: 8. */
   snap?: number
+  /** Show the overview minimap. `true` uses the default (bottom-right) placement; pass an object to
+   *  set the corner/edge anchor or exact screen coordinates. Toggle later via `setMinimapVisible`. */
+  minimap?: boolean | { position?: MinimapPosition }
 }
 
 function resolveTheme(input: XenolithTheme | DeepPartial<XenTokens> | undefined): XenolithTheme {
@@ -248,7 +273,15 @@ export class XenolithEditor {
    *  endpoint types (so the palette filters to compatible nodes). Consumed by `#insertFromPalette`. */
   #pendingEdgeSplice: { edgeId: EdgeId; srcType: string; dstType: string } | null = null
   #edgeMenu: EdgeContextMenu | null = null
+  #widgetOverlay: WidgetOverlay | null = null
+  /** Screen-anchored DOM layer over the WebGL canvas for in-editor chrome (panels, controls,
+   *  framework components). The container ignores pointer events; children opt back in. Created
+   *  lazily on first `overlayRoot` access so headless/test editors pay nothing. */
+  #overlayRoot: HTMLDivElement | null = null
+  #minimap: Minimap | null = null
+  readonly #widgetControllers = new Map<string, CustomWidgetController>()
   readonly #coreEvents = new EventEmitter<CoreEvents>()
+  readonly #events = new EventEmitter<EditorEvents>()
   #hoveredId: NodeId | null = null
   readonly #marqueeHovered = new Set<NodeId>()
   #dragState: DragState = { kind: 'idle' }
@@ -296,6 +329,10 @@ export class XenolithEditor {
       })
       app.stage.eventMode = 'static'
       app.stage.hitArea = app.screen
+      // Any pointerdown that reaches the stage means the user is interacting with content, not
+      // navigating — drop the navigation freeze at once so the live node (chevron, pins, widgets,
+      // drag) responds immediately rather than being stuck behind a frozen sprite for ~130ms.
+      app.stage.on('pointerdown', () => { if (this.#frozen) this.#endFreeze() })
       this.#wireStageInteraction()
       window.addEventListener('keydown', this.#onKeyDown)
       ;(app.canvas as HTMLCanvasElement).addEventListener('dblclick', this.#onDoubleClick)
@@ -304,8 +341,21 @@ export class XenolithEditor {
       this.#interaction = null
     }
 
-    this.selection.on(() => { this.#updateVisualStates(); this.#requestRender() })
-    this.#viewport.on(() => this.#requestRender())
+    this.selection.on((e) => {
+      this.#updateVisualStates(); this.#requestRender()
+      this.#events.emit('selection:changed', { nodeIds: e.ids })
+    })
+    this.#viewport.on((vp) => { this.#onViewportChanged(); this.#events.emit('viewport:changed', { x: vp.x, y: vp.y, zoom: vp.zoom }) })
+
+    // Bridge command-bus lifecycle → public graph-mutation events (covers programmatic API, palette,
+    // paste, drag-commit, and undo/redo through one choke point).
+    createGraphEventBridge({
+      coreEvents: this.#coreEvents,
+      graph: this.graph,
+      bus: this.#events,
+      canUndo: () => this.commandBus.canUndo(),
+      canRedo: () => this.commandBus.canRedo(),
+    })
 
     // View-sync: after every command apply/undo/redo, reconcile views with the graph model so
     // undo of a Move/Connect/Remove visually reverts the canvas. We defer the reconcile to a
@@ -324,21 +374,211 @@ export class XenolithEditor {
       if (this.#statsVisible) this.#tickStats()
       if (!this.#needsRender) return
       this.#needsRender = false
-      for (const edgeId of this.#edgeRecords.keys()) this.#redrawEdge(edgeId)
-      this.#updateBackdrop()
-      this.#theme.onFrame?.(this.#themeContext())
+      // While frozen (mid zoom/pan) the live nodes are hidden behind baked sprites that ride the
+      // world transform — skip edge redraw, the backdrop RT and the glass shader entirely.
+      if (!this.#frozen) {
+        for (const edgeId of this.#edgeRecords.keys()) this.#redrawEdge(edgeId)
+        this.#updateBackdrop()
+        this.#theme.onFrame?.(this.#themeContext())
+      }
+      // Redraw the minimap frame BEFORE the render — otherwise its new geometry lands a frame late
+      // and, after a single recenter click, never gets painted (needsRender was already consumed).
+      this.#minimap?.setViewport(this.#viewport.state, this.#app.screen.width, this.#app.screen.height)
       this.#app.render()
+      this.#positionDomWidgets()
     })
+
+    if (opts.minimap) {
+      this.#ensureMinimap()
+      if (typeof opts.minimap === 'object' && opts.minimap.position) this.#minimap!.setPosition(opts.minimap.position)
+    }
 
     if (opts.resizeToWindow !== false) {
       window.addEventListener('resize', this.#onResize)
+    } else if (typeof ResizeObserver !== 'undefined') {
+      // Embedded mode: fit the host element (panels, framework islands) instead of the window.
+      const fit = (): void => {
+        const w = Math.max(1, host.clientWidth), h = Math.max(1, host.clientHeight)
+        this.#app.renderer.resize(w, h)
+        this.#onResize()
+      }
+      fit()
+      this.#hostResizeObserver = new ResizeObserver(fit)
+      this.#hostResizeObserver.observe(host)
     }
+
+    this.#applyThemeVars()
+  }
+
+  #hostResizeObserver: ResizeObserver | null = null
+
+  /** Write the active theme's panel/control `--xeno-*` custom properties onto the host so in-editor
+   *  chrome (panels, controls, framework components portalled into `overlayRoot`) and DOM widgets
+   *  inherit them and restyle on `setTheme`. */
+  #applyThemeVars(): void {
+    for (const [k, v] of Object.entries(themeCssVars(this.#theme.tokens))) {
+      this.#host.style.setProperty(k, v)
+    }
+  }
+
+  /** Screen-anchored DOM overlay over the canvas. Framework adapters portal in-editor panels and
+   *  controls here; the container ignores pointer events so the canvas stays interactive, and each
+   *  panel opts back in (`pointer-events: auto`). Inherits the theme's `--xeno-*` vars from the host. */
+  get overlayRoot(): HTMLElement {
+    if (!this.#overlayRoot) {
+      if (getComputedStyle(this.#host).position === 'static') this.#host.style.position = 'relative'
+      const root = document.createElement('div')
+      root.setAttribute('data-xeno-overlay-root', '')
+      Object.assign(root.style, {
+        position: 'absolute', inset: '0', pointerEvents: 'none', overflow: 'hidden',
+      } as Partial<CSSStyleDeclaration>)
+      this.#host.appendChild(root)
+      this.#overlayRoot = root
+    }
+    return this.#overlayRoot
   }
 
   /** Mark the scene dirty so the next ticker frame repaints. Cheap to call repeatedly — the flag
    *  collapses many calls in one frame into a single render. */
   #requestRender = (): void => { this.#needsRender = true }
-  readonly #onResize = (): void => { this.#requestRender() }
+  readonly #onResize = (): void => {
+    this.#minimap?.place(this.#app.screen.width, this.#app.screen.height)
+    this.#requestRender()
+  }
+
+  #minimapSyncScheduled = false
+  /** Coalesce many node mutations (e.g. a 1391-node loadJSON calling addNode per node) into one
+   *  minimap rebuild on the next microtask. */
+  #scheduleMinimapSync(): void {
+    if (this.#minimapSyncScheduled || !this.#minimap) return
+    this.#minimapSyncScheduled = true
+    queueMicrotask(() => { this.#minimapSyncScheduled = false; this.#syncMinimap() })
+  }
+
+  /** Feed the minimap the current node rects (world space). */
+  #syncMinimap(): void {
+    if (!this.#minimap) return
+    const nodes: { x: number; y: number; width: number; height: number }[] = []
+    for (const n of this.graph.nodes()) {
+      const size = n.size ?? { x: this.#theme.tokens.geometry.node.minWidth, y: 40 }
+      nodes.push({ x: n.position.x, y: n.position.y, width: size.x, height: size.y })
+    }
+    this.#minimap.setData(nodes)
+  }
+
+  /** Create the WebGL minimap and wire its recenter-on-click; idempotent. Lets `setMinimapVisible`
+   *  (and the declarative `<XenolithMiniMap>`) enable a minimap that wasn't requested at init. */
+  #ensureMinimap(): Minimap {
+    if (this.#minimap) return this.#minimap
+    const mm = new Minimap(this.#theme.tokens)
+    mm.onRecenter = (wx, wy) => {
+      const vp = this.#viewport.state
+      this.#viewport.setState({
+        zoom: vp.zoom,
+        x: this.#app.screen.width / 2 - wx * vp.zoom,
+        y: this.#app.screen.height / 2 - wy * vp.zoom,
+      })
+    }
+    this.#app.stage.addChild(mm.container)
+    mm.place(this.#app.screen.width, this.#app.screen.height)
+    this.#minimap = mm
+    this.#syncMinimap()
+    return mm
+  }
+
+  /** Show / hide the overview minimap. Creates it lazily the first time it's shown. */
+  setMinimapVisible(visible: boolean): void {
+    if (visible) this.#ensureMinimap()
+    this.#minimap?.setVisible(visible)
+    this.#requestRender()
+  }
+  /** Move the minimap to a standard anchor (8 directions) or exact screen coordinates. */
+  setMinimapPosition(position: MinimapPosition): void { this.#minimap?.setPosition(position); this.#requestRender() }
+
+  #frozen = false
+  #freezeTimer: ReturnType<typeof setTimeout> | null = null
+  #freezeRT: RenderTexture | null = null
+  #frozenSprites: Sprite[] = []
+  #captureVp: ViewportState | null = null
+
+  /** Viewport changed (zoom/pan). For themes that opt in (`freezeOnNavigate`, e.g. Liquid Glass) we
+   *  BAKE each node into a sprite at gesture start (its current pixels — background/refraction
+   *  included), hide the live node, and let the baked sprites ride the world transform. Grid + edges
+   *  stay live. When the view pans/zooms beyond what was captured we re-bake (else new area shows
+   *  empty). A 130ms idle debounce restores the live nodes. Cheap themes (Xen) just repaint. (The
+   *  per-node bake is also the basis for LOD: freeze off-screen / far-zoom nodes the same way.) */
+  #onViewportChanged(): void {
+    if (!this.#theme.freezeOnNavigate) { this.#requestRender(); return }
+    if (this.#frozen && this.#captureStale()) this.#endFreeze()
+    if (!this.#frozen) this.#beginFreeze()
+    this.#requestRender()
+    if (this.#freezeTimer) clearTimeout(this.#freezeTimer)
+    this.#freezeTimer = setTimeout(() => this.#endFreeze(), 130)
+  }
+
+  /** True when the live view has moved/zoomed beyond the baked sprites — time to re-capture so the
+   *  newly-revealed area isn't blank and zoomed-in nodes stay crisp. */
+  #captureStale(): boolean {
+    const c = this.#captureVp
+    if (!c) return true
+    const v = this.#viewport.state
+    if (v.zoom < c.zoom * 0.97 || v.zoom > c.zoom * 1.6) return true
+    const sw = Math.max(1, this.#app.screen.width)
+    const sh = Math.max(1, this.#app.screen.height)
+    return Math.abs(v.x - c.x) > sw * 0.3 || Math.abs(v.y - c.y) > sh * 0.3
+  }
+
+  #beginFreeze(): void {
+    const vp = this.#viewport.state
+    const res = this.#app.renderer.resolution
+    const sw = Math.max(1, this.#app.screen.width)
+    const sh = Math.max(1, this.#app.screen.height)
+    // Refresh the backdrop so the captured glass refraction is current, then snapshot the screen —
+    // each node sprite is a sub-region of it, so we don't re-run the glass shader per node.
+    this.#updateBackdrop()
+    if (this.#freezeRT) this.#freezeRT.destroy(true)
+    this.#freezeRT = RenderTexture.create({ width: sw, height: sh, resolution: res })
+    this.#app.renderer.render({ container: this.#app.stage, target: this.#freezeRT })
+    this.#captureVp = vp
+
+    for (const [id, view] of this.#views) {
+      const node = this.graph.getNode(id)
+      if (!node?.size) continue
+      const sx = node.position.x * vp.zoom + vp.x
+      const sy = node.position.y * vp.zoom + vp.y
+      const sWid = node.size.x * vp.zoom
+      const sHei = node.size.y * vp.zoom
+      // Skip nodes fully off-screen — nothing to bake.
+      if (sx + sWid < 0 || sy + sHei < 0 || sx > sw || sy > sh) continue
+      const frame = new Rectangle(
+        Math.max(0, sx), Math.max(0, sy),
+        Math.min(sWid, sw - Math.max(0, sx)), Math.min(sHei, sh - Math.max(0, sy)),
+      )
+      if (frame.width <= 0 || frame.height <= 0) continue
+      const tex = new Texture({ source: this.#freezeRT.source, frame })
+      const sprite = new Sprite(tex)
+      sprite.eventMode = 'none'
+      // Place back in world space at the (clipped) node rect; the world transform makes it track.
+      sprite.position.set((frame.x - vp.x) / vp.zoom, (frame.y - vp.y) / vp.zoom)
+      sprite.width = frame.width / vp.zoom
+      sprite.height = frame.height / vp.zoom
+      this.#nodesLayer.addChild(sprite)
+      this.#frozenSprites.push(sprite)
+      view.container.visible = false
+    }
+    this.#frozen = true
+  }
+
+  #endFreeze(): void {
+    for (const s of this.#frozenSprites) { this.#nodesLayer.removeChild(s); s.destroy() }
+    this.#frozenSprites = []
+    this.#freezeRT?.destroy(true)
+    this.#freezeRT = null
+    for (const view of this.#views.values()) view.container.visible = true
+    this.#frozen = false
+    this.#requestRender()
+  }
+
 
   /** Double-click on empty canvas opens the insert palette at the cursor. Skipped when the
    *  cursor is over a node (so double-clicking a node body never spawns a palette on top of it). */
@@ -570,6 +810,10 @@ export class XenolithEditor {
       )
     }
     await loadXenFonts()
+    // Node/pin/widget text uses BitmapText — all instances of a given style share one glyph atlas
+    // instead of allocating a texture per Text, which is the dominant cost on huge graphs. Bake the
+    // atlas at device resolution so it stays crisp when zoomed in.
+    BitmapFontManager.defaultOptions.resolution = Math.ceil(window.devicePixelRatio || 1)
     const theme = resolveTheme(opts.theme)
     const app = new Application()
     const initOpts: Parameters<Application['init']>[0] = {
@@ -595,6 +839,7 @@ export class XenolithEditor {
       ...opts,
       renderer: this.#app.renderer as never,
       requestRender: this.#requestRender,
+      customWidgets: this.#widgetControllers,
     }
     if (isReroute(node)) {
       return this.#theme.renderReroute?.(node, enriched, this.#themeContext())
@@ -617,12 +862,19 @@ export class XenolithEditor {
   }
 
   #createBackdropRT(): RenderTexture {
-    return RenderTexture.create({
+    const rt = RenderTexture.create({
       width:      Math.max(1, this.#app.screen.width),
       height:     Math.max(1, this.#app.screen.height),
       resolution: this.#app.renderer.resolution,
       antialias:  true,
     })
+    // Clear to the canvas colour immediately so glass nodes that render before the first
+    // #updateBackdrop sample the background, not an uninitialised (black) texture.
+    this.#app.renderer.render({
+      container: new Container(), target: rt, clear: true,
+      clearColor: this.#theme.tokens.color.surface.canvas,
+    })
+    return rt
   }
 
   /** Render the world for backdrop sampling. Painter's-order compositing:
@@ -764,6 +1016,7 @@ export class XenolithEditor {
         titleSize: t.heading.size, titleWeight: t.heading.weight,
         labelSize: t.label.size,   labelWeight: t.label.weight,
       },
+      widget: { rowHeight: g.widget.rowHeight, gap: g.widget.gap, controlMinWidth: g.widget.controlMinWidth },
     }
   }
 
@@ -787,6 +1040,8 @@ export class XenolithEditor {
     this.#views.set(node.id, view)
     this.#nodesLayer.addChild(view.container)
     this.#wireNodeInteraction(node.id, view)
+    if (node.widgets?.some((w) => w.type === 'custom')) this.#syncDomWidgets()
+    this.#scheduleMinimapSync()
     this.#requestRender()
     return node
   }
@@ -809,6 +1064,263 @@ export class XenolithEditor {
     this.#materializeEdge(edge, opts)
     this.#requestRender()
     return edge.id
+  }
+
+  /** Move a node to an absolute world position (undoable). View reconciles on the next microtask via
+   *  the command-bus sync. Used by the React controlled layer to reflect a `nodes` prop change. */
+  moveNode(nodeId: NodeId, position: { x: number; y: number }): boolean {
+    if (!this.graph.getNode(nodeId)) return false
+    this.commandBus.apply(new MoveNode(nodeId, position))
+    return true
+  }
+
+  /** Remove a node and its incident edges (undoable). */
+  removeNode(nodeId: NodeId): boolean {
+    if (!this.graph.getNode(nodeId)) return false
+    this.commandBus.apply(new RemoveNode(nodeId))
+    return true
+  }
+
+  /** Add a pre-built edge, preserving its id and pin endpoints (undoable). Unlike `connect`, which
+   *  mints a fresh edge id, this keeps the caller's id — needed by the controlled layer to mirror an
+   *  `edges` prop without id drift. No-op if an edge with that id already exists. */
+  addEdge(edge: Edge): boolean {
+    if (this.graph.getEdge(edge.id)) return false
+    this.commandBus.apply(new ConnectPins(edge))
+    return true
+  }
+
+  /** Replace the current selection with the given node ids (fires `selection:changed`). */
+  setSelection(nodeIds: readonly NodeId[]): void {
+    this.selection.replaceWith(nodeIds)
+  }
+
+  // ---- widgets ---------------------------------------------------------------------------------
+
+  #widgetSpec(nodeId: NodeId, widgetId: string): { node: Node; spec: WidgetSpec } | null {
+    const node = this.graph.getNode(nodeId)
+    const spec = node?.widgets?.find((w) => w.id === widgetId)
+    return node && spec ? { node, spec } : null
+  }
+
+  /** Register a custom widget controller. Either **canvas-draw** (fast, painted to a WebGL texture)
+   *  or **DOM-mounted** (arbitrary HTML — the contract the React/Vue/Svelte adapters wrap). A
+   *  `custom` widget's `renderer` field names the controller. */
+  registerWidget(name: string, controller: CustomWidgetController): void {
+    this.#widgetControllers.set(name, controller)
+    this.#syncDomWidgets()
+  }
+
+  // ---- DOM-mounted custom widgets --------------------------------------------------------------
+  // A screen-space layer over the canvas hosts framework/HTML widgets; we keep each element synced
+  // to its node's on-screen widget rect (pan/zoom/drag/collapse) every painted frame.
+  #domLayer: HTMLDivElement | null = null
+  readonly #domWidgets = new Map<string, { el: HTMLElement; controller: DomWidgetController; cleanup?: () => void; nodeId: NodeId; widgetId: string }>()
+
+  #widgetLayoutTokens(): WidgetLayoutTokens {
+    const g = this.#theme.tokens.geometry
+    return {
+      node:   { headerHeight: g.node.headerHeight },
+      pin:    { rowSpacing: g.pin.rowSpacing, rowHeight: g.pin.rowHeight },
+      header: { toPinsGap: g.header.toPinsGap },
+      widget: { rowHeight: g.widget.rowHeight, gap: g.widget.gap, paddingX: g.widget.paddingX },
+    }
+  }
+
+  #ensureDomLayer(): HTMLDivElement {
+    if (!this.#domLayer) {
+      const l = document.createElement('div')
+      Object.assign(l.style, { position: 'absolute', inset: '0', overflow: 'hidden', pointerEvents: 'none', zIndex: '5' })
+      if (getComputedStyle(this.#host).position === 'static') this.#host.style.position = 'relative'
+      this.#host.appendChild(l)
+      this.#domLayer = l
+    }
+    return this.#domLayer
+  }
+
+  /** Mount/unmount DOM custom widgets to match the current graph, then position them. Called after
+   *  structural changes (load, add, re-render, theme swap). */
+  /** Expose the active widget theme as --xeno-* CSS custom properties on a DOM widget's host, so
+   *  framework/vanilla widgets can style with var(--xeno-accent) etc. and track the theme for free. */
+  #applyWidgetVars(el: HTMLElement, spec: { style?: WidgetStyle }): void {
+    const vars = widgetCssVars(resolveWidgetStyle(this.#theme.tokens, spec.style))
+    for (const [k, v] of Object.entries(vars)) el.style.setProperty(k, v)
+  }
+
+  #syncDomWidgets(): void {
+    const seen = new Set<string>()
+    for (const node of this.graph.nodes()) {
+      for (const w of node.widgets ?? []) {
+        if (w.type !== 'custom') continue
+        const ctrl = this.#widgetControllers.get(w.renderer)
+        if (!ctrl || !isDomWidgetController(ctrl)) continue
+        const key = `${String(node.id)}:${w.id}`
+        seen.add(key)
+        if (this.#domWidgets.has(key)) {
+          this.#applyWidgetVars(this.#domWidgets.get(key)!.el, w)
+          ctrl.update?.({ value: widgetValue(node, w), node, width: 0, height: 0, ...this.#widgetThemeColors(w) })
+          continue
+        }
+        const el = document.createElement('div')
+        Object.assign(el.style, { position: 'absolute', pointerEvents: 'auto', transformOrigin: 'top left' })
+        this.#applyWidgetVars(el, w)
+        this.#ensureDomLayer().appendChild(el)
+        const cleanup = ctrl.mount(el, {
+          value: widgetValue(node, w), node, width: 0, height: 0, ...this.#widgetThemeColors(w),
+          setValue: (v) => this.setWidgetValue(node.id, w.id, v),
+        })
+        const entry: { el: HTMLElement; controller: DomWidgetController; cleanup?: () => void; nodeId: NodeId; widgetId: string } =
+          { el, controller: ctrl, nodeId: node.id, widgetId: w.id }
+        if (typeof cleanup === 'function') entry.cleanup = cleanup
+        this.#domWidgets.set(key, entry)
+      }
+    }
+    for (const [key, rec] of this.#domWidgets) {
+      if (seen.has(key)) continue
+      rec.cleanup?.(); rec.controller.unmount?.(); rec.el.remove()
+      this.#domWidgets.delete(key)
+    }
+    this.#positionDomWidgets()
+  }
+
+  /** Sync each mounted DOM widget to its node's on-screen widget rect. Cheap — runs per painted
+   *  frame so pan/zoom/drag/collapse keep the element glued to the node. */
+  #positionDomWidgets(): void {
+    if (this.#domWidgets.size === 0) return
+    const vp = this.#viewport.state
+    const layout = this.#widgetLayoutTokens()
+    // Paint-order index per node container, so DOM widgets can match the canvas z-order and hide
+    // where a higher node occludes them (DOM always paints above the WebGL canvas, so without this
+    // a back node's widget bleeds over a front node's body).
+    const z = new Map<unknown, number>()
+    this.#nodesLayer.children.forEach((c, i) => z.set(c, i))
+    for (const rec of this.#domWidgets.values()) {
+      const node = this.graph.getNode(rec.nodeId)
+      const view = this.#views.get(rec.nodeId)
+      const rect = node?.size ? computeWidgetRects(node, node.size.x, layout).find((r) => r.id === rec.widgetId) : undefined
+      if (!node || !view || !rect || view.isCollapsed()) { rec.el.style.display = 'none'; continue }
+      // Use the VIEW container's live world position, not node.position — during a drag the model
+      // position isn't committed until drop, but the container moves every frame.
+      const left = (view.container.x + rect.x) * vp.zoom + vp.x
+      const top = (view.container.y + rect.y) * vp.zoom + vp.y
+      const w = rect.width * vp.zoom, h = rect.height * vp.zoom
+      const myZ = z.get(view.container) ?? 0
+      const W = rect.width, H = rect.height
+      // Clip the widget to the VISIBLE region = widget rect MINUS every node painted above it
+      // (DOM always paints above the WebGL canvas). Computed as a rectangle difference into a set
+      // of NON-overlapping rects — overlapping evenodd "holes" cancel each other, so we subtract
+      // explicitly instead. clip-path = the union of the surviving rects.
+      const gn = this.#theme.tokens.geometry.node
+      let vis: { x: number; y: number; w: number; h: number }[] = [{ x: 0, y: 0, w: W, h: H }]
+      // Subtract an axis-aligned rect from the visible set (splits each survivor into ≤4 slivers).
+      const subtract = (ax1: number, ay1: number, ax2: number, ay2: number): void => {
+        if (ax2 - ax1 < 0.5 || ay2 - ay1 < 0.5) return
+        const next: typeof vis = []
+        for (const r of vis) {
+          const ix1 = Math.max(r.x, ax1), iy1 = Math.max(r.y, ay1)
+          const ix2 = Math.min(r.x + r.w, ax2), iy2 = Math.min(r.y + r.h, ay2)
+          if (ix2 <= ix1 || iy2 <= iy1) { next.push(r); continue }
+          if (iy1 > r.y) next.push({ x: r.x, y: r.y, w: r.w, h: iy1 - r.y })
+          if (iy2 < r.y + r.h) next.push({ x: r.x, y: iy2, w: r.w, h: r.y + r.h - iy2 })
+          if (ix1 > r.x) next.push({ x: r.x, y: iy1, w: ix1 - r.x, h: iy2 - iy1 })
+          if (ix2 < r.x + r.w) next.push({ x: ix2, y: iy1, w: r.x + r.w - ix2, h: iy2 - iy1 })
+        }
+        vis = next
+      }
+      for (const [id, ov] of this.#views) {
+        if (id === rec.nodeId || (z.get(ov.container) ?? 0) <= myZ) continue
+        const other = this.graph.getNode(id)
+        if (!other?.size) continue
+        const collapsed = ov.isCollapsed()
+        // A collapsed node occludes only its header pill (exact rect + radius from the view), not
+        // its full expanded size. Expanded → the body rect (node radius).
+        const cRect = collapsed ? ov.collapsedRect : undefined
+        const localX = cRect?.x ?? 0, localY = cRect?.y ?? 0
+        const ow = cRect?.w ?? other.size.x, oh = cRect?.h ?? other.size.y
+        const ol = (ov.container.x + localX) * vp.zoom + vp.x, ot = (ov.container.y + localY) * vp.zoom + vp.y
+        // Small pad to cover the front node's thin outline/border (pins are handled separately below).
+        const OCC_PAD = 2
+        const ox1 = (ol - left) / vp.zoom - OCC_PAD, oy1 = (ot - top) / vp.zoom - OCC_PAD
+        const ox2 = ox1 + ow + OCC_PAD * 2, oy2 = oy1 + oh + OCC_PAD * 2
+        // Occlude by the node's ROUNDED-rect shape, not its bounding box: the corners outside the
+        // border radius aren't painted, so the node behind must show there (not be clipped to black).
+        // Subtract the straight middle as one rect, then the rounded caps as arc-following strips.
+        const cr = Math.max(0, Math.min((cRect?.r ?? gn.radius) + OCC_PAD, (ox2 - ox1) / 2, (oy2 - oy1) / 2))
+        if (cr < 0.5) { subtract(ox1, oy1, ox2, oy2) }
+        else {
+          subtract(ox1, oy1 + cr, ox2, oy2 - cr) // straight middle band (full width)
+          const STEP = 2
+          for (let yy = 0; yy < cr; yy += STEP) {
+            const dy = Math.min(STEP, cr - yy)
+            // Inset at the strip's wider edge (toward the middle) so we slightly over-cover rather
+            // than bleed: top cap widens downward, bottom cap widens upward.
+            const d = cr - (yy + dy)
+            const inset = cr - Math.sqrt(Math.max(0, cr * cr - d * d))
+            subtract(ox1 + inset, oy1 + yy, ox2 - inset, oy1 + yy + dy)        // top cap strip
+            subtract(ox1 + inset, oy2 - yy - dy, ox2 - inset, oy2 - yy)        // bottom cap strip
+          }
+        }
+        // Pins poke out beyond the body silhouette — subtract a small box at each so the back widget
+        // doesn't bleed over them.
+        const wox = view.container.x + rect.x, woy = view.container.y + rect.y
+        for (const pin of other.pins) {
+          const pp = ov.pinLocalPosition(pin.id)
+          if (!pp) continue
+          const px = ov.container.x + pp.x - wox, py = ov.container.y + pp.y - woy
+          subtract(px - 7, py - 7, px + 7, py + 7)
+        }
+      }
+      if (vis.length === 0) { rec.el.style.display = 'none'; continue }
+      const fullyVisible = vis.length === 1 && vis[0]!.x <= 0.5 && vis[0]!.y <= 0.5 && vis[0]!.w >= W - 0.5 && vis[0]!.h >= H - 0.5
+      const clip = fullyVisible ? 'none'
+        : `path("${vis.map((r) => `M${r.x.toFixed(1)} ${r.y.toFixed(1)} H${(r.x + r.w).toFixed(1)} V${(r.y + r.h).toFixed(1)} H${r.x.toFixed(1)} Z`).join(' ')}")`
+      rec.el.style.display = ''
+      rec.el.style.clipPath = clip
+      rec.el.style.zIndex = String(myZ)
+      rec.el.style.left = `${left}px`
+      rec.el.style.top = `${top}px`
+      rec.el.style.width = `${rect.width}px`
+      rec.el.style.height = `${rect.height}px`
+      rec.el.style.transform = `scale(${vp.zoom})`
+    }
+  }
+
+  /** Theme accent/text/muted for a custom widget, so canvas/DOM widgets can match the active
+   *  theme (gold on Xen, cyan on LG) unless their own `style` overrides those tokens. */
+  #widgetThemeColors(spec?: { style?: WidgetStyle }): { accent: string; text: string; muted: string } {
+    const r = resolveWidgetStyle(this.#theme.tokens, spec?.style)
+    return { accent: r.fill, text: r.text, muted: r.label }
+  }
+
+  /** Subscribe to a public editor event (node/edge lifecycle, selection, viewport, widgets,
+   *  history). Returns an unsubscribe fn. See {@link EditorEvents} for the full surface. */
+  on<E extends keyof EditorEvents>(event: E, handler: (payload: EditorEvents[E]) => void): () => void {
+    return this.#events.on(event, handler)
+  }
+
+  /** @deprecated use `on('widget:action', …)`. Kept as a thin alias over the unified event bus. */
+  onWidgetAction(handler: (e: EditorEvents['widget:action']) => void): () => void {
+    return this.#events.on('widget:action', handler)
+  }
+
+  /** Current value of a widget (clamped `node.state[key]`, or its default). */
+  getWidgetValue(nodeId: NodeId, widgetId: string): unknown {
+    const found = this.#widgetSpec(nodeId, widgetId)
+    return found ? widgetValue(found.node, found.spec) : undefined
+  }
+
+  /** Set a widget's value through the command bus (undoable). Clamps to the widget's constraints
+   *  and re-renders the node. No-op for valueless widgets (button). */
+  setWidgetValue(nodeId: NodeId, widgetId: string, value: unknown): void {
+    const found = this.#widgetSpec(nodeId, widgetId)
+    if (!found || found.spec.key === undefined) return
+    const clamped = clampWidgetValue(found.spec, value)
+    this.commandBus.apply(new SetNodeState(nodeId, { [found.spec.key]: clamped }))
+    // A state-only change doesn't trigger a node re-render in #syncFromGraph, so refresh the
+    // widget's visual directly (combo/number/text would otherwise show the stale value).
+    this.#views.get(nodeId)?.updateWidget?.(widgetId, clamped)
+    this.#requestRender()
+    this.#events.emit('widget:changed', { nodeId, widgetId, value: clamped })
   }
 
   /** Registry of node schemas. Hosts register their node types here; the insert palette searches
@@ -1041,6 +1553,7 @@ export class XenolithEditor {
     if (parsed.viewport) this.#viewport.setState(parsed.viewport)
     // loadJSON bypasses the command bus, so run the reroute type propagation explicitly.
     this.#propagateRerouteTypes()
+    this.#events.emit('graph:loaded', { nodeCount: parsed.nodes.length, edgeCount: parsed.edges.length })
   }
 
   /** Re-attach a deserialized edge using its preserved id and pin-id endpoints — bypasses the
@@ -1332,9 +1845,14 @@ export class XenolithEditor {
       this.#wireNodeInteraction(id, newView)
     }
     this.#updateVisualStates()
+    // Refresh DOM widget hosts' --xeno-* CSS vars (and their controllers) for the new theme.
+    this.#syncDomWidgets()
     // Edges re-paint themselves through the ticker via #drawEdge — no explicit pass needed.
     this.#palette?.setStyle(next.paletteStyle)
     this.#edgeMenu?.setStyle(next.paletteStyle)
+    this.#widgetOverlay?.setStyle(next.paletteStyle)
+    this.#minimap?.setStyle(next.tokens)
+    this.#applyThemeVars()
     this.#styleOverlay()
     this.#requestRender()
   }
@@ -1342,10 +1860,18 @@ export class XenolithEditor {
   destroy(): void {
     window.removeEventListener('keydown', this.#onKeyDown)
     window.removeEventListener('resize', this.#onResize)
+    this.#hostResizeObserver?.disconnect()
     ;(this.#app.canvas as HTMLCanvasElement | undefined)?.removeEventListener('dblclick', this.#onDoubleClick)
     ;(this.#app.canvas as HTMLCanvasElement | undefined)?.removeEventListener('contextmenu', this.#onContextMenu)
     this.#palette?.destroy()
     this.#interaction?.detach()
+    if (this.#freezeTimer) clearTimeout(this.#freezeTimer)
+    for (const rec of this.#domWidgets.values()) { rec.cleanup?.(); rec.controller.unmount?.(); rec.el.remove() }
+    this.#domWidgets.clear()
+    this.#minimap?.destroy()
+    this.#overlayRoot?.remove()
+    this.#overlayRoot = null
+    this.#freezeRT?.destroy(true)
     this.#backdropRT?.destroy(true)
     this.#app.destroy(true, { children: true })
   }
@@ -1608,6 +2134,8 @@ export class XenolithEditor {
     // selected in the same tick) — the selection change fired before its view existed, and
     // render-on-demand won't repaint on its own.
     this.#updateVisualStates()
+    this.#syncDomWidgets()
+    this.#scheduleMinimapSync()
     this.#requestRender()
   }
 
@@ -1866,9 +2394,22 @@ export class XenolithEditor {
     view.container.on('pointerdown', (e: FederatedPointerEvent) => {
       if (e.button !== 0) return
       if (readPinHandle(e.target)) return
+      // Widget interaction pre-empts node drag: hit-test the pointer against this node's widgets.
+      if (view.widgetHit) {
+        const local = e.getLocalPosition(view.container)
+        const hit = view.widgetHit(local.x, local.y)
+        if (hit && this.#onWidgetPointerDown(id, view, hit, e)) {
+          e.stopPropagation()
+          return
+        }
+      }
+      // Raise the interacted node (and, via the z-sync in #positionDomWidgets, its DOM widget) to
+      // the top of the paint order so overlapping nodes/widgets stack correctly.
+      this.#nodesLayer.setChildIndex(view.container, this.#nodesLayer.children.length - 1)
       if (!this.selection.contains(id)) {
         this.selection.select(id, e.shiftKey ? 'toggle' : 'replace')
       }
+      this.#events.emit('node:click', { nodeId: id })
       this.#dragState = {
         kind: 'pending',
         nodeId: id,
@@ -1878,6 +2419,214 @@ export class XenolithEditor {
       }
       e.stopPropagation()
     })
+  }
+
+  /** Handle a pointerdown that landed on a widget. Returns true if the gesture was consumed.
+   *  Toggle/button act immediately; slider/number begin a live drag committed on pointerup;
+   *  combo/text defer to the DOM overlay (wired in a later slice). */
+  #onWidgetPointerDown(nodeId: NodeId, view: NodeView, hit: WidgetHit, e: FederatedPointerEvent): boolean {
+    const node = this.graph.getNode(nodeId)
+    if (!node) return false
+    const { spec, rect } = hit
+    switch (spec.type) {
+      case 'toggle':
+        this.setWidgetValue(nodeId, spec.id, !widgetValue(node, spec))
+        return true
+      case 'button':
+        this.#events.emit('widget:action', { nodeId, widgetId: spec.id, action: spec.action })
+        return true
+      case 'slider':
+      case 'number': {
+        this.#beginWidgetDrag(nodeId, view, spec, rect, e)
+        return true
+      }
+      case 'text':
+        // Defer past the current pointer gesture: opening (and focusing) a DOM field mid-pointerdown
+        // gets blurred immediately by the in-flight gesture, instantly committing + closing it.
+        setTimeout(() => this.#openWidgetTextEditor(nodeId, spec, rect), 0)
+        return true
+      case 'combo':
+        setTimeout(() => this.#openWidgetCombo(nodeId, spec, rect), 0)
+        return true
+      case 'color':
+        // Open synchronously, inside the user gesture — the OS colour picker only opens from a
+        // real gesture, and deferring also mis-anchored it to the window origin on first click.
+        this.#openWidgetColor(nodeId, spec, rect)
+        return true
+      case 'custom': {
+        // DOM-mounted custom widgets receive their own native pointer events; only canvas-draw ones
+        // forward through the editor.
+        const ctrl = this.#widgetControllers.get(spec.renderer)
+        if (ctrl && !isDomWidgetController(ctrl) && ctrl.onPointer) {
+          this.#beginCustomWidgetDrag(nodeId, view, spec, rect, ctrl, e)
+        }
+        return true
+      }
+      default:
+        return true
+    }
+  }
+
+  #ensureWidgetOverlay(): WidgetOverlay {
+    if (!this.#widgetOverlay) this.#widgetOverlay = new WidgetOverlay(this.#host, this.#theme.paletteStyle)
+    return this.#widgetOverlay
+  }
+
+  /** Screen-space rect for a node-local widget rect, accounting for the current viewport. */
+  #widgetScreenRect(nodeId: NodeId, rect: { x: number; y: number; width: number; height: number }): OverlayRect | null {
+    const node = this.graph.getNode(nodeId)
+    if (!node) return null
+    const vp = this.#viewport.state
+    return {
+      x: (node.position.x + rect.x) * vp.zoom + vp.x,
+      y: (node.position.y + rect.y) * vp.zoom + vp.y,
+      width: rect.width * vp.zoom,
+      height: rect.height * vp.zoom,
+    }
+  }
+
+  #openWidgetTextEditor(
+    nodeId: NodeId, spec: Extract<WidgetSpec, { type: 'text' | 'number' }>,
+    rect: { x: number; y: number; width: number; height: number },
+  ): void {
+    const screen = this.#widgetScreenRect(nodeId, rect)
+    const node = this.graph.getNode(nodeId)
+    if (!screen || !node) return
+    const zoom = this.#viewport.state.zoom
+    const r = resolveWidgetStyle(this.#theme.tokens, spec.style)
+    // Labelled text renders the label on a row above the field box — drop the DOM editor below it.
+    if (spec.type === 'text' && spec.label.length > 0) {
+      const labelH = this.#theme.tokens.geometry.widget.rowHeight * zoom
+      screen.y += labelH
+      screen.height -= labelH
+    }
+    this.#ensureWidgetOverlay().editText({
+      rect: screen,
+      value: String(widgetValue(node, spec) ?? ''),
+      multiline: spec.type === 'text' ? spec.multiline === true : false,
+      ...(spec.type === 'text' && spec.placeholder !== undefined ? { placeholder: spec.placeholder } : {}),
+      numeric: spec.type === 'number',
+      style: {
+        background:  r.bgFocused,
+        text:        r.text,
+        border:      r.borderFocused,
+        borderWidth: r.borderWidth * zoom,
+        radius:      r.radius * zoom,
+        paddingX:    r.paddingX * zoom,
+        paddingY:    r.paddingY * zoom,
+        fontSize:    this.#theme.tokens.typography.label.size * zoom,
+        fontFamily:  this.#theme.tokens.typography.fontFamily,
+        fontWeight:  String(this.#theme.tokens.typography.label.weight),
+        placeholder: r.placeholder,
+        selection:   r.selection,
+      },
+      onCommit: (value) => this.setWidgetValue(nodeId, spec.id, value),
+    })
+  }
+
+  #openWidgetCombo(
+    nodeId: NodeId, spec: Extract<WidgetSpec, { type: 'combo' }>,
+    rect: { x: number; y: number; width: number; height: number },
+  ): void {
+    const screen = this.#widgetScreenRect(nodeId, rect)
+    const node = this.graph.getNode(nodeId)
+    if (!screen || !node) return
+    this.#ensureWidgetOverlay().editCombo({
+      rect: screen,
+      options: comboOptions(spec),
+      value: widgetValue(node, spec),
+      fontSize: this.#theme.tokens.typography.label.size * this.#viewport.state.zoom,
+      onPick: (value) => this.setWidgetValue(nodeId, spec.id, value),
+    })
+  }
+
+  #openWidgetColor(
+    nodeId: NodeId, spec: Extract<WidgetSpec, { type: 'color' }>,
+    rect: { x: number; y: number; width: number; height: number },
+  ): void {
+    const screen = this.#widgetScreenRect(nodeId, rect)
+    const node = this.graph.getNode(nodeId)
+    if (!screen || !node) return
+    this.#ensureWidgetOverlay().editColor({
+      rect: screen,
+      value: String(widgetValue(node, spec)),
+      // Live preview while picking (no command); the final pick commits one undoable step.
+      onInput: (hex) => { this.#views.get(nodeId)?.updateWidget?.(spec.id, hex); this.#requestRender() },
+      onCommit: (hex) => this.setWidgetValue(nodeId, spec.id, hex),
+    })
+  }
+
+  /** Forward a drag on a custom widget to its controller's `onPointer` (widget-local coords). Live
+   *  preview via `updateWidget`; commit the final value once on pointerup (one undo step). */
+  #beginCustomWidgetDrag(
+    nodeId: NodeId, view: NodeView, spec: Extract<WidgetSpec, { type: 'custom' }>,
+    rect: { x: number; y: number; width: number; height: number },
+    ctrl: CanvasWidgetController, e: FederatedPointerEvent,
+  ): void {
+    const node = this.graph.getNode(nodeId)
+    if (!node) return
+    const stage = this.#app.stage
+    let cur = widgetValue(node, spec)
+    const send = (phase: 'down' | 'move' | 'up', gx: number, gy: number): void => {
+      const l = view.container.toLocal({ x: gx, y: gy })
+      const next = ctrl.onPointer!(phase, l.x - rect.x, l.y - rect.y, { value: cur, node, width: rect.width, height: rect.height, ...this.#widgetThemeColors(spec) })
+      if (next !== undefined) { cur = next; view.updateWidget?.(spec.id, cur); this.#requestRender() }
+    }
+    const onMove = (ev: FederatedPointerEvent): void => send('move', ev.global.x, ev.global.y)
+    const onUp = (ev: FederatedPointerEvent): void => {
+      stage.off('pointermove', onMove); stage.off('pointerup', onUp); stage.off('pointerupoutside', onUp)
+      send('up', ev.global.x, ev.global.y)
+      this.setWidgetValue(nodeId, spec.id, cur)
+    }
+    stage.on('pointermove', onMove); stage.on('pointerup', onUp); stage.on('pointerupoutside', onUp)
+    send('down', e.global.x, e.global.y)
+  }
+
+  #beginWidgetDrag(
+    nodeId: NodeId, view: NodeView, spec: WidgetSpec,
+    fullRect: { x: number; y: number; width: number; height: number },
+    e: FederatedPointerEvent,
+  ): void {
+    const rect = fullRect
+    if (spec.key === undefined) return
+    const stage = this.#app.stage
+    const valueAt = (globalX: number): number => {
+      const local = view.container.toLocal({ x: globalX, y: 0 })
+      if (spec.type === 'slider') {
+        const frac = Math.min(1, Math.max(0, (local.x - rect.x) / rect.width))
+        return spec.min + frac * (spec.max - spec.min)
+      }
+      // number: scrub — 1 step per `scrubPx` of horizontal travel from the press point.
+      const startNode = this.graph.getNode(nodeId)
+      const base = startNode ? Number(widgetValue(startNode, spec)) : 0
+      const step = spec.type === 'number' ? (spec.step ?? 1) : 1
+      const dx = local.x - startLocalX
+      return base + Math.round(dx / 4) * step
+    }
+    const startLocalX = view.container.toLocal({ x: e.global.x, y: 0 }).x
+    const startGlobalX = e.global.x
+    let moved = false
+    const onMove = (ev: FederatedPointerEvent): void => {
+      if (Math.abs(ev.global.x - startGlobalX) > 3) moved = true
+      const clamped = clampWidgetValue(spec, valueAt(ev.global.x))
+      view.updateWidget?.(spec.id, clamped)
+      this.#requestRender()
+    }
+    const onUp = (ev: FederatedPointerEvent): void => {
+      stage.off('pointermove', onMove)
+      stage.off('pointerup', onUp)
+      stage.off('pointerupoutside', onUp)
+      // A number click without dragging opens precise text entry; a slider/number drag commits.
+      if (!moved && spec.type === 'number') {
+        view.updateWidget?.(spec.id, widgetValue(this.graph.getNode(nodeId)!, spec))
+        this.#openWidgetTextEditor(nodeId, spec, fullRect)
+        return
+      }
+      this.setWidgetValue(nodeId, spec.id, valueAt(ev.global.x))
+    }
+    stage.on('pointermove', onMove)
+    stage.on('pointerup', onUp)
+    stage.on('pointerupoutside', onUp)
   }
 
   #beginNodeDrag(alt: boolean): void {

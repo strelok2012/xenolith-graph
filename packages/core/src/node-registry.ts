@@ -1,6 +1,7 @@
 import { fuzzyMatch } from './fuzzy.js'
 import { createNodeId, createPinId } from './ids.js'
 import type { Node, Pin, PinDirection, PinKind, Vec2 } from './graph.js'
+import { defaultWidgetValue, type WidgetSpec } from './widget.js'
 
 /** Declarative pin template — instantiated into a concrete {@link Pin} (fresh id) per node. */
 export interface PinSchema {
@@ -23,6 +24,8 @@ export interface NodeSchema {
   /** Extra search terms beyond the title (synonyms, abbreviations). */
   keywords?: string[]
   pins: PinSchema[]
+  /** In-node UI controls copied onto each instantiated node; defaults seed `node.state`. */
+  widgets?: WidgetSpec[]
 }
 
 export interface NodeSearchResult {
@@ -62,7 +65,14 @@ export class NodeRegistry {
       if (p.default !== undefined) pin.default = p.default
       return pin
     })
-    return { id: createNodeId(), type: schema.type, position: { ...position }, state: {}, pins }
+    const node: Node = { id: createNodeId(), type: schema.type, position: { ...position }, state: {}, pins }
+    if (schema.widgets && schema.widgets.length > 0) {
+      node.widgets = schema.widgets.map((w) => ({ ...w }) as WidgetSpec)
+      for (const w of node.widgets) {
+        if (w.key !== undefined) node.state[w.key] = defaultWidgetValue(w)
+      }
+    }
+    return node
   }
 
   /** Fuzzy search across title, keywords and category. Returns results sorted by descending

@@ -94,3 +94,58 @@ await editor.withOverlay('Rendering…', () => {
 editor.showOverlay('Loading…')
 editor.hideOverlay()
 ```
+
+## Виджеты
+
+Ноды несут встроенные контролы. Виджет — это **декларативные данные** на ноде (или её схеме); значение лежит в `node.state[key]`, поэтому сериализуется с графом, а каждое изменение undoable.
+
+```ts
+widgets: [
+  { id: 'steps',  type: 'number', label: 'Steps', key: 'steps', min: 1, max: 150, step: 1 },
+  { id: 'cfg',    type: 'slider', label: 'CFG',   key: 'cfg',   min: 0, max: 20, step: 0.1 },
+  { id: 'sampler',type: 'combo',  label: 'Sampler', key: 'sampler', values: ['euler', 'dpm++', 'ddim'] },
+  { id: 'prompt', type: 'text',   label: 'Prompt', key: 'prompt', multiline: true },
+  { id: 'hires',  type: 'toggle', label: 'Hi-res', key: 'hires' },
+  { id: 'tint',   type: 'color',  label: 'Tint',  key: 'tint' },
+  { id: 'run',    type: 'button', label: 'Run',   action: 'run' },
+]
+```
+
+Встроенные типы: **number** (scrub + клик-ввод), **slider**, **combo**, **text** (`multiline`), **toggle**, **color** (попап-пикер), **button**.
+
+```ts
+editor.getWidgetValue(nodeId, 'steps')
+editor.setWidgetValue(nodeId, 'steps', 30)        // кламп, undoable
+editor.onWidgetAction(({ nodeId, action }) => { /* нажата кнопка */ })
+```
+
+Каждый виджет темизируется глобально через токены `color.widget` / `geometry.widget` и пер-инстанс через `style`:
+
+```ts
+{ id: 'gain', type: 'slider', label: 'Gain', key: 'gain', min: 0, max: 1,
+  style: { fill: '#FF3366', radius: 10, borderFocused: '#FF3366' } }
+```
+
+### Кастомные виджеты
+
+Регистрируем контроллер и ссылаемся на него из `custom`-виджета (`renderer`). Два вида:
+
+```ts
+// Canvas-draw (быстро — рисуется в WebGL-текстуру, без DOM):
+editor.registerWidget('curve', {
+  draw(ctx, { value, width, height }) { /* рисование в 2D-канвас */ },
+  onPointer(phase, x, y, ctx) { return newValue },
+})
+
+// DOM-mount (произвольный HTML — контракт, который оборачивают адаптеры React/Vue/Svelte):
+editor.registerWidget('chart', {
+  mount(el, { value, setValue }) { /* монтируем компонент в el */; return () => {} },
+  update({ value }) {},
+})
+```
+
+Canvas-draw — перф-дефолт; DOM-виджеты редактор держит приклеенными к экранному rect ноды при пан/зум/драге.
+
+### Импорт ComfyUI
+
+`importComfyWorkflow` мапит позиционный `widgets_values` каждой ноды в типизированные виджеты по значению (число→number, bool→toggle, строка→text). Имена/combo/диапазоны требуют серверного `object_info` — апгрейд на потом.

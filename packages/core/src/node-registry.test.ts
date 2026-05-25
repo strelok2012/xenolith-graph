@@ -72,6 +72,21 @@ describe('NodeRegistry', () => {
       expect(() => reg.instantiate('Nope', { x: 0, y: 0 })).toThrow(/Nope/)
     })
 
+    it('copies schema widgets onto the node and seeds default values into state', () => {
+      reg.register({
+        type: 'Knob', title: 'Knob', pins: [],
+        widgets: [
+          { id: 'amt', type: 'slider', label: 'Amount', key: 'amount', min: 0, max: 10 },
+          { id: 'mode', type: 'combo', label: 'Mode', key: 'mode', values: ['add', 'mul'] },
+          { id: 'go', type: 'button', label: 'Run', action: 'run' },
+        ],
+      })
+      const node = reg.instantiate('Knob', { x: 0, y: 0 })
+      expect(node.widgets).toHaveLength(3)
+      // value-bearing widgets seed their default into state; button (no key) seeds nothing.
+      expect(node.state).toEqual({ amount: 0, mode: 'add' })
+    })
+
     it('produces unique ids on each call', () => {
       const a = reg.instantiate('Source', { x: 0, y: 0 })
       const b = reg.instantiate('Source', { x: 0, y: 0 })

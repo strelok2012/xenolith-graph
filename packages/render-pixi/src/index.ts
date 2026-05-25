@@ -23,6 +23,9 @@ export type { RenderNodeOptions, NodeView, NodeVisualState, PinHandle } from './
 
 export { renderRerouteNode, rerouteSize, renderRerouteNodeBox, rerouteBoxSize, rerouteStateColor } from './reroute-renderer.js'
 
+export { renderWidgets, computeWidgetRects, resolveWidgetStyle, widgetCssVars, themeCssVars, isDomWidgetController } from './widget-renderer.js'
+export type { WidgetRect, WidgetHit, WidgetsView, WidgetLayoutTokens, ResolvedWidgetStyle, CustomWidgetController, CanvasWidgetController, DomWidgetController, CustomWidgetContext } from './widget-renderer.js'
+
 export { renderEdge, drawEdge } from './edge-renderer.js'
 export type { RenderEdgeOptions } from './edge-renderer.js'
 

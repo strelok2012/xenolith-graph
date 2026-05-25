@@ -34,3 +34,6 @@ export { fuzzyMatch } from './fuzzy.js'
 export type { FuzzyMatch } from './fuzzy.js'
 
 export { REROUTE_TYPE, isReroute, createReroute, REROUTE_NODE_TYPE, rerouteNodeSchema } from './reroute.js'
+
+export { defaultWidgetValue, widgetValue, clampWidgetValue, comboOptions } from './widget.js'
+export type { WidgetSpec, WidgetType, WidgetStyle, ComboOption, ComboOptionResolved } from './widget.js'

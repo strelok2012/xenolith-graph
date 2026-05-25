@@ -72,6 +72,7 @@ const base = import.meta.env.BASE_URL
       <span class="sep">/</span>
       <a href={base}>← Site</a>
       <a href={`${base}/playground/`}>Playground</a>
+      <a href={`${base}/react-demos/`}>React demos</a>
     </div>
     <div class="d-group" id="workflow-switcher">
       <button data-wf="medium" class="active">Searge · 110</button>
@@ -104,6 +105,7 @@ const base = import.meta.env.BASE_URL
       const editor = await XenolithEditor.init('#app', {
         theme: xenTheme,
         zoomBounds: [0.04, 2],
+        minimap: true,
       })
 
       function importAndFit(workflow) {

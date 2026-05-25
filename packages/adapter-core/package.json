@@ -1,0 +1,38 @@
+{
+  "name": "@xenolith/adapter-core",
+  "version": "0.0.0",
+  "description": "Framework-agnostic binding for XenolithGraph — mount, reactive props, events. Foundation for the Web Component and React/Vue/Svelte/Solid adapters.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc -b --watch",
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@xenolith/core": "workspace:*",
+    "@xenolith/editor": "workspace:*",
+    "@xenolith/render-pixi": "workspace:*"
+  },
+  "peerDependencies": {
+    "pixi.js": "^8.6.0"
+  },
+  "devDependencies": {
+    "pixi.js": "^8.6.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "@xenolith/angular",
+  "version": "0.0.0",
+  "description": "Angular adapter for XenolithGraph — standalone <xenolith-graph> component (consumed from source).",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": { ".": { "types": "./src/index.ts", "default": "./src/index.ts" } },
+  "files": ["src", "README.md"],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": { "@xenolith/adapter-core": "workspace:*", "@xenolith/editor": "workspace:*" },
+  "peerDependencies": { "@angular/core": ">=17", "pixi.js": "^8.6.0", "rxjs": ">=7" },
+  "devDependencies": { "@angular/core": "^17.0.0", "jsdom": "^25.0.0", "pixi.js": "^8.6.0", "rxjs": "^7.8.0", "typescript": "^5.7.0", "vitest": "^3.0.0" }
+}

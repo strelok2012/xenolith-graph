@@ -8,6 +8,7 @@ import {
   RenderTexture,
   Sprite,
   Text,
+  BitmapText,
   TextStyle,
   Ticker,
   type Renderer,
@@ -18,6 +19,7 @@ import type { StateStyle } from '@xenolith/theme-xen'
 import type { Node, Pin } from '@xenolith/core'
 import type { XenTokens } from '@xenolith/theme-xen'
 import { computeNodeLayout } from './layout.js'
+import { renderWidgets, type WidgetHit, type WidgetLayoutTokens, type CustomWidgetController } from './widget-renderer.js'
 import { hexToRgba, resolveCategoryAccent, resolveCategoryGradient, resolvePinFill, resolvePinStroke } from './style.js'
 
 export type NodeVisualState = 'default' | 'hover' | 'selected' | 'active'
@@ -77,6 +79,8 @@ export interface RenderNodeOptions {
    *  collapse/expand animation, which drives itself on Ticker.shared. The editor uses this to
    *  mark its render-on-demand loop dirty so animation frames actually paint. */
   requestRender?: () => void
+  /** Host-registered custom widget controllers, keyed by the `renderer` name on a `custom` widget. */
+  customWidgets?: ReadonlyMap<string, CustomWidgetController>
 }
 
 export interface NodeView {
@@ -84,9 +88,17 @@ export interface NodeView {
   setVisualState(state: NodeVisualState): void
   setCollapsed(collapsed: boolean, animated?: boolean): void
   isCollapsed(): boolean
+  /** The collapsed header pill's rect (+ corner radius) in node-local coords. Lets the editor
+   *  occlude DOM widgets behind a collapsed node by its actual rounded pill, not its full size. */
+  readonly collapsedRect?: { x: number; y: number; w: number; h: number; r: number }
   /** Centre of a pin in the node's local coordinates given the current visual state.
    *  Edge renderers use this to track pin positions as nodes collapse/expand. */
   pinLocalPosition(pinId: string): { x: number; y: number } | null
+  /** Widget under a node-local point (expanded form only), or null. Absent on views without
+   *  widgets (reroutes, themes that don't draw them). */
+  widgetHit?(localX: number, localY: number): WidgetHit | null
+  /** Cheaply refresh one widget's visual to a new value (live slider/number drag). */
+  updateWidget?(id: string, value: unknown): void
 }
 
 const COLLAPSE_DURATION_MS = 220
@@ -387,7 +399,7 @@ export function renderNode(
   chevron.eventMode = 'static'
   expanded.addChild(chevron)
 
-  const title = new Text({
+  const title = new BitmapText({
     text: opts.title ?? node.type,
     style: {
       fontFamily: tokens.typography.fontFamily,
@@ -408,7 +420,7 @@ export function renderNode(
 
   // Pin Graphics & labels for expanded form. We also track pin position lookups for edge wiring.
   const expandedPinLocations = new Map<string, { x: number; y: number }>()
-  const pinLabels: Text[] = []
+  const pinLabels: BitmapText[] = []
   for (const pin of node.pins) {
     const layoutPin = expandedLayout.pins.find((p) => p.id === pin.id)
     if (!layoutPin) continue
@@ -426,7 +438,7 @@ export function renderNode(
     expanded.addChild(pinGfx)
 
     if (pin.label) {
-      const label = new Text({
+      const label = new BitmapText({
         text: pin.label,
         style: {
           fontFamily: tokens.typography.fontFamily,
@@ -466,7 +478,9 @@ export function renderNode(
   ).width
   const pillW = Math.max(geo.node.pillMinWidth, pillTitleStartX + pillTitleWidth + pillR)
   // Centre the pill vertically within the (taller) expanded body so the node's anchor doesn't shift.
-  const pillOffsetY = (h - pillH) / 2
+  // Canon: a node collapses UP to its header (pill sits at the top), not to the vertical centre —
+  // important now that widget nodes are tall.
+  const pillOffsetY = 0
 
   // Glow layers for pill form. Drawn behind the pill body so the halo bleeds outside the capsule.
   const pillGlowLayers: Record<Exclude<NodeVisualState, 'default'>, Container> = {
@@ -562,7 +576,7 @@ export function renderNode(
   pillChevron.rotation = -Math.PI / 2
   collapsed.addChild(pillChevron)
 
-  const pillTitle = new Text({
+  const pillTitle = new BitmapText({
     text: opts.title ?? node.type,
     style: {
       fontFamily: tokens.typography.fontFamily,
@@ -710,11 +724,28 @@ export function renderNode(
     e.stopPropagation()
   })
 
-  return {
+  // Widget rows live in the expanded form (below the pins); the pill form has none.
+  const widgetLayoutTokens: WidgetLayoutTokens = {
+    node:   { headerHeight: geo.node.headerHeight },
+    pin:    { rowSpacing: geo.pin.rowSpacing, rowHeight: geo.pin.rowHeight },
+    header: { toPinsGap: geo.header.toPinsGap },
+    widget: { rowHeight: geo.widget.rowHeight, gap: geo.widget.gap, paddingX: geo.widget.paddingX },
+  }
+  const widgetsView =
+    node.widgets && node.widgets.length > 0 ? renderWidgets(node, w, tokens, widgetLayoutTokens, opts.customWidgets) : null
+  if (widgetsView) expanded.addChild(widgetsView.container)
+
+  const view: NodeView = {
     container,
     setVisualState,
     setCollapsed,
     isCollapsed: () => isCollapsedState,
     pinLocalPosition,
+    collapsedRect: { x: 0, y: pillOffsetY, w: pillW, h: pillH, r: pillR },
   }
+  if (widgetsView) {
+    view.widgetHit = (x, y): WidgetHit | null => (isCollapsedState ? null : widgetsView.widgetHit(x, y))
+    view.updateWidget = (id, value): void => widgetsView.update(id, value)
+  }
+  return view
 }

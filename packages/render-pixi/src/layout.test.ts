@@ -221,3 +221,46 @@ describe('measureNodeSize', () => {
     expect(y).toBe(21 + 15 + (2 * 11 + 10) + 15)
   })
 })
+
+const WIDGET_TOKENS: NodeSizeTokens = {
+  ...SIZE_TOKENS,
+  widget: { rowHeight: 18, gap: 6, controlMinWidth: 60 },
+}
+
+describe('measureNodeSize — widgets', () => {
+  const base: Pick<Node, 'id' | 'type' | 'position' | 'state'> = {
+    id: createNodeId(), type: 'X', position: { x: 0, y: 0 }, state: {},
+  }
+  const oneRow = [labelledPin('in', 'a'), labelledPin('out', 'b')]
+
+  it('adds a widget block below the pins (taller than the same node without widgets)', () => {
+    const without: Node = { ...base, pins: oneRow }
+    const withW: Node = {
+      ...base, pins: oneRow,
+      widgets: [
+        { id: 'n', type: 'number', label: 'N', key: 'n' },
+        { id: 't', type: 'toggle', label: 'T', key: 't' },
+      ],
+    }
+    const h0 = measureNodeSize(without, 'X', WIDGET_TOKENS, fakeMeasure).y
+    const h2 = measureNodeSize(withW, 'X', WIDGET_TOKENS, fakeMeasure).y
+    // block = leading gap + 2*rowHeight + 1 between-gap = 6 + 36 + 6 = 48
+    expect(h2).toBe(h0 + (6 + 2 * 18 + 6))
+  })
+
+  it('multiline text widget is taller than a single-row widget', () => {
+    const single: Node = { ...base, pins: oneRow, widgets: [{ id: 't', type: 'text', label: 'T', key: 't' }] }
+    const multi: Node = { ...base, pins: oneRow, widgets: [{ id: 't', type: 'text', label: 'T', key: 't', multiline: true }] }
+    expect(measureNodeSize(multi, 'X', WIDGET_TOKENS, fakeMeasure).y)
+      .toBeGreaterThan(measureNodeSize(single, 'X', WIDGET_TOKENS, fakeMeasure).y)
+  })
+
+  it('widens to fit a wide widget (label + control)', () => {
+    const n: Node = {
+      ...base, pins: [],
+      widgets: [{ id: 's', type: 'slider', label: 'A very long widget label indeed', key: 's', min: 0, max: 1 }],
+    }
+    const w = measureNodeSize(n, 'X', WIDGET_TOKENS, fakeMeasure).x
+    expect(w).toBeGreaterThan(150)
+  })
+})

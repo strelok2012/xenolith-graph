@@ -1,7 +1,7 @@
 import { XenolithEditor } from '@xenolith/editor'
 import { xenTheme, type XenolithTheme } from '@xenolith/render-pixi'
 import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
-import { demoGraph, demoSchemas } from '@xenolith/demo'
+import { demoGraph, demoSchemas, createCurveWidget, createXYPadWidget } from '@xenolith/demo'
 
 const THEMES: Record<string, XenolithTheme> = {
   xen: xenTheme,
@@ -20,6 +20,8 @@ async function buildShowcase(mountEl: HTMLElement, theme: XenolithTheme) {
 
   // The landing showcases display the canonical demo graph (same data the playground loads), so
   // there's a single source of truth for what Xenolith looks like out of the box.
+  editor.registerWidget('curve', createCurveWidget())
+  editor.registerWidget('xypad', createXYPadWidget())
   for (const schema of demoSchemas) editor.registry.register(schema)
   editor.loadJSON(demoGraph)
 

@@ -7,6 +7,7 @@ import {
   Mesh,
   Rectangle,
   Shader,
+  BitmapText,
   Text,
   TextStyle,
   Texture,
@@ -18,6 +19,7 @@ import type { XenTokens } from '@xenolith/theme-xen'
 import {
   computeNodeLayout,
   markPinInteractive,
+  renderWidgets,
   rerouteStateColor,
   resolveCategoryAccent,
   resolvePinFill,
@@ -26,6 +28,7 @@ import {
   type NodeVisualState,
   type RenderNodeOptions,
   type ThemeRenderContext,
+  type WidgetHit,
 } from '@xenolith/render-pixi'
 import { glassFragmentGLSL, glassVertexGLSL } from './glass-shader.js'
 
@@ -189,7 +192,8 @@ export function renderNodeLiquidGlass(
   ).width
   const pillW = Math.max(geo.node.pillMinWidth, 34 + titleW + pillR)
   // Xen canon: pill is vertically centred within the expanded body's bounds when collapsed.
-  const pillOffsetY = (expandedH - pillH) / 2
+  // Canon: collapse UP to the header (pill at top), not to the vertical centre.
+  const pillOffsetY = 0
 
   const container = new Container({ label: `node-liquid-glass:${node.id}` })
   container.position.set(node.position.x, node.position.y)
@@ -233,7 +237,7 @@ export function renderNodeLiquidGlass(
   pillTint.visible = false
   container.addChild(pillTint)
 
-  const title = new Text({
+  const title = new BitmapText({
     text: titleText,
     style: {
       fontFamily: tokens.typography.fontFamily,
@@ -246,7 +250,7 @@ export function renderNodeLiquidGlass(
   expandedInner.addChild(title)
 
   // ===== Pill title — separate label only visible in collapsed form =========================
-  const pillTitle = new Text({
+  const pillTitle = new BitmapText({
     text: titleText,
     style: {
       fontFamily: tokens.typography.fontFamily,
@@ -297,7 +301,7 @@ export function renderNodeLiquidGlass(
     container.addChild(g)
 
     if (pin.label) {
-      const lab = new Text({
+      const lab = new BitmapText({
         text: pin.label,
         style: {
           fontFamily: tokens.typography.fontFamily,
@@ -389,9 +393,21 @@ export function renderNodeLiquidGlass(
     e.stopPropagation()
   })
 
+  // Widget rows (expanded form only) — reuse the shared renderer; LG inherits widget tokens.
+  const widgetsView =
+    node.widgets && node.widgets.length > 0
+      ? renderWidgets(node, expandedW, tokens, {
+          node:   { headerHeight: geo.node.headerHeight },
+          pin:    { rowSpacing: geo.pin.rowSpacing, rowHeight: geo.pin.rowHeight },
+          header: { toPinsGap: geo.header.toPinsGap },
+          widget: { rowHeight: geo.widget.rowHeight, gap: geo.widget.gap, paddingX: geo.widget.paddingX },
+        }, opts.customWidgets)
+      : null
+  if (widgetsView) expandedInner.addChild(widgetsView.container)
+
   applyForm(collapsed)
 
-  return {
+  const view: NodeView = {
     container,
     setVisualState(state) {
       visualState = state
@@ -406,7 +422,13 @@ export function renderNodeLiquidGlass(
     pinLocalPosition(pinId) {
       return (collapsed ? pillPinPositions : expandedPinPositions).get(pinId) ?? null
     },
+    collapsedRect: { x: 0, y: pillOffsetY, w: pillW, h: pillH, r: pillR },
   }
+  if (widgetsView) {
+    view.widgetHit = (x, y): WidgetHit | null => (collapsed ? null : widgetsView.widgetHit(x, y))
+    view.updateWidget = (id, value): void => widgetsView.update(id, value)
+  }
+  return view
 }
 
 /** Liquid Glass reroute knot — a glass disc. The glass shader draws a rounded rect; with a square

@@ -6,7 +6,7 @@ import { generateXxlWorkflow } from './fixtures/xxl.js'
 
 // Wider zoom range than the default [0.25, 2] so the 1391-node monster can be zoomed out far
 // enough to behold in full.
-const editor = await XenolithEditor.init('#app', { theme: xenTheme, zoomBounds: [0.04, 2] })
+const editor = await XenolithEditor.init('#app', { theme: xenTheme, zoomBounds: [0.04, 2], minimap: true })
 
 // ---- core load path --------------------------------------------------------------------------
 // The editor owns a themeable busy overlay (blur + spinner) via `withOverlay`: it paints first,

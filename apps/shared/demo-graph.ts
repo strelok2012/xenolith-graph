@@ -1,5 +1,16 @@
 import type { NodeSchema, XenolithGraphV1, XenolithNodeV1, XenolithEdgeV1 } from '@xenolith/editor'
-import { REROUTE_TYPE, REROUTE_NODE_TYPE } from '@xenolith/core'
+import { REROUTE_TYPE, REROUTE_NODE_TYPE, defaultWidgetValue, type WidgetSpec } from '@xenolith/core'
+
+export { createCurveWidget } from './curve-widget.js'
+export { createXYPadWidget } from './xy-pad-widget.js'
+import { CURVE_DEFAULT } from './curve-widget.js'
+import { XYPAD_DEFAULT } from './xy-pad-widget.js'
+
+/** Initial value for a custom widget — its controller's default, persisted into node.state so a
+ *  loaded graph is self-contained (getWidgetValue returns real data, not undefined). */
+function customDefault(renderer: string): unknown {
+  return renderer === 'curve' ? CURVE_DEFAULT : renderer === 'xypad' ? XYPAD_DEFAULT : null
+}
 
 /**
  * The canonical Xenolith demo graph, authored once as plain data in our own `xenolith.v1` format.
@@ -23,6 +34,7 @@ interface NodeSpec {
   position: { x: number; y: number }
   collapsed?: boolean
   pins: PinSpec[]
+  widgets?: WidgetSpec[]
 }
 type Conn = [from: string, fromPin: number, to: string, toPin: number, type: string]
 
@@ -36,17 +48,36 @@ const SPECS: NodeSpec[] = [
   { key: 'cache',     type: 'Cache',     category: 'data',    description: 'Memoises the last seen object',           keywords: ['store', 'memo'],   position: { x: 40,  y: 500 }, collapsed: true, pins: [p('in','object','In'), p('out','object','Out')] },
   { key: 'gather',    type: 'Gather',    category: 'macro',   description: 'Combines several inputs into one object', keywords: ['merge', 'join'],   position: { x: 300, y: 200 }, pins: [p('in','float','A'), p('in','float','B'), p('in','object','C'), p('out','object','Out')] },
   { key: 'pack',      type: 'Pack',      category: 'macro',   description: 'Bundles an object with a tag',            keywords: ['bundle'],          position: { x: 300, y: 420 }, collapsed: true, pins: [p('in','object','In'), p('in','float','Tag'), p('out','object','Pack')] },
-  { key: 'transform', type: 'Transform', category: 'data',    description: 'Maps an object to a new shape',           keywords: ['move', 'map'],     position: { x: 560, y: 140 }, pins: [p('in','object','In'), p('out','object','Out')] },
-  { key: 'validate',  type: 'Validate',  category: 'data',    description: 'Checks an object against a schema',       keywords: ['check'],           position: { x: 560, y: 300 }, pins: [p('in','object','In'), p('out','wildcard','Out')] },
-  { key: 'enrich',    type: 'Enrich',    category: 'data',    description: 'Augments an object with extra fields',    keywords: ['augment'],         position: { x: 560, y: 460 }, pins: [p('in','object','In'), p('out','object','Out')] },
+  { key: 'transform', type: 'Transform', category: 'data',    description: 'Maps an object to a new shape',           keywords: ['move', 'map'],     position: { x: 560, y: 140 }, pins: [p('in','object','In'), p('out','object','Out')],
+    widgets: [
+      { id: 'scale', type: 'slider', label: 'Scale', key: 'scale', min: 0, max: 2, step: 0.05 },
+      { id: 'mode',  type: 'combo',  label: 'Mode',  key: 'mode',  values: ['fit', 'fill', 'stretch'] },
+      { id: 'mirror', type: 'toggle', label: 'Mirror', key: 'mirror' },
+    ] },
+  { key: 'validate',  type: 'Validate',  category: 'data',    description: 'Checks an object against a schema',       keywords: ['check'],           position: { x: 560, y: 300 }, pins: [p('in','object','In'), p('out','wildcard','Out')],
+    widgets: [
+      { id: 'response', type: 'custom', renderer: 'curve', key: 'response', label: 'Response', height: 120 },
+    ] },
+  { key: 'enrich',    type: 'Enrich',    category: 'data',    description: 'Augments an object with extra fields',    keywords: ['augment'],         position: { x: 560, y: 510 }, pins: [p('in','object','In'), p('out','object','Out')],
+    widgets: [
+      { id: 'tint',     type: 'color',  label: 'Tint',     key: 'tint' },
+      { id: 'strength', type: 'slider', label: 'Strength', key: 'strength', min: 0, max: 1, step: 0.01 },
+    ] },
   { key: 'score',     type: 'Score',     category: 'macro',   description: 'Ranks an object, emits a float score',    keywords: ['rank'],            position: { x: 820, y: 200 }, collapsed: true, pins: [p('in','object','In'), p('out','float','Out')] },
-  { key: 'resolve',   type: 'Resolve',   category: 'macro',   description: 'Finalises into a string result',          keywords: ['finalize'],        position: { x: 820, y: 360 }, pins: [p('in','object','In'), p('in','float','Hint'), p('in','wildcard','Aux'), p('out','string','Out')] },
-  { key: 'format',    type: 'Format',    category: 'data',    description: 'Renders a result to a display string',    keywords: ['template'],        position: { x: 820, y: 560 }, collapsed: true, pins: [p('in','string','In'), p('out','string','Out')] },
+  { key: 'resolve',   type: 'Resolve',   category: 'macro',   description: 'Finalises into a string result',          keywords: ['finalize'],        position: { x: 820, y: 360 }, pins: [p('in','object','In'), p('in','float','Hint'), p('in','wildcard','Aux'), p('out','string','Out')],
+    widgets: [
+      { id: 'seed', type: 'number', label: 'Seed', key: 'seed', min: 0, max: 999999, step: 1 },
+      { id: 'prompt', type: 'text', label: 'Prompt', key: 'prompt', multiline: true, placeholder: 'describe…' },
+    ] },
+  { key: 'format',    type: 'Format',    category: 'data',    description: 'Renders a result to a display string',    keywords: ['template'],        position: { x: 820, y: 600 }, collapsed: true, pins: [p('in','string','In'), p('out','string','Out')] },
   { key: 'display',   type: 'Display',   category: 'utility', description: 'Renders a string to the viewport',        keywords: ['show', 'output'],  position: { x: 1100, y: 120 }, pins: [p('in','string','In'), p('out','any','Out')] },
   { key: 'audit',     type: 'Audit',     category: 'utility', description: 'Logs a float for inspection',             keywords: ['log'],             position: { x: 1100, y: 280 }, pins: [p('in','float','In'), p('out','any','Out')] },
   { key: 'persist',   type: 'Persist',   category: 'utility', description: 'Writes a string to durable storage',      keywords: ['save', 'write'],   position: { x: 1100, y: 440 }, pins: [p('in','string','In'), p('out','any','Out')] },
   { key: 'notify',    type: 'Notify',    category: 'utility', description: 'Pushes a notification on completion',     keywords: ['alert', 'webhook'],position: { x: 1100, y: 600 }, pins: [p('in','string','In'), p('out','any','Out')] },
-  { key: 'archive',   type: 'Archive',   category: 'utility', description: 'Cold-stores any payload',                 keywords: ['cold', 'backup'],  position: { x: 1380, y: 360 }, pins: [p('in','any','In'),  p('out','any','Out')] },
+  { key: 'archive',   type: 'Archive',   category: 'utility', description: 'Cold-stores any payload',                 keywords: ['cold', 'backup'],  position: { x: 1380, y: 360 }, pins: [p('in','any','In'),  p('out','any','Out')],
+    widgets: [
+      { id: 'offset', type: 'custom', renderer: 'xypad', key: 'offset', label: 'Offset', height: 110 },
+    ] },
 ]
 
 // ---- connections (reroutes wired in) ---------------------------------------------------------
@@ -103,6 +134,14 @@ function buildNode(spec: NodeSpec): XenolithNodeV1 {
     })),
     render: { category: spec.category, title: spec.title ?? spec.type, collapsed: spec.collapsed ?? false },
   }
+  if (spec.widgets) {
+    node.widgets = spec.widgets
+    node.state = {}
+    for (const w of spec.widgets) {
+      if (w.key === undefined) continue
+      node.state[w.key] = w.type === 'custom' ? customDefault(w.renderer) : defaultWidgetValue(w)
+    }
+  }
   return node
 }
 
@@ -138,4 +177,5 @@ export const demoSchemas: NodeSchema[] = SPECS.map((spec) => ({
   description: spec.description,
   keywords: spec.keywords ?? [],
   pins: spec.pins.map((pn) => ({ kind: 'data', direction: pn.dir, type: pn.type, label: pn.label, multiple: pn.dir === 'out' })),
+  ...(spec.widgets ? { widgets: spec.widgets } : {}),
 }))

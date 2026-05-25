@@ -4,7 +4,7 @@ import type { EdgeId, NodeId } from './ids.js'
 
 export class AddNode implements Command<void> {
   readonly type = 'AddNode'
-  constructor(private readonly node: Node) {}
+  constructor(readonly node: Node) {}
 
   apply(ctx: CommandContext): void {
     ctx.graph._addNode(this.node)
@@ -22,7 +22,7 @@ export interface RemoveNodeUndo {
 
 export class RemoveNode implements Command<RemoveNodeUndo> {
   readonly type = 'RemoveNode'
-  constructor(private readonly nodeId: NodeId) {}
+  constructor(readonly nodeId: NodeId) {}
 
   apply(ctx: CommandContext): RemoveNodeUndo {
     const cascaded: Edge[] = []
@@ -49,7 +49,7 @@ export class RemoveNode implements Command<RemoveNodeUndo> {
 
 export class ConnectPins implements Command<void> {
   readonly type = 'ConnectPins'
-  constructor(private readonly edge: Edge) {}
+  constructor(readonly edge: Edge) {}
 
   apply(ctx: CommandContext): void {
     ctx.graph._addEdge(this.edge)
@@ -62,7 +62,7 @@ export class ConnectPins implements Command<void> {
 
 export class DisconnectEdge implements Command<Edge> {
   readonly type = 'DisconnectEdge'
-  constructor(private readonly edgeId: EdgeId) {}
+  constructor(readonly edgeId: EdgeId) {}
 
   apply(ctx: CommandContext): Edge {
     const removed = ctx.graph._removeEdge(this.edgeId)

@@ -1,0 +1,47 @@
+{
+  "name": "@xenolith/react",
+  "version": "0.0.0",
+  "description": "React adapter for XenolithGraph — <XenolithGraph> component + useXenolith hook.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc -b --watch",
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@xenolith/adapter-core": "workspace:*",
+    "@xenolith/editor": "workspace:*"
+  },
+  "peerDependencies": {
+    "pixi.js": "^8.6.0",
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19",
+    "jsdom": "^25.0.0",
+    "pixi.js": "^8.6.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

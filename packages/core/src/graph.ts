@@ -1,4 +1,5 @@
 import type { NodeId, EdgeId, PinId, CommentId, TypeId } from './ids.js'
+import type { WidgetSpec } from './widget.js'
 
 export interface Vec2 {
   x: number
@@ -25,6 +26,8 @@ export interface Node {
   size?: Vec2
   state: Record<string, unknown>
   pins: Pin[]
+  /** In-node UI controls. Values live in `state` (keyed by each widget's `key`). */
+  widgets?: WidgetSpec[]
 }
 
 export interface Edge {

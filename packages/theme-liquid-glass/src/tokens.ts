@@ -21,6 +21,29 @@ const liquidGlassOverride: DeepPartial<XenTokens> = {
       panel:     'rgba(255, 255, 255, 0.05)',
       headerEnd: 'rgba(255, 255, 255, 0.18)',
     },
+    minimap: {
+      background:  'rgba(17, 37, 88, 0.6)',
+      border:      'rgba(255, 255, 255, 0.28)',
+      node:        'rgba(255, 255, 255, 0.42)',
+      frame:       'rgba(154, 214, 227, 0.16)',
+      frameBorder: 'rgba(154, 214, 227, 0.9)',
+    },
+    // Frosted insets over the glass body — mirrors the palette's translucent input fields.
+    widget: {
+      bg:            'rgba(255, 255, 255, 0.1)',
+      bgHover:       'rgba(255, 255, 255, 0.18)',
+      bgFocused:     'rgba(17, 37, 88, 0.72)',
+      track:         'rgba(255, 255, 255, 0.16)',
+      fill:          '#9AD6E3',
+      fillAlpha:     0.6,
+      text:          'rgba(255, 255, 255, 0.95)',
+      label:         'rgba(220, 232, 255, 0.65)',
+      placeholder:   'rgba(220, 232, 255, 0.4)',
+      border:        'rgba(255, 255, 255, 0.24)',
+      borderFocused: 'rgba(154, 214, 227, 0.9)',
+      selection:     'rgba(154, 214, 227, 0.35)',
+      knob:          '#FFFFFF',
+    },
   },
   // Brighter rims and halos read as light bouncing off glass edges.
   state: {

@@ -6,7 +6,7 @@ export class MoveNode implements Command<Vec2> {
   readonly type = 'MoveNode'
   readonly #target: Vec2
   constructor(
-    private readonly nodeId: NodeId,
+    readonly nodeId: NodeId,
     target: Vec2,
   ) {
     this.#target = { x: target.x, y: target.y }

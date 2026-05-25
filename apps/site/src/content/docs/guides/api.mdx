@@ -94,3 +94,67 @@ await editor.withOverlay('Rendering…', () => {
 editor.showOverlay('Loading…')
 editor.hideOverlay()
 ```
+
+## Widgets
+
+Nodes can carry in-node controls. A widget is **declarative data** on the node (or its schema); its value lives in `node.state[key]`, so it serialises with the graph and every change is undoable.
+
+```ts
+const node = {
+  id: 'n1', type: 'Sampler', position: { x: 0, y: 0 }, state: {}, pins: [],
+  widgets: [
+    { id: 'steps',  type: 'number', label: 'Steps', key: 'steps', min: 1, max: 150, step: 1 },
+    { id: 'cfg',    type: 'slider', label: 'CFG',   key: 'cfg',   min: 0, max: 20, step: 0.1 },
+    { id: 'sampler',type: 'combo',  label: 'Sampler', key: 'sampler', values: ['euler', 'dpm++', 'ddim'] },
+    { id: 'prompt', type: 'text',   label: 'Prompt', key: 'prompt', multiline: true },
+    { id: 'hires',  type: 'toggle', label: 'Hi-res', key: 'hires' },
+    { id: 'tint',   type: 'color',  label: 'Tint',  key: 'tint' },
+    { id: 'run',    type: 'button', label: 'Run',   action: 'run' },
+  ],
+}
+```
+
+Built-in types: **number** (drag-scrub + click-to-type), **slider**, **combo** (dropdown), **text** (`multiline`), **toggle**, **color** (picker popover), **button** (fires an action).
+
+```ts
+editor.getWidgetValue(nodeId, 'steps')
+editor.setWidgetValue(nodeId, 'steps', 30)        // clamped, undoable
+editor.onWidgetAction(({ nodeId, action }) => { /* button pressed */ })
+```
+
+Every widget is themeable globally via `color.widget` / `geometry.widget` tokens, and per-instance via a `style` override:
+
+```ts
+{ id: 'gain', type: 'slider', label: 'Gain', key: 'gain', min: 0, max: 1,
+  style: { fill: '#FF3366', radius: 10, borderFocused: '#FF3366' } }
+```
+
+### Custom widgets
+
+Register a controller, then reference it from a `custom` widget's `renderer`:
+
+```ts
+{ id: 'curve', type: 'custom', renderer: 'curve', key: 'curve', height: 120 }
+```
+
+Two controller kinds:
+
+```ts
+// Canvas-draw (fast — painted to a WebGL texture, no DOM):
+editor.registerWidget('curve', {
+  draw(ctx, { value, width, height }) { /* 2D-canvas drawing */ },
+  onPointer(phase, x, y, { value, width, height }) { return newValue },
+})
+
+// DOM-mounted (arbitrary HTML — the contract React / Vue / Svelte adapters wrap):
+editor.registerWidget('chart', {
+  mount(el, { value, setValue }) { /* render a component into el */; return () => { /* cleanup */ } },
+  update({ value }) { /* re-render on external change */ },
+})
+```
+
+Canvas-draw is the perf-friendly default; the editor keeps DOM-mounted widgets glued to their node's on-screen rect through pan/zoom/drag.
+
+### ComfyUI import
+
+`importComfyWorkflow` maps each node's positional `widgets_values` to typed widgets by value (number→number, boolean→toggle, string→text). Names/combos/ranges require the server's `object_info` and are a later upgrade.

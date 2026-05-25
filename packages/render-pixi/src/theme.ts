@@ -50,6 +50,10 @@ export interface XenolithTheme {
    *  backdrop (Xen, vanilla flat themes) leave this false so the editor skips the extra render
    *  pass entirely. */
   needsBackdrop?: boolean
+  /** Opt-in flag — when true, the editor bakes each node into a sprite during a zoom/pan gesture
+   *  and restores the live nodes on settle. Hides the per-frame cost of expensive materials (the
+   *  Liquid Glass shader) during navigation. Cheap/flat themes (Xen) leave it false. */
+  freezeOnNavigate?: boolean
   /** Custom node rendering pipeline. Themes that need backdrop sampling read ctx.backdropTexture. */
   renderNode?: (node: Node, opts: RenderNodeOptions, ctx: ThemeRenderContext) => NodeView
   /** Custom reroute-knot rendering. Falls back to the Xen disc (`renderRerouteNode`) when omitted.

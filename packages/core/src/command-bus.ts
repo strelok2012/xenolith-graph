@@ -78,12 +78,14 @@ export class CommandBus {
   redo(): boolean {
     if (!this.canRedo()) return false
     const entry = this.#log[this.#cursor]!
+    // Advance the cursor before re-applying so listeners observing command:redone read a consistent
+    // canUndo/canRedo (mirrors undo(), which decrements first). #redoOne doesn't depend on the cursor.
+    this.#cursor++
     if (entry.kind === 'single') {
       this.#redoOne(entry.entry)
     } else {
       for (const e of entry.entries) this.#redoOne(e)
     }
-    this.#cursor++
     return true
   }
 

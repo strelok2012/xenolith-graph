@@ -94,3 +94,58 @@ await editor.withOverlay('Rendering…', () => {
 editor.showOverlay('Loading…')
 editor.hideOverlay()
 ```
+
+## 控件（Widgets）
+
+节点可携带内联控件。控件是节点（或其 schema）上的**声明式数据**；值存于 `node.state[key]`，因此随图序列化，且每次修改都可撤销。
+
+```ts
+widgets: [
+  { id: 'steps',  type: 'number', label: 'Steps', key: 'steps', min: 1, max: 150, step: 1 },
+  { id: 'cfg',    type: 'slider', label: 'CFG',   key: 'cfg',   min: 0, max: 20, step: 0.1 },
+  { id: 'sampler',type: 'combo',  label: 'Sampler', key: 'sampler', values: ['euler', 'dpm++', 'ddim'] },
+  { id: 'prompt', type: 'text',   label: 'Prompt', key: 'prompt', multiline: true },
+  { id: 'hires',  type: 'toggle', label: 'Hi-res', key: 'hires' },
+  { id: 'tint',   type: 'color',  label: 'Tint',  key: 'tint' },
+  { id: 'run',    type: 'button', label: 'Run',   action: 'run' },
+]
+```
+
+内置类型：**number**（拖拽 + 点击输入）、**slider**、**combo**、**text**（`multiline`）、**toggle**、**color**（弹出取色器）、**button**。
+
+```ts
+editor.getWidgetValue(nodeId, 'steps')
+editor.setWidgetValue(nodeId, 'steps', 30)        // 钳制、可撤销
+editor.onWidgetAction(({ nodeId, action }) => { /* 按钮被按下 */ })
+```
+
+每个控件可通过 `color.widget` / `geometry.widget` 令牌全局主题化，也可通过 `style` 逐实例覆盖：
+
+```ts
+{ id: 'gain', type: 'slider', label: 'Gain', key: 'gain', min: 0, max: 1,
+  style: { fill: '#FF3366', radius: 10, borderFocused: '#FF3366' } }
+```
+
+### 自定义控件
+
+注册一个控制器，并由 `custom` 控件的 `renderer` 引用。两种控制器：
+
+```ts
+// canvas-draw（快——绘制到 WebGL 纹理，无 DOM）：
+editor.registerWidget('curve', {
+  draw(ctx, { value, width, height }) { /* 2D-canvas 绘制 */ },
+  onPointer(phase, x, y, ctx) { return newValue },
+})
+
+// dom-mount（任意 HTML——React/Vue/Svelte 适配器封装的契约）：
+editor.registerWidget('chart', {
+  mount(el, { value, setValue }) { /* 把组件挂载到 el */; return () => {} },
+  update({ value }) {},
+})
+```
+
+canvas-draw 是高性能默认；DOM 控件由编辑器在平移/缩放/拖拽时保持贴合节点的屏幕矩形。
+
+### ComfyUI 导入
+
+`importComfyWorkflow` 按值类型将每个节点的位置型 `widgets_values` 映射为类型化控件（数字→number、布尔→toggle、字符串→text）。名称/下拉/范围需要服务器的 `object_info`，属于后续升级。

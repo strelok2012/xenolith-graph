@@ -1,15 +1,18 @@
 import { XenolithEditor } from '@xenolith/editor'
 import { xenTheme, type XenolithTheme } from '@xenolith/render-pixi'
 import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
-import { demoGraph, demoSchemas } from '@xenolith/demo'
+import { demoGraph, demoSchemas, createCurveWidget, createXYPadWidget } from '@xenolith/demo'
 
 const editor = await XenolithEditor.init('#app', {
   theme: liquidGlassTheme,
   zoomBounds: [0.1, 2],
+  minimap: true,
 })
 
 // Register schemas so the insert palette (Tab / double-click) can spawn any demo node type, then
 // load the whole graph from our own xenolith.v1 data format and frame it. No hand-built nodes.
+editor.registerWidget('curve', createCurveWidget())
+editor.registerWidget('xypad', createXYPadWidget())
 for (const schema of demoSchemas) editor.registry.register(schema)
 editor.loadJSON(demoGraph)
 editor.fitView({ padding: 56, maxZoom: 1 })

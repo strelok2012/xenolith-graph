@@ -22,6 +22,9 @@ export const liquidGlassTheme: XenolithTheme = {
   id: 'liquid-glass',
   tokens: liquidGlassTokens,
   needsBackdrop: true,
+  // Disabled for now: the freeze/unfreeze at gesture start/end causes a hitch that hurts
+  // smoothness more than the per-frame glass cost. Revisit with proper LOD/virtualization (#59).
+  freezeOnNavigate: false,
   // CSS frosted-glass approximation for DOM chrome (insert palette). Translucent cool-white
   // panel + heavy backdrop blur + luminous 1px rim + soft inner highlight — the WWDC25 look
   // without the backdrop-sampling shader (overkill for chrome).

@@ -81,6 +81,29 @@ describe('serializeXenolithGraph', () => {
     expect(n.render).toEqual({ category: 'logic', title: 'Source', collapsed: false })
   })
 
+  it('serializes node widgets and round-trips them', () => {
+    const node: Node = {
+      id: 'n1' as Node['id'], type: 'Knob', position: { x: 0, y: 0 },
+      state: { amount: 5, mode: 'mul' }, pins: [],
+      widgets: [
+        { id: 'amt', type: 'slider', label: 'Amount', key: 'amount', min: 0, max: 10, step: 0.5 },
+        { id: 'mode', type: 'combo', label: 'Mode', key: 'mode', values: ['add', 'mul'] },
+        { id: 'go', type: 'button', label: 'Run', action: 'run' },
+      ],
+    }
+    const out = serializeXenolithGraph(input({ nodes: [node] }))
+    expect(out.nodes[0]!.widgets).toEqual(node.widgets)
+
+    const parsed = parseXenolithGraph(JSON.parse(JSON.stringify(out)))
+    expect(parsed.nodes[0]!.widgets).toEqual(node.widgets)
+    expect(parsed.nodes[0]!.state).toEqual({ amount: 5, mode: 'mul' })
+  })
+
+  it('omits widgets when the node has none', () => {
+    const out = serializeXenolithGraph(input({ nodes: [mkNode('n1', 'A', { x: 0, y: 0 }, [])] }))
+    expect(out.nodes[0]!.widgets).toBeUndefined()
+  })
+
   it('omits size when absent on the source node', () => {
     const out = serializeXenolithGraph(input({
       nodes: [mkNode('n1', 'A', { x: 0, y: 0 }, [])],

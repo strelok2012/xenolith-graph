@@ -51,6 +51,18 @@ describe('importComfyWorkflow', () => {
     expect(graph.version).toBe('xenolith.v1')
   })
 
+  it('maps widgets_values to typed widgets with seeded state', () => {
+    const loader = graph.nodes.find((n) => n.type === 'CheckpointLoader')!
+    const sampler = graph.nodes.find((n) => n.type === 'KSampler')!
+    // CheckpointLoader: ['sd_xl.safetensors'] → one text widget (generic positional label)
+    expect(loader.widgets).toEqual([{ id: 'w0', type: 'text', label: 'param 1', key: 'w0', multiline: false }])
+    expect(loader.state?.['w0']).toBe('sd_xl.safetensors')
+    // KSampler: [12345, 20, 8] → three number widgets
+    expect(sampler.widgets).toHaveLength(3)
+    expect(sampler.widgets!.every((w) => w.type === 'number')).toBe(true)
+    expect(sampler.state).toMatchObject({ w0: 12345, w1: 20, w2: 8 })
+  })
+
   it('imports every node with mapped position (array and object pos forms)', () => {
     expect(graph.nodes).toHaveLength(2)
     const loader = graph.nodes.find((n) => n.type === 'CheckpointLoader')!

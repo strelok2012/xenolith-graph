@@ -1,4 +1,31 @@
-import type { Node, Pin, PinId } from '@xenolith/core'
+import type { Node, Pin, PinId, WidgetSpec } from '@xenolith/core'
+
+export interface WidgetGeometry {
+  rowHeight: number
+  gap: number
+  /** Min width reserved for a widget's control (slider track, value field) beside its label. */
+  controlMinWidth: number
+}
+
+/** Vertical space one widget occupies — multiline text gets three rows; a custom widget uses its
+ *  declared height (default 4 rows). Must match `widget-renderer`'s copy so size matches render. */
+function widgetRowHeight(w: WidgetSpec, geo: WidgetGeometry): number {
+  // Labelled text puts its label on a row ABOVE the field box, so it needs an extra row.
+  if (w.type === 'text') {
+    const field = w.multiline ? geo.rowHeight * 3 : geo.rowHeight
+    return w.label ? field + geo.rowHeight : field
+  }
+  if (w.type === 'custom') return w.height ?? geo.rowHeight * 4
+  return geo.rowHeight
+}
+
+/** Height of the widget block appended below the pin rows: a leading gap, each widget row, and a
+ *  gap between rows. Zero when the node has no widgets. */
+function widgetsHeight(node: Node, geo: WidgetGeometry | undefined): number {
+  if (!geo || !node.widgets || node.widgets.length === 0) return 0
+  const rows = node.widgets.reduce((sum, w) => sum + widgetRowHeight(w, geo), 0)
+  return geo.gap + rows + geo.gap * (node.widgets.length - 1)
+}
 
 export interface Rect {
   x: number
@@ -36,25 +63,28 @@ export interface LayoutTokens {
   header: {
     toPinsGap: number
   }
+  widget?: WidgetGeometry
 }
 
 interface HeightTokens {
   node: { headerHeight: number }
   pin: { rowSpacing: number; rowHeight: number }
   header: { toPinsGap: number }
+  widget?: WidgetGeometry
 }
 
-/** Body height that fits the header plus every pin row, used when a node carries no explicit
- *  size (palette-inserted / imported nodes). Rows = max(inputCount, outputCount). */
+/** Body height that fits the header, every pin row, and the widget block, used when a node carries
+ *  no explicit size (palette-inserted / imported nodes). Pin rows = max(inputCount, outputCount). */
 function naturalHeight(node: Node, tokens: HeightTokens): number {
   let inCount = 0, outCount = 0
   for (const p of node.pins) (p.direction === 'in' ? inCount++ : outCount++)
   const rows = Math.max(inCount, outCount)
-  if (rows === 0) return tokens.node.headerHeight + tokens.header.toPinsGap
-  const rowsHeight = rows * tokens.pin.rowHeight + (rows - 1) * tokens.pin.rowSpacing
-  // Bottom padding mirrors the header→pins gap so the pin block sits visually centred in the
-  // body rather than crammed against the bottom edge.
-  return tokens.node.headerHeight + tokens.header.toPinsGap + rowsHeight + tokens.header.toPinsGap
+  const widgets = widgetsHeight(node, tokens.widget)
+  if (rows === 0 && widgets === 0) return tokens.node.headerHeight + tokens.header.toPinsGap
+  const rowsHeight = rows > 0 ? rows * tokens.pin.rowHeight + (rows - 1) * tokens.pin.rowSpacing : 0
+  // Bottom padding mirrors the header→pins gap so the content sits visually centred in the body
+  // rather than crammed against the bottom edge.
+  return tokens.node.headerHeight + tokens.header.toPinsGap + rowsHeight + widgets + tokens.header.toPinsGap
 }
 
 /** Measures a single line of text in CSS pixels. The editor binds this to PIXI's
@@ -66,6 +96,7 @@ export interface NodeSizeTokens {
   pin: { diameter: number; rowSpacing: number; rowHeight: number; labelGap: number }
   header: { toPinsGap: number; chevronSize: number; titleGap: number }
   typography: { titleSize: number; titleWeight: number; labelSize: number; labelWeight: number }
+  widget?: WidgetGeometry
 }
 
 /** Gap kept between an input label's right edge and the opposite output label's left edge so the
@@ -102,7 +133,16 @@ function naturalWidth(
     rowNeed = Math.max(rowNeed, sidePad + inW + gutter + outW + sidePad)
   }
 
-  return Math.max(tokens.node.minWidth, Math.ceil(titleNeed), Math.ceil(rowNeed))
+  // Each widget needs room for its label plus a control (slider track / value field) on the row.
+  let widgetNeed = 0
+  if (tokens.widget && node.widgets) {
+    for (const w of node.widgets) {
+      const lblW = measure(w.label, tokens.typography.labelSize, tokens.typography.labelWeight)
+      widgetNeed = Math.max(widgetNeed, sidePad + lblW + LABEL_COLUMN_GUTTER + tokens.widget.controlMinWidth + sidePad)
+    }
+  }
+
+  return Math.max(tokens.node.minWidth, Math.ceil(titleNeed), Math.ceil(rowNeed), Math.ceil(widgetNeed))
 }
 
 /** Resolved render size for a node lacking an explicit `size`. Single source of truth: the editor

@@ -62,6 +62,28 @@ export interface XenTokens {
     surface: XenSurfaceColors
     text: { primary: string; secondary: string; muted: string; disabled: string }
     alpha: Record<string, string>
+    minimap: {
+      background: string
+      border: string
+      node: string
+      frame: string
+      frameBorder: string
+    }
+    widget: {
+      bg: string
+      bgHover: string
+      bgFocused: string
+      track: string
+      fill: string
+      fillAlpha: number
+      text: string
+      label: string
+      placeholder: string
+      border: string
+      borderFocused: string
+      selection: string
+      knob: string
+    }
   }
   pinType: XenPinTypeMap
   category: XenCategoryMap
@@ -118,6 +140,26 @@ export interface XenTokens {
     reroute: {
       radius: number
       ringWidth: number
+    }
+    widget: {
+      rowHeight: number
+      gap: number
+      controlMinWidth: number
+      radius: number
+      paddingX: number
+      paddingY: number
+      borderWidth: number
+      toggleWidth: number
+      toggleHeight: number
+    }
+    minimap: {
+      width: number
+      height: number
+      margin: number
+      radius: number
+      padding: number
+      borderWidth: number
+      nodeRadius: number
     }
   }
   typography: {

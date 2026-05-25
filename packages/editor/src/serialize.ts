@@ -1,4 +1,4 @@
-import type { Edge, Node, NodeId, EdgeId, Pin } from '@xenolith/core'
+import type { Edge, Node, NodeId, EdgeId, Pin, WidgetSpec } from '@xenolith/core'
 import type { RenderEdgeOptions, RenderNodeOptions } from '@xenolith/render-pixi'
 
 export const XENOLITH_GRAPH_VERSION = 'xenolith.v1' as const
@@ -18,6 +18,7 @@ export interface XenolithNodeV1 {
   size?: { x: number; y: number }
   state?: Record<string, unknown>
   pins: XenolithPinV1[]
+  widgets?: WidgetSpec[]
   render?: { category?: string; title?: string; collapsed?: boolean }
 }
 
@@ -73,6 +74,7 @@ function serializeNode(n: Readonly<Node>, render: RenderNodeOptions | undefined)
     pins:     n.pins.map(serializePin),
   }
   if (n.size) out.size = { x: n.size.x, y: n.size.y }
+  if (n.widgets && n.widgets.length > 0) out.widgets = n.widgets.map((w) => ({ ...w }) as WidgetSpec)
   if (n.state && Object.keys(n.state).length > 0) out.state = { ...n.state }
   if (render && (render.category !== undefined || render.title !== undefined || render.collapsed !== undefined)) {
     const r: NonNullable<XenolithNodeV1['render']> = {}
@@ -131,6 +133,29 @@ function parsePin(v: unknown, where: string): Pin {
   return pin
 }
 
+const WIDGET_TYPES = new Set(['number', 'slider', 'combo', 'text', 'toggle', 'button', 'color', 'custom'])
+
+function parseWidget(v: unknown, where: string): WidgetSpec {
+  if (!isPlainObject(v)) throw new Error(`xenolith.v1 parse: ${where} must be an object`)
+  const { id, type, label } = v
+  if (typeof id !== 'string')    throw new Error(`xenolith.v1 parse: ${where}.id must be string`)
+  if (typeof type !== 'string' || !WIDGET_TYPES.has(type)) {
+    throw new Error(`xenolith.v1 parse: ${where}.type invalid`)
+  }
+  if (typeof label !== 'string') throw new Error(`xenolith.v1 parse: ${where}.label must be string`)
+  if ((type !== 'button' && type !== 'custom') && typeof v['key'] !== 'string') {
+    throw new Error(`xenolith.v1 parse: ${where}.key must be string for type "${type}"`)
+  }
+  if (type === 'button' && typeof v['action'] !== 'string') {
+    throw new Error(`xenolith.v1 parse: ${where}.action must be string`)
+  }
+  if (type === 'custom' && typeof v['renderer'] !== 'string') {
+    throw new Error(`xenolith.v1 parse: ${where}.renderer must be string`)
+  }
+  // The spec is plain data; copy it through verbatim once the discriminant + required keys check out.
+  return { ...v } as unknown as WidgetSpec
+}
+
 function parseNode(v: unknown, idx: number): { node: Node; render?: RenderNodeOptions } {
   const where = `nodes[${idx}]`
   if (!isPlainObject(v)) throw new Error(`xenolith.v1 parse: ${where} must be an object`)
@@ -147,6 +172,10 @@ function parseNode(v: unknown, idx: number): { node: Node; render?: RenderNodeOp
     pins:     pins.map((p, i) => parsePin(p, `${where}.pins[${i}]`)),
   }
   if (v['size'] !== undefined) node.size = assertVec2(v['size'], `${where}.size`)
+  if (v['widgets'] !== undefined) {
+    if (!Array.isArray(v['widgets'])) throw new Error(`xenolith.v1 parse: ${where}.widgets must be array`)
+    node.widgets = v['widgets'].map((w, i) => parseWidget(w, `${where}.widgets[${i}]`))
+  }
 
   let render: RenderNodeOptions | undefined
   const rawRender = v['render']
