@@ -1,7 +1,7 @@
 import { DemoPage } from '../Layout.js'
-import { HeroDemo } from '../demos/HeroDemo.js'
+import { CustomWidgetsDemo } from '../demos/CustomWidgetsDemo.js'
 
-const code = `import { reactWidget } from './react-widget' // mounts a React component as a widget
+const code = `import { reactWidget } from '@xenolith/react' // mounts a React component as a widget
 
 // Any React component is a widget. Style it with the editor's CSS vars so it tracks the theme:
 function AsyncSelect({ value, setValue }) {
@@ -25,9 +25,9 @@ export function Hero() {
       title="7 · Bring your own UI"
       blurb="Custom widgets are real React components mounted inside nodes via reactWidget: a select with server-side search, an image drop-zone, a CodeMirror editor, a live sparkline. They style themselves with the editor's --xeno-* CSS variables, so the theme switcher (top) restyles them automatically — Xen and Liquid Glass, no extra work. This is the plugin ecosystem."
       code={code}
-      githubPath="apps/demo-react/src/widgets/hero.tsx"
+      githubPath="apps/demo-react/src/demos/CustomWidgetsDemo.tsx"
     >
-      <HeroDemo />
+      <CustomWidgetsDemo />
     </DemoPage>
   )
 }

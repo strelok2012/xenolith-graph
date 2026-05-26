@@ -35,7 +35,7 @@ export interface XenolithEdgeV1 {
   id: string
   from: { node: string; pin: string }
   to:   { node: string; pin: string }
-  opts?: { sourceType?: string }
+  opts?: { sourceType?: string; label?: string; markerEnd?: 'arrow' | 'none'; animated?: boolean }
 }
 
 export interface SerializeInput {
@@ -92,7 +92,14 @@ function serializeEdge(e: Readonly<Edge>, opts: RenderEdgeOptions | undefined): 
     from: { node: String(e.from.node), pin: String(e.from.pin) },
     to:   { node: String(e.to.node),   pin: String(e.to.pin)   },
   }
-  if (opts && opts.sourceType !== undefined) out.opts = { sourceType: opts.sourceType }
+  if (opts) {
+    const o: NonNullable<XenolithEdgeV1['opts']> = {}
+    if (opts.sourceType !== undefined) o.sourceType = opts.sourceType
+    if (opts.label !== undefined) o.label = opts.label
+    if (opts.markerEnd !== undefined && opts.markerEnd !== 'none') o.markerEnd = opts.markerEnd
+    if (opts.animated) o.animated = true
+    if (Object.keys(o).length > 0) out.opts = o
+  }
   return out
 }
 
@@ -210,8 +217,13 @@ function parseEdge(v: unknown, idx: number): { edge: Edge; opts?: RenderEdgeOpti
   }
   let opts: RenderEdgeOptions | undefined
   const rawOpts = (v as { opts?: unknown }).opts
-  if (isPlainObject(rawOpts) && typeof rawOpts['sourceType'] === 'string') {
-    opts = { sourceType: rawOpts['sourceType'] }
+  if (isPlainObject(rawOpts)) {
+    const o: RenderEdgeOptions = {}
+    if (typeof rawOpts['sourceType'] === 'string') o.sourceType = rawOpts['sourceType']
+    if (typeof rawOpts['label'] === 'string') o.label = rawOpts['label']
+    if (rawOpts['markerEnd'] === 'arrow') o.markerEnd = 'arrow'
+    if (rawOpts['animated'] === true) o.animated = true
+    if (Object.keys(o).length > 0) opts = o
   }
   return opts ? { edge, opts } : { edge }
 }

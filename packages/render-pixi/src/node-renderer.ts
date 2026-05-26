@@ -5,6 +5,7 @@ import {
   Container,
   FillGradient,
   Graphics,
+  Rectangle,
   RenderTexture,
   Sprite,
   Text,
@@ -632,6 +633,12 @@ export function renderNode(
     collapsed.visible = collapsedAlpha > 0.001
     // Rotate the expanded chevron from 0 → -90° as we collapse.
     chevron.rotation = -f * (Math.PI / 2)
+    // Bound node hit-testing to the visible body (or pill when collapsed). Without an explicit
+    // hitArea, PIXI unions the children's bounds — which include the blur-padded glow layers — so a
+    // hovered/selected node would have a hit/drag radius far larger than the node itself.
+    container.hitArea = f >= 0.5
+      ? new Rectangle(0, pillOffsetY, pillW, pillH)
+      : new Rectangle(0, 0, w, h)
   }
 
   applyFraction(collapseFraction)

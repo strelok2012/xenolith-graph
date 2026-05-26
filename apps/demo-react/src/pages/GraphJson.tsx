@@ -1,18 +1,21 @@
 import { DemoPage } from '../Layout.js'
 import { GraphJsonDemo } from '../demos/GraphJsonDemo.js'
 
-const code = `// The whole graph is serializable state — bind it like any other value.
-const [json, setJson] = useState(() => JSON.stringify(editor.toJSON(), null, 2))
+const code = `// The whole graph as reactive state — one hook, no event wiring.
+function JsonPanel() {
+  const editor = useXenolithEditor()
+  const json = useGraphJSON()          // re-emits on move / connect / widget edit / undo
 
-// JSON → editor: rebuild the canvas from edited state.
-editor.loadJSON(JSON.parse(json))
+  return (
+    <XenolithPanel position="top-right">
+      <button onClick={() => editor.loadJSON(/* edited */ json)}>Apply →</button>
+      <pre>{JSON.stringify(json, null, 2)}</pre>
+    </XenolithPanel>
+  )
+}
 
-// editor → JSON: any change refreshes the serialized graph.
-<XenolithGraph
-  onNodeMoved={() => setJson(JSON.stringify(editor.toJSON(), null, 2))}
-  onEdgeConnected={() => setJson(JSON.stringify(editor.toJSON(), null, 2))}
-  onWidgetChange={() => setJson(JSON.stringify(editor.toJSON(), null, 2))}
-/>`
+// Drop it inside the editor — it reads the live graph from context:
+<XenolithGraph onReady={load}><JsonPanel /></XenolithGraph>`
 
 export function GraphJson() {
   return (

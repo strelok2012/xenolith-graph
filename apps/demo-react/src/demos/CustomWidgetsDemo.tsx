@@ -1,10 +1,13 @@
 import { useState } from 'react'
-import { XenolithGraph, XenolithPanel, XenolithButton } from '@xenolith/react'
+import { XenolithGraph, XenolithPanel, XenolithButton, XenolithControls } from '@xenolith/react'
 import { xenTheme } from '@xenolith/render-pixi'
 import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
 import { DemoStage } from '../Layout.js'
-import { reactWidget } from '../react-widget.js'
-import { AsyncSelect, FileDrop, CodeEditor, Sparkline } from '../widgets/hero.js'
+import { reactWidget } from '@xenolith/react'
+import { AsyncSelect } from '../widgets/AsyncSelect.js'
+import { FileDrop } from '../widgets/FileDrop.js'
+import { CodeEditor } from '../widgets/CodeEditor.js'
+import { Sparkline } from '../widgets/Sparkline.js'
 
 const seedSpark = Array.from({ length: 16 }, (_, i) => 0.5 + 0.4 * Math.sin(i / 2))
 
@@ -15,10 +18,10 @@ const NODES = [
   { type: 'Signal', title: 'Signal', renderer: 'sparkline', key: 'data', val: seedSpark, h: 96, x: 360, y: 320 },
 ]
 
-/** Island: four custom widgets that are React components (server-search select, image drop,
+/** Island: four custom widgets that are real React components (server-search select, image drop,
  *  CodeMirror, sparkline). They style themselves with --xeno-* CSS vars, so flipping the theme from
  *  the in-editor panel restyles them for free — the whole point of the plugin ecosystem. */
-export function HeroDemo() {
+export function CustomWidgetsDemo() {
   const [theme, setTheme] = useState<'xen' | 'lg'>('xen')
   return (
     <DemoStage>
@@ -43,9 +46,9 @@ export function HeroDemo() {
             editor.addNode(node)
           }
           editor.fitView({ padding: 56, maxZoom: 1 })
-          ;(window as unknown as { __xenoEditor?: unknown }).__xenoEditor = editor
         }}
       >
+        <XenolithControls position="top-right" orientation="horizontal" />
         <XenolithPanel position="top-left" style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 240 }}>
           <div style={{ display: 'flex', gap: 8 }}>
             <XenolithButton active={theme === 'xen'} onClick={() => setTheme('xen')}>Xen</XenolithButton>

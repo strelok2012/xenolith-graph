@@ -131,6 +131,23 @@ describe('serializeXenolithGraph', () => {
     expect(out.edges[0]!.opts).toBeUndefined()
   })
 
+  it('serializes label / markerEnd / animated edge opts', () => {
+    const out = serializeXenolithGraph(input({
+      edges: [mkEdge('e1', 'n1', 'p1', 'n2', 'p2')],
+      edgeOpts: new Map([['e1', { sourceType: 'float', label: 'yes', markerEnd: 'arrow' as const, animated: true }]]),
+    }))
+    expect(out.edges[0]!.opts).toEqual({ sourceType: 'float', label: 'yes', markerEnd: 'arrow', animated: true })
+  })
+
+  it('round-trips label / markerEnd / animated through parse', () => {
+    const serialized = serializeXenolithGraph(input({
+      edges: [mkEdge('e1', 'n1', 'p1', 'n2', 'p2')],
+      edgeOpts: new Map([['e1', { label: 'A→B', markerEnd: 'arrow' as const, animated: true }]]),
+    }))
+    const parsed = parseXenolithGraph(serialized as unknown)
+    expect(parsed.edgeOpts.get('e1')).toEqual({ label: 'A→B', markerEnd: 'arrow', animated: true })
+  })
+
   it('includes viewport when provided', () => {
     const out = serializeXenolithGraph(input({ viewport: { x: 10, y: 20, zoom: 1.5 } }))
     expect(out.viewport).toEqual({ x: 10, y: 20, zoom: 1.5 })

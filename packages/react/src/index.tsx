@@ -13,6 +13,7 @@ export {
   type XenolithControlsProps, type XenolithMiniMapProps,
 } from './components.js'
 export { useNodes, useEdges, useSelection, useViewport, useGraphJSON } from './hooks.js'
+export { reactWidget, type WidgetProps } from './react-widget.js'
 
 export interface XenolithGraphProps extends XenolithProps, EventCallbacks {
   className?: string
@@ -25,7 +26,7 @@ export interface XenolithGraphProps extends XenolithProps, EventCallbacks {
   children?: ReactNode
 }
 
-const EDITOR_KEYS = ['theme', 'graph', 'zoomBounds', 'minimap', 'disableGrid', 'snap', 'resizeToWindow', 'fitOnLoad'] as const
+const EDITOR_KEYS = ['theme', 'graph', 'zoomBounds', 'minimap', 'disableGrid', 'snap', 'resizeToWindow', 'fitOnLoad', 'isValidConnection'] as const
 
 function pickEditorProps(props: XenolithGraphProps): XenolithProps {
   const out: XenolithProps = {}

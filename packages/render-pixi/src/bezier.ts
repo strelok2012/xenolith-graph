@@ -41,6 +41,35 @@ export function bezierMidpoint(path: EdgePath): Vec2 {
   }
 }
 
+/** Unit tangent at the end of the curve — the direction the wire is travelling as it arrives at the
+ *  target pin. Used to orient an arrowhead. Falls back to the start→end direction for a degenerate
+ *  (zero-length) final handle segment. */
+export function endTangent(path: EdgePath): Vec2 {
+  let dx = path.end.x - path.c2.x
+  let dy = path.end.y - path.c2.y
+  let len = Math.hypot(dx, dy)
+  if (len < 1e-6) {
+    dx = path.end.x - path.start.x
+    dy = path.end.y - path.start.y
+    len = Math.hypot(dx, dy) || 1
+  }
+  return { x: dx / len, y: dy / len }
+}
+
+/** Triangle for an arrowhead at the curve's end: `[tip, left, right]`. The tip sits on the end
+ *  point; the base is `size` px back along the incoming tangent and `size` wide. */
+export function arrowHead(path: EdgePath, size: number): [Vec2, Vec2, Vec2] {
+  const dir = endTangent(path)
+  const back = { x: path.end.x - dir.x * size, y: path.end.y - dir.y * size }
+  const perp = { x: dir.y, y: -dir.x }
+  const half = size * 0.5
+  return [
+    { x: path.end.x, y: path.end.y },
+    { x: back.x + perp.x * half, y: back.y + perp.y * half },
+    { x: back.x - perp.x * half, y: back.y - perp.y * half },
+  ]
+}
+
 export function sampleBezier(path: EdgePath, steps: number): Vec2[] {
   if (steps < 1) throw new Error(`sampleBezier: steps must be >= 1, got ${steps}`)
   const out: Vec2[] = []

@@ -1,4 +1,4 @@
-import { Application, BitmapFontManager, Container, EventEmitter as PixiEventEmitter, FederatedPointerEvent, Graphics, Rectangle, RenderTexture, Sprite, Texture, type ContainerChild, type TextureSource } from 'pixi.js'
+import { Application, BitmapFontManager, Container, EventEmitter as PixiEventEmitter, FederatedPointerEvent, Graphics, Rectangle, RenderTexture, Sprite, Text, Texture, type ContainerChild, type TextureSource } from 'pixi.js'
 import {
   AddNode,
   CommandBus,
@@ -57,6 +57,7 @@ import {
   readPinHandle,
   resolvePinFill,
   screenToWorld,
+  worldToScreen,
   snapToGrid,
   Viewport,
   xenTheme,
@@ -88,6 +89,7 @@ import { InsertPalette } from './palette.js'
 import { EdgeContextMenu } from './edge-menu.js'
 import { WidgetOverlay, type OverlayRect } from './widget-overlay.js'
 import { Minimap, type MinimapPosition } from './minimap.js'
+import { EditorControls, type ControlsOptions, type ControlsPosition } from './controls.js'
 import { createGraphEventBridge, type EditorEvents } from './events.js'
 import {
   parseXenolithGraph,
@@ -112,6 +114,7 @@ export { NodeRegistry } from '@xenolith/core'
 export type { NodeSchema, PinSchema, NodeSearchResult, WidgetSpec, WidgetStyle, WidgetType, Node, Edge, NodeId, EdgeId, PinId } from '@xenolith/core'
 export type { CustomWidgetController, CanvasWidgetController, DomWidgetController, CustomWidgetContext, ViewportState } from '@xenolith/render-pixi'
 export type { MinimapPosition } from './minimap.js'
+export type { ControlsOptions, ControlsPosition } from './controls.js'
 export type { EditorEvents } from './events.js'
 
 export const VERSION = '0.0.0'
@@ -136,7 +139,26 @@ export interface XenolithEditorOptions {
   /** Show the overview minimap. `true` uses the default (bottom-right) placement; pass an object to
    *  set the corner/edge anchor or exact screen coordinates. Toggle later via `setMinimapVisible`. */
   minimap?: boolean | { position?: MinimapPosition }
+  /** Show the built-in viewport controls (zoom / fit / reset / undo·redo / save / lock). `true` uses
+   *  defaults; pass an object for position/orientation/which buttons. Toggle later via `setControls`. */
+  controls?: boolean | ControlsOptions
+  /** Custom connection guard, on top of the built-in type check. Return `false` to reject a wire.
+   *  Receives the normalised out→in endpoints. Pair with `wouldCreateCycle` to forbid cycles.
+   *  Update at runtime via `setIsValidConnection`. */
+  isValidConnection?: (connection: ConnectionRequest) => boolean
 }
+
+/** A would-be connection, normalised to out → in, passed to `isValidConnection`. */
+export interface ConnectionRequest {
+  source: NodeId
+  sourcePin: PinId
+  target: NodeId
+  targetPin: PinId
+}
+
+/** Per-node execution status, surfaced as a coloured ring. `running` pulses; `idle` clears it.
+ *  Lets a host show graph-execution progress (LLM/audio/pipeline showcases) without a runtime. */
+export type NodeStatus = 'idle' | 'running' | 'ok' | 'error'
 
 function resolveTheme(input: XenolithTheme | DeepPartial<XenTokens> | undefined): XenolithTheme {
   if (!input) return xenTheme
@@ -148,13 +170,15 @@ interface EdgeRecord {
   edge: Edge
   graphics: Graphics
   opts: RenderEdgeOptions
+  /** Midpoint label Text, created on demand when `opts.label` is set. */
+  label?: Text | undefined
   /** Cached endpoint coords of the last drawn path. If the next frame's endpoints match these,
    *  the bezier path hasn't moved and we can skip the redraw entirely — the dominant cost on
    *  edge-heavy graphs where most edges are static between frames. */
-  lastFromX?: number
-  lastFromY?: number
-  lastToX?:   number
-  lastToY?:   number
+  lastFromX?: number | undefined
+  lastFromY?: number | undefined
+  lastToX?:   number | undefined
+  lastToY?:   number | undefined
 }
 
 interface ClipboardSnapshot {
@@ -217,6 +241,10 @@ export class XenolithEditor {
    *  shader onFrame) on frames where this is set. A static graph costs ~0 — no GPU work, no
    *  shader passes. Starts true so the first frame paints. */
   #needsRender = true
+  /** Ids of edges with `animated: true`. While non-empty the ticker advances `#dashPhase` and marks
+   *  the scene dirty every frame; empty → the graph stays render-on-demand idle. */
+  readonly #animatedEdges = new Set<EdgeId>()
+  #dashPhase = 0
   #theme: XenolithTheme
   #gridLayer: Container | null = null
   /** Live snapshot of the world MINUS the nodes layer — created lazily the first time the
@@ -278,6 +306,7 @@ export class XenolithEditor {
    *  framework components). The container ignores pointer events; children opt back in. Created
    *  lazily on first `overlayRoot` access so headless/test editors pay nothing. */
   #overlayRoot: HTMLDivElement | null = null
+  #controls: EditorControls | null = null
   #minimap: Minimap | null = null
   readonly #widgetControllers = new Map<string, CustomWidgetController>()
   readonly #coreEvents = new EventEmitter<CoreEvents>()
@@ -285,6 +314,10 @@ export class XenolithEditor {
   #hoveredId: NodeId | null = null
   readonly #marqueeHovered = new Set<NodeId>()
   #dragState: DragState = { kind: 'idle' }
+  #interactive = true
+  #isValidConnection: ((c: ConnectionRequest) => boolean) | undefined
+  #statusGfx: Graphics | null = null
+  readonly #nodeStatus = new Map<NodeId, NodeStatus>()
 
   private constructor(app: Application, host: HTMLElement, theme: XenolithTheme, opts: XenolithEditorOptions) {
     this.#app = app
@@ -309,6 +342,10 @@ export class XenolithEditor {
       this.#world.addChild(this.#gridLayer)
     }
     this.#world.addChild(this.#edgesLayer, this.#nodesLayer)
+    // Node status rings — world space, ABOVE nodes so they read clearly. Painted in #drawStatuses.
+    this.#statusGfx = new Graphics()
+    this.#statusGfx.eventMode = 'none'
+    this.#world.addChild(this.#statusGfx)
     // Edge midpoint hover ring — drawn just above edges, below nodes, in world space so it tracks
     // pan/zoom. Cleared/repositioned as the cursor enters/leaves a midpoint dot.
     this.#edgeHoverGfx = new Graphics()
@@ -372,6 +409,9 @@ export class XenolithEditor {
     app.ticker.remove(app.render, app)
     app.ticker.add(() => {
       if (this.#statsVisible) this.#tickStats()
+      // Keep animated edges flowing: bump the dash phase and mark dirty each frame, but only while
+      // at least one animated edge exists — otherwise the graph stays render-on-demand idle.
+      if (this.#animatedEdges.size > 0 && !this.#frozen) { this.#dashPhase += 1.6; this.#needsRender = true }
       if (!this.#needsRender) return
       this.#needsRender = false
       // While frozen (mid zoom/pan) the live nodes are hidden behind baked sprites that ride the
@@ -380,6 +420,7 @@ export class XenolithEditor {
         for (const edgeId of this.#edgeRecords.keys()) this.#redrawEdge(edgeId)
         this.#updateBackdrop()
         this.#theme.onFrame?.(this.#themeContext())
+        this.#drawStatuses()
       }
       // Redraw the minimap frame BEFORE the render — otherwise its new geometry lands a frame late
       // and, after a single recenter click, never gets painted (needsRender was already consumed).
@@ -408,9 +449,20 @@ export class XenolithEditor {
     }
 
     this.#applyThemeVars()
+    this.#isValidConnection = opts.isValidConnection
+    if (opts.controls) this.setControls(typeof opts.controls === 'object' ? opts.controls : {})
   }
 
   #hostResizeObserver: ResizeObserver | null = null
+
+  /** Show/configure/hide the built-in viewport controls. Pass options to create or reconfigure,
+   *  `false` to remove. The widget is vanilla DOM in `overlayRoot`, so every framework shares it. */
+  setControls(opts: ControlsOptions | false): void {
+    if (opts === false) { this.#controls?.destroy(); this.#controls = null; return }
+    void this.overlayRoot // ensure the overlay layer exists
+    if (this.#controls) this.#controls.setOptions(opts)
+    else this.#controls = new EditorControls(this, opts)
+  }
 
   /** Write the active theme's panel/control `--xeno-*` custom properties onto the host so in-editor
    *  chrome (panels, controls, framework components portalled into `overlayRoot`) and DOM widgets
@@ -429,8 +481,10 @@ export class XenolithEditor {
       if (getComputedStyle(this.#host).position === 'static') this.#host.style.position = 'relative'
       const root = document.createElement('div')
       root.setAttribute('data-xeno-overlay-root', '')
+      // zIndex above the DOM-widget layer (5) so chrome — panels, controls, minimap — always sits
+      // on top of in-node DOM widgets (e.g. a large image-preview widget must never cover a panel).
       Object.assign(root.style, {
-        position: 'absolute', inset: '0', pointerEvents: 'none', overflow: 'hidden',
+        position: 'absolute', inset: '0', pointerEvents: 'none', overflow: 'hidden', zIndex: '10',
       } as Partial<CSSStyleDeclaration>)
       this.#host.appendChild(root)
       this.#overlayRoot = root
@@ -1536,6 +1590,59 @@ export class XenolithEditor {
     })
   }
 
+  /** The current graph serialized to an `xenolith.v1` JSON Blob (for download / save). */
+  exportJSON(): Blob {
+    return new Blob([JSON.stringify(this.toJSON(), null, 2)], { type: 'application/json' })
+  }
+
+  /** World-space bounding box of all nodes, or null when the graph is empty. */
+  #graphBounds(): { x: number; y: number; w: number; h: number } | null {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const n of this.graph.nodes()) {
+      const size = n.size ?? { x: this.#theme.tokens.geometry.node.minWidth, y: 40 }
+      minX = Math.min(minX, n.position.x); minY = Math.min(minY, n.position.y)
+      maxX = Math.max(maxX, n.position.x + size.x); maxY = Math.max(maxY, n.position.y + size.y)
+    }
+    if (!Number.isFinite(minX)) return null
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
+  }
+
+  /** Render the WHOLE graph (independent of the current viewport) to a high-resolution image Blob.
+   *  PNG is transparent; JPEG fills the theme's canvas colour. Heavy on big graphs — pair with the
+   *  busy overlay (`withOverlay`). Follows the editor's existing RenderTexture pattern. */
+  async exportImage(opts: { format?: 'png' | 'jpeg'; quality?: number; padding?: number; scale?: number } = {}): Promise<Blob> {
+    const format = opts.format ?? 'png'
+    const padding = opts.padding ?? 48
+    const scale = opts.scale ?? 2
+    const b = this.#graphBounds() ?? { x: 0, y: 0, w: 1, h: 1 }
+    const width = Math.ceil(b.w + padding * 2)
+    const height = Math.ceil(b.h + padding * 2)
+    const rt = RenderTexture.create({ width, height, resolution: scale })
+
+    // Render #world (grid included) at identity, offset so the graph's top-left lands at
+    // (padding, padding). The grid is a huge tiling sprite, so it fills the whole export. The
+    // viewport transform is saved and restored.
+    const savedPos = { x: this.#world.x, y: this.#world.y }
+    const savedScale = { x: this.#world.scale.x, y: this.#world.scale.y }
+    this.#world.scale.set(1)
+    this.#world.position.set(padding - b.x, padding - b.y)
+    const clearColor = format === 'jpeg' ? this.#theme.tokens.color.surface.canvas : [0, 0, 0, 0]
+    this.#app.renderer.render({ container: this.#world, target: rt, clearColor: clearColor as never })
+
+    // Restore the live view.
+    this.#world.position.set(savedPos.x, savedPos.y)
+    this.#world.scale.set(savedScale.x, savedScale.y)
+    this.#requestRender()
+
+    const canvas = this.#app.renderer.extract.canvas(rt) as HTMLCanvasElement
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob((b2) => resolve(b2), `image/${format}`, opts.quality ?? 0.92),
+    )
+    rt.destroy(true)
+    if (!blob) throw new Error('exportImage: canvas.toBlob returned null')
+    return blob
+  }
+
   /** Replace the editor's contents with the contents of an `xenolith.v1` payload. Wipes the
    *  existing graph, selection, and viewport before reloading. Throws on malformed input — the
    *  editor is left in its previous state in that case. */
@@ -1553,7 +1660,11 @@ export class XenolithEditor {
     if (parsed.viewport) this.#viewport.setState(parsed.viewport)
     // loadJSON bypasses the command bus, so run the reroute type propagation explicitly.
     this.#propagateRerouteTypes()
+    // A fresh load is not undoable — drop any prior history so the old graph's commands can't be
+    // replayed onto the new one, and tell chrome (controls) the undo/redo stacks are empty.
+    this.commandBus.clearHistory()
     this.#events.emit('graph:loaded', { nodeCount: parsed.nodes.length, edgeCount: parsed.edges.length })
+    this.#events.emit('history:changed', { canUndo: false, canRedo: false })
   }
 
   /** Re-attach a deserialized edge using its preserved id and pin-id endpoints — bypasses the
@@ -1564,6 +1675,8 @@ export class XenolithEditor {
   }
 
   #clearAll(): void {
+    this.#nodeStatus.clear()
+    this.#statusGfx?.clear()
     for (const { graphics } of this.#edgeRecords.values()) graphics.destroy()
     this.#edgeRecords.clear()
     this.#edgeOpts.clear()
@@ -1587,6 +1700,10 @@ export class XenolithEditor {
   undo(): boolean { return this.commandBus.undo() }
   /** Redo the most recently undone command. Returns true if anything was redone. */
   redo(): boolean { return this.commandBus.redo() }
+  /** Whether there is anything to undo / redo — lets chrome initialise its button state without
+   *  waiting for the first `history:changed` event. */
+  canUndo(): boolean { return this.commandBus.canUndo() }
+  canRedo(): boolean { return this.commandBus.canRedo() }
 
   /** Select every node in the graph. */
   selectAll(): void {
@@ -1746,6 +1863,89 @@ export class XenolithEditor {
   }
 
   pan(dx: number, dy: number): void { this.#viewport.pan(dx, dy) }
+
+  /** Whether the graph responds to pointer interaction (node drag, selection/marquee, connecting).
+   *  When `false` (locked) only viewport pan/zoom stay live and DOM widgets keep working — drag
+   *  anywhere to pan without grabbing nodes. Drives the Controls lock toggle. */
+  /** Replace the custom connection guard at runtime (or clear with `null`). */
+  setIsValidConnection(fn: ((c: ConnectionRequest) => boolean) | null): void { this.#isValidConnection = fn ?? undefined }
+
+  /** Show a coloured status ring on a node (`running` pulses, `ok`/`error` are solid, `idle` clears).
+   *  For surfacing graph-execution progress from the host — the editor isn't a runtime. */
+  setNodeStatus(nodeId: NodeId, status: NodeStatus): void {
+    if (status === 'idle') this.#nodeStatus.delete(nodeId)
+    else this.#nodeStatus.set(nodeId, status)
+    this.#requestRender()
+  }
+
+  /** Remove every node and edge and drop the undo/redo history — a fast, allocation-light reset (no
+   *  per-node commands, no selection glow). The right way to empty a large graph. */
+  clear(): void {
+    this.#clearAll()
+    this.commandBus.clearHistory()
+    this.#scheduleMinimapSync()
+    this.#requestRender()
+    this.#events.emit('graph:loaded', { nodeCount: 0, edgeCount: 0 })
+    this.#events.emit('history:changed', { canUndo: false, canRedo: false })
+  }
+
+  /** Clear every node status ring. */
+  clearNodeStatuses(): void {
+    if (this.#nodeStatus.size === 0) return
+    this.#nodeStatus.clear()
+    this.#requestRender()
+  }
+
+  #drawStatuses(): void {
+    const g = this.#statusGfx
+    if (!g) return
+    g.clear()
+    if (this.#nodeStatus.size === 0) return
+    const accent = this.#theme.tokens.color.widget.fill
+    const colorFor = (s: NodeStatus): string => (s === 'running' ? accent : s === 'ok' ? '#39d98a' : s === 'error' ? '#ff5b6e' : '')
+    const pulse = 0.55 + 0.45 * Math.sin(performance.now() / 140)
+    let animating = false
+    for (const [id, status] of this.#nodeStatus) {
+      const view = this.#views.get(id)
+      const node = this.graph.getNode(id)
+      const color = colorFor(status)
+      if (!view || !node || !color) continue
+      const size = node.size ?? { x: this.#theme.tokens.geometry.node.minWidth, y: 40 }
+      const pad = 3
+      const alpha = status === 'running' ? pulse : 0.95
+      const width = status === 'running' ? 3 : 2.5
+      // Concentric with the node body: ring radius = node corner radius + pad, so the rounded
+      // corners stay parallel and the node's corners never poke outside the ring.
+      const radius = this.#theme.tokens.geometry.node.radius + pad
+      g.roundRect(view.container.x - pad, view.container.y - pad, size.x + pad * 2, size.y + pad * 2, radius)
+        .stroke({ color, width, alpha })
+      if (status === 'running') animating = true
+    }
+    if (animating) this.#requestRender()  // keep the pulse alive
+  }
+
+  /** Built-in type check + the optional user `isValidConnection` guard, against the two pins. */
+  #connectionAllowed(sourceNode: Node, sourcePin: Pin, targetNode: Node, targetPin: Pin): boolean {
+    if (!canConnect(sourcePin, targetPin, sourceNode.id === targetNode.id, {
+      sourceEdges: this.#countEdgesAtPin(sourceNode.id, String(sourcePin.id)),
+      targetEdges: this.#countEdgesAtPin(targetNode.id, String(targetPin.id)),
+    })) return false
+    if (this.#isValidConnection) {
+      const out = sourcePin.direction === 'out'
+      const oN = out ? sourceNode : targetNode, oP = out ? sourcePin : targetPin
+      const iN = out ? targetNode : sourceNode, iP = out ? targetPin : sourcePin
+      if (!this.#isValidConnection({ source: oN.id, sourcePin: oP.id as PinId, target: iN.id, targetPin: iP.id as PinId })) return false
+    }
+    return true
+  }
+
+  get interactive(): boolean { return this.#interactive }
+  setInteractive(interactive: boolean): void {
+    this.#interactive = interactive
+    // DOM-mounted widgets are real DOM above the canvas, so the WebGL gate above can't stop them —
+    // toggle their pointer events directly so a locked graph freezes framework widgets too.
+    for (const rec of this.#domWidgets.values()) rec.el.style.pointerEvents = interactive ? 'auto' : 'none'
+  }
   zoomAt(focal: { x: number; y: number }, factor: number): void {
     this.#viewport.zoomAt(focal, factor, this.#zoomBounds)
   }
@@ -1776,6 +1976,13 @@ export class XenolithEditor {
   }
 
   get viewport(): ViewportState { return this.#viewport.state }
+  /** Set the viewport (pan/zoom) directly. */
+  setViewport(state: ViewportState): void { this.#viewport.setState(state) }
+  /** Convert a point in host/screen pixels (relative to the canvas top-left) to world coordinates —
+   *  e.g. to spawn a node where the user dropped something. */
+  screenToWorld(point: { x: number; y: number }): { x: number; y: number } { return screenToWorld(point, this.#viewport.state) }
+  /** Convert a world-space point to host/screen pixels — e.g. to anchor a DOM overlay to a node. */
+  worldToScreen(point: { x: number; y: number }): { x: number; y: number } { return worldToScreen(point, this.#viewport.state) }
   get app(): Application { return this.#app }
   get theme(): XenolithTheme { return this.#theme }
   get tokens(): XenTokens { return this.#theme.tokens }
@@ -1868,6 +2075,7 @@ export class XenolithEditor {
     if (this.#freezeTimer) clearTimeout(this.#freezeTimer)
     for (const rec of this.#domWidgets.values()) { rec.cleanup?.(); rec.controller.unmount?.(); rec.el.remove() }
     this.#domWidgets.clear()
+    this.#controls?.destroy()
     this.#minimap?.destroy()
     this.#overlayRoot?.remove()
     this.#overlayRoot = null
@@ -1993,16 +2201,50 @@ export class XenolithEditor {
     // Skip the expensive bezier-sample + Graphics clear/stroke when endpoints haven't moved.
     // Catches both idle frames (zero edge work on a static graph) and the non-dragging edges
     // during a multi-node drag. Triggers naturally on collapse animation because
-    // pinLocalPosition shifts each animation frame.
+    // pinLocalPosition shifts each animation frame. Animated edges never skip — they must redraw
+    // each frame for the flowing dash.
     if (
+      !rec.opts.animated &&
       rec.lastFromX === fromPos.x && rec.lastFromY === fromPos.y &&
       rec.lastToX   === toPos.x   && rec.lastToY   === toPos.y
     ) return
+    if (rec.opts.animated) rec.opts.dashPhase = this.#dashPhase
     this.#drawEdge(rec.graphics, fromPos, toPos, rec.opts)
+    this.#updateEdgeLabel(rec, fromPos, toPos)
     rec.lastFromX = fromPos.x
     rec.lastFromY = fromPos.y
     rec.lastToX   = toPos.x
     rec.lastToY   = toPos.y
+  }
+
+  /** Create / update / drop an edge's midpoint label Text from `rec.opts.label`. The label rides the
+   *  world layer so it pans and zooms with the wire. */
+  #updateEdgeLabel(rec: EdgeRecord, from: PinLayout, to: PinLayout): void {
+    const text = rec.opts.label
+    if (!text) {
+      if (rec.label) { rec.label.parent?.removeChild(rec.label); rec.label.destroy(); rec.label = undefined }
+      return
+    }
+    const tokens = this.#theme.tokens
+    if (!rec.label) {
+      rec.label = new Text({
+        text,
+        style: {
+          fontFamily: tokens.typography.fontFamily,
+          fontSize: 12,
+          fill: tokens.color.text.primary,
+          stroke: { color: tokens.color.surface.canvas, width: 4 },
+          align: 'center',
+        },
+      })
+      rec.label.eventMode = 'none'
+      rec.label.anchor.set(0.5)
+      this.#edgesLayer.addChild(rec.label)
+    } else if (rec.label.text !== text) {
+      rec.label.text = text
+    }
+    const mid = bezierMidpoint(computeEdgePath(from, to, tokens.geometry.edge))
+    rec.label.position.set(mid.x, mid.y)
   }
 
   #pinWorldPosition(node: Node, pinId: string): PinLayout | null {
@@ -2046,6 +2288,8 @@ export class XenolithEditor {
     if (!rec) return
     rec.graphics.parent?.removeChild(rec.graphics)
     rec.graphics.destroy()
+    if (rec.label) { rec.label.parent?.removeChild(rec.label); rec.label.destroy() }
+    this.#animatedEdges.delete(edgeId)
     this.#edgeRecords.delete(edgeId)
   }
 
@@ -2072,7 +2316,23 @@ export class XenolithEditor {
     this.#edgesLayer.addChild(gfx)
     this.#edgeRecords.set(edge.id, { edge, graphics: gfx, opts: resolved })
     this.#edgeOpts.set(edge.id, resolved)
+    if (resolved.animated) this.#animatedEdges.add(edge.id)
     return true
+  }
+
+  /** Update an edge's render options (label / arrowhead marker / animated flow / wire colour).
+   *  Merges over the existing options, repaints, and persists through serialization. */
+  setEdgeOptions(edgeId: EdgeId, opts: Partial<RenderEdgeOptions>): void {
+    const rec = this.#edgeRecords.get(edgeId)
+    if (!rec) return
+    rec.opts = { ...rec.opts, ...opts }
+    this.#edgeOpts.set(edgeId, rec.opts)
+    if (rec.opts.animated) this.#animatedEdges.add(edgeId)
+    else this.#animatedEdges.delete(edgeId)
+    // Force a repaint even if endpoints are unchanged (label/marker/colour may have changed).
+    rec.lastFromX = rec.lastFromY = rec.lastToX = rec.lastToY = undefined
+    this.#redrawEdge(edgeId)
+    this.#requestRender()
   }
 
   #syncPending = false
@@ -2114,6 +2374,8 @@ export class XenolithEditor {
       if (this.selection.contains(id)) droppedFromSelection = true
       this.#marqueeHovered.delete(id)
       if (this.#hoveredId === id) this.#hoveredId = null
+      // A removed node must not keep a status ring — otherwise a deleted "running" node stays lit.
+      this.#nodeStatus.delete(id)
     }
     if (droppedFromSelection) {
       this.selection.replaceWith(this.selection.ids().filter((id) => seenNodes.has(id)))
@@ -2230,6 +2492,9 @@ export class XenolithEditor {
 
     stage.on('pointerdown', (e: FederatedPointerEvent) => {
       if (e.button !== 0) return
+      // Locked (non-interactive): no connecting, no marquee, no selection — only viewport pan (RMB)
+      // stays live, so you can drag anywhere without grabbing the graph.
+      if (!this.#interactive) return
       this.#requestRender()
       const pin = readPinHandle(e.target)
       if (pin) {
@@ -2394,6 +2659,8 @@ export class XenolithEditor {
     view.container.on('pointerdown', (e: FederatedPointerEvent) => {
       if (e.button !== 0) return
       if (readPinHandle(e.target)) return
+      // Locked: nothing on the node responds — no widget edit, no select, no drag (pan stays live).
+      if (!this.#interactive) return
       // Widget interaction pre-empts node drag: hit-test the pointer against this node's widgets.
       if (view.widgetHit) {
         const local = e.getLocalPosition(view.container)
@@ -2710,11 +2977,7 @@ export class XenolithEditor {
       const sourcePin = sourceNode.pins.find((p) => String(p.id) === source.pinId)
       const targetPin = targetNode?.pins.find((p) => String(p.id) === hoveredTarget.pinId)
       if (sourcePin && targetPin && targetNode) {
-        const ok = canConnect(sourcePin, targetPin, sourceNode.id === targetNode.id, {
-          sourceEdges: this.#countEdgesAtPin(sourceNode.id, source.pinId),
-          targetEdges: this.#countEdgesAtPin(targetNode.id, hoveredTarget.pinId),
-        })
-        validity = ok ? 'valid' : 'invalid'
+        validity = this.#connectionAllowed(sourceNode, sourcePin, targetNode, targetPin) ? 'valid' : 'invalid'
       } else {
         validity = 'invalid'
       }
@@ -2737,10 +3000,7 @@ export class XenolithEditor {
       if (
         targetNode &&
         targetPin &&
-        canConnect(sourcePin, targetPin, sourceNode.id === targetNode.id, {
-          sourceEdges: this.#countEdgesAtPin(sourceNode.id, source.pinId),
-          targetEdges: this.#countEdgesAtPin(targetNode.id, target.pinId),
-        })
+        this.#connectionAllowed(sourceNode, sourcePin, targetNode, targetPin)
       ) {
         // Normalise edge orientation to (out → in) so the data model stays consistent regardless
         // of which end the user dragged from.

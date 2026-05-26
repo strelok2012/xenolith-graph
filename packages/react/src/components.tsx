@@ -1,9 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import type { CSSProperties, ReactNode, ReactElement, ReactPortal, ButtonHTMLAttributes } from 'react'
-import type { MinimapPosition } from '@xenolith/editor'
+import type { MinimapPosition, ControlsOptions } from '@xenolith/editor'
 import { useXenolithEditor } from './context.js'
-import { IconZoomIn, IconZoomOut, IconFit, IconReset, IconUndo, IconRedo } from './icons.js'
 
 export type PanelPosition =
   | 'top-left' | 'top-center' | 'top-right'
@@ -92,63 +91,23 @@ export function XenolithButton({ active, style, children, disabled, ...rest }: X
   )
 }
 
-export interface XenolithControlsProps {
-  position?: PanelPosition
-  /** Zoom multiplier per click (default 1.2). */
-  zoomStep?: number
-  showZoom?: boolean
-  showFit?: boolean
-  showReset?: boolean
-  showHistory?: boolean
-}
-
-const CTRL_BTN: CSSProperties = { width: 30, height: 30, padding: 0, display: 'grid', placeItems: 'center' }
-const SEP: CSSProperties = { width: 1, alignSelf: 'stretch', background: 'var(--xeno-border)', margin: '2px 2px' }
+export type XenolithControlsProps = ControlsOptions
 
 /**
- * Ready-made viewport controls (React Flow's `<Controls>` analogue): undo / redo, zoom out / in,
- * fit, reset — with Feather icons. Lives inside the editor as a `<XenolithPanel>`; buttons inherit
- * the theme via `--xeno-*`.
+ * Built-in viewport controls (zoom / fit / reset / undo·redo / save / lock). Declarative wrapper over
+ * the editor's vanilla `setControls` — the toolbar itself is rendered by the CORE in `overlayRoot`
+ * (shared by every framework, themed via `--xeno-*`), so this component renders no DOM of its own.
  */
-export function XenolithControls({
-  position = 'bottom-left', zoomStep = 1.2,
-  showZoom = true, showFit = true, showReset = true, showHistory = true,
-}: XenolithControlsProps): ReactElement | null {
+export function XenolithControls(props: XenolithControlsProps): null {
   const editor = useXenolithEditor()
-  // Track history depth so undo/redo grey out when their stack is empty (fresh editor = both empty).
-  const [history, setHistory] = useState({ canUndo: false, canRedo: false })
+  const key = JSON.stringify(props)
   useEffect(() => {
     if (!editor) return
-    return editor.on('history:changed', ({ canUndo, canRedo }) => setHistory({ canUndo, canRedo }))
-  }, [editor])
-  if (!editor) return null
-  const focal = (): { x: number; y: number } => ({
-    x: editor.overlayRoot.clientWidth / 2,
-    y: editor.overlayRoot.clientHeight / 2,
-  })
-  return (
-    <XenolithPanel position={position} style={{ display: 'flex', gap: 6, padding: 6 }}>
-      {showHistory && (
-        <XenolithButton aria-label="Undo" title="Undo" style={CTRL_BTN} disabled={!history.canUndo} onClick={() => editor.undo()}><IconUndo /></XenolithButton>
-      )}
-      {showHistory && (
-        <XenolithButton aria-label="Redo" title="Redo" style={CTRL_BTN} disabled={!history.canRedo} onClick={() => editor.redo()}><IconRedo /></XenolithButton>
-      )}
-      {showHistory && (showZoom || showFit || showReset) && <span style={SEP} />}
-      {showZoom && (
-        <XenolithButton aria-label="Zoom out" title="Zoom out" style={CTRL_BTN} onClick={() => editor.zoomAt(focal(), 1 / zoomStep)}><IconZoomOut /></XenolithButton>
-      )}
-      {showZoom && (
-        <XenolithButton aria-label="Zoom in" title="Zoom in" style={CTRL_BTN} onClick={() => editor.zoomAt(focal(), zoomStep)}><IconZoomIn /></XenolithButton>
-      )}
-      {showFit && (
-        <XenolithButton aria-label="Fit view" title="Fit view" style={CTRL_BTN} onClick={() => editor.fitView({ padding: 48, maxZoom: 1 })}><IconFit /></XenolithButton>
-      )}
-      {showReset && (
-        <XenolithButton aria-label="Reset view" title="Reset view" style={CTRL_BTN} onClick={() => editor.resetView()}><IconReset /></XenolithButton>
-      )}
-    </XenolithPanel>
-  )
+    editor.setControls(props)
+    return () => editor.setControls(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, key])
+  return null
 }
 
 export interface XenolithMiniMapProps {

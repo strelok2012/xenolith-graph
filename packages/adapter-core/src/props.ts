@@ -15,6 +15,8 @@ export interface XenolithProps {
   resizeToWindow?: boolean
   /** Frame the graph after each (re)load. */
   fitOnLoad?: boolean
+  /** Custom connection guard (on top of the type check). Return false to reject a wire. */
+  isValidConnection?: XenolithEditorOptions['isValidConnection']
 }
 
 /** The slice of the editor surface that {@link applyProps} drives — kept minimal so it can be
@@ -25,6 +27,7 @@ export interface EditorLike {
   fitView(opts?: { padding?: number; maxZoom?: number; minZoom?: number }): void
   setMinimapVisible(visible: boolean): void
   setMinimapPosition(position: MinimapPosition): void
+  setIsValidConnection(fn: NonNullable<XenolithProps['isValidConnection']> | null): void
 }
 
 function minimapEnabled(m: XenolithProps['minimap']): boolean {
@@ -49,4 +52,6 @@ export function applyProps(editor: EditorLike, prev: XenolithProps, next: Xenoli
   }
   const pos = minimapPosition(next.minimap)
   if (pos !== undefined && pos !== minimapPosition(prev.minimap)) editor.setMinimapPosition(pos)
+
+  if (next.isValidConnection !== prev.isValidConnection) editor.setIsValidConnection(next.isValidConnection ?? null)
 }

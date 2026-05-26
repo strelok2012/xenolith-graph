@@ -10,6 +10,7 @@ function mockEditor(): EditorLike & { calls: string[] } {
     fitView: vi.fn(() => calls.push('fitView')),
     setMinimapVisible: vi.fn((v: boolean) => calls.push(`minimap:${v}`)),
     setMinimapPosition: vi.fn(() => calls.push('minimapPos')),
+    setIsValidConnection: vi.fn(() => calls.push('isValidConnection')),
   }
 }
 
@@ -58,5 +59,17 @@ describe('applyProps', () => {
     const ed = mockEditor()
     applyProps(ed, { minimap: { position: 'top-left' } }, { minimap: { position: 'top-right' } })
     expect(ed.setMinimapPosition).toHaveBeenCalledWith('top-right')
+  })
+
+  it('updates the connection guard when its reference changes (null clears it)', () => {
+    const ed = mockEditor()
+    const guard = (): boolean => true
+    applyProps(ed, {}, { isValidConnection: guard })
+    expect(ed.setIsValidConnection).toHaveBeenCalledWith(guard)
+    ed.calls.length = 0
+    applyProps(ed, { isValidConnection: guard }, { isValidConnection: guard })
+    expect(ed.calls).toEqual([])
+    applyProps(ed, { isValidConnection: guard }, {})
+    expect(ed.setIsValidConnection).toHaveBeenLastCalledWith(null)
   })
 })

@@ -15,6 +15,7 @@ export type { NodeId, EdgeId, PinId, CommentId, TypeId } from './ids.js'
 
 export { Graph } from './graph.js'
 export type { Node, Edge, Pin, Comment, Vec2, PinKind, PinDirection } from './graph.js'
+export { incomers, outgoers, connectedEdges, roots, leaves, topoOrder, wouldCreateCycle, reachableFrom } from './traversal.js'
 
 export { CommandBus } from './command-bus.js'
 export type { Command, CommandContext, CommandBusOptions, CoreEvents } from './command-bus.js'

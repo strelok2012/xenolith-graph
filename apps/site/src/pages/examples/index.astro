@@ -1,0 +1,46 @@
+---
+import ExamplesLayout from '../../layouts/ExamplesLayout.astro'
+import { EXAMPLES, CATEGORY_ORDER, FRAMEWORKS } from '../../examples/manifest.ts'
+const base = import.meta.env.BASE_URL
+const byCategory = CATEGORY_ORDER
+  .map((cat) => ({ cat, items: EXAMPLES.filter((e) => e.category === cat) }))
+  .filter((g) => g.items.length > 0)
+const fwLabels = (e: (typeof EXAMPLES)[number]): string =>
+  FRAMEWORKS.filter((f) => e.impls[f.key]).map((f) => f.label).join(' · ')
+---
+<ExamplesLayout title="Examples — XenolithGraph">
+  <h1 style="margin:0 0 6px;font-size:32px;">Examples</h1>
+  <p style="margin:0 0 28px;color:#9a9a9a;max-width:60ch;">
+    Live, interactive examples — each with a framework switcher, full source, and reset.
+    Drag nodes, pull connections, edit widgets right in the preview.
+  </p>
+
+  {byCategory.map((g) => (
+    <section style="margin-bottom:36px;">
+      <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#7a7a7a;margin:0 0 14px;">{g.cat}</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;">
+        {g.items.map((e) => (
+          <a href={`${base}/examples/${e.id}/`} class="ex-tile">
+            <img class="ex-thumb" src={`${base}/examples/thumbs/${e.id}.png`} alt={e.title} loading="lazy" />
+
+            <div class="ex-tile-body">
+              <strong>{e.title}</strong>
+              <span class="ex-tile-blurb">{e.blurb}</span>
+              <span class="ex-tile-fw">{fwLabels(e)}</span>
+            </div>
+          </a>
+        ))}
+      </div>
+    </section>
+  ))}
+
+  <style>
+    .ex-tile { display:flex; flex-direction:column; text-decoration:none; border:1px solid #262626; border-radius:12px; overflow:hidden; background:#181818; transition:border-color .15s, transform .15s; }
+    .ex-tile:hover { border-color:#FCB400; transform:translateY(-2px); }
+    .ex-thumb { display:block; width:100%; height:150px; object-fit:cover; background:radial-gradient(circle at 30% 30%, #1f1f1f, #121212); border-bottom:1px solid #262626; }
+    .ex-tile-body { padding:12px 14px; display:flex; flex-direction:column; gap:6px; }
+    .ex-tile-body strong { font-size:15px; color:#fff; }
+    .ex-tile-blurb { font-size:12.5px; color:#9a9a9a; line-height:1.45; }
+    .ex-tile-fw { font-size:11px; color:#6f6f6f; margin-top:2px; }
+  </style>
+</ExamplesLayout>

@@ -30,6 +30,19 @@ function makeContext(): { ctx: CommandContext; events: EventEmitter<CoreEvents>;
   return { ctx, events, ops }
 }
 
+describe('CommandBus — clearHistory', () => {
+  it('drops the undo/redo log so nothing can be undone or redone', () => {
+    const { ctx, ops } = makeContext()
+    const bus = new CommandBus(ctx)
+    bus.apply(makeOpCmd('A', ops)); bus.apply(makeOpCmd('B', ops))
+    expect(bus.canUndo()).toBe(true)
+    bus.clearHistory()
+    expect(bus.canUndo()).toBe(false)
+    expect(bus.canRedo()).toBe(false)
+    expect(bus.undo()).toBe(false)
+  })
+})
+
 describe('CommandBus — mechanics', () => {
   it('apply() runs the command and returns its result', () => {
     const { ctx, ops } = makeContext()

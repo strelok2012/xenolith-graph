@@ -15,7 +15,7 @@ export function LoadDemo() {
         onReady={(e) => { editorRef.current = e; loadDemo(e) }}
       >
         <XenolithControls position="bottom-left" />
-        <XenolithPanel position="top-left">
+        <XenolithPanel position="top-right">
           <XenolithButton onClick={() => { const e = editorRef.current; if (e) { e.loadJSON(demoGraph); e.fitView({ padding: 48, maxZoom: 1 }) } }}>
             Reload graph
           </XenolithButton>

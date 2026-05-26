@@ -130,6 +130,7 @@ export interface XenTokens {
       hitPadding: number
       pulseEnabled: boolean
       midpointRadius: number
+      arrowSize: number
     }
     comment: {
       radius: number

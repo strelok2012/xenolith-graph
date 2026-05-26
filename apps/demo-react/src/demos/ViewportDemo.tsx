@@ -1,8 +1,25 @@
 import { useState } from 'react'
-import { XenolithGraph, XenolithControls, XenolithPanel, XenolithButton, XenolithMiniMap } from '@xenolith/react'
+import {
+  XenolithGraph, XenolithControls, XenolithPanel, XenolithButton, XenolithMiniMap,
+  useNodes, useEdges, useViewport,
+} from '@xenolith/react'
 import type { MinimapPosition } from '@xenolith/editor'
 import { DemoStage } from '../Layout.js'
 import { loadDemo } from '../demo-data.js'
+
+// Live readout driven by the reactive hooks — counts re-render on add/remove, zoom on pan/zoom.
+function Stats() {
+  const nodes = useNodes()
+  const edges = useEdges()
+  const vp = useViewport()
+  return (
+    <XenolithPanel position="bottom-left" style={{ padding: '6px 10px', fontVariantNumeric: 'tabular-nums' }}>
+      <span style={{ color: 'var(--xeno-accent)' }}>{nodes.length}</span> nodes ·{' '}
+      <span style={{ color: 'var(--xeno-accent)' }}>{edges.length}</span> edges ·{' '}
+      <span style={{ color: 'var(--xeno-accent)' }}>{Math.round(vp.zoom * 100)}%</span>
+    </XenolithPanel>
+  )
+}
 
 // 3×3 grid of minimap anchors (centre toggles visibility).
 const GRID: (MinimapPosition | 'center')[] = [
@@ -28,7 +45,7 @@ export function ViewportDemo() {
   return (
     <DemoStage>
       <XenolithGraph className="xeno" resizeToWindow={false} onReady={(e) => loadDemo(e)}>
-        <XenolithControls position="top-right" />
+        <XenolithControls position="top-right" orientation="horizontal" />
 
         <XenolithPanel position="top-left" style={{ minWidth: 150 }}>
           <p style={label}>Minimap</p>
@@ -56,6 +73,7 @@ export function ViewportDemo() {
         </XenolithPanel>
 
         {on && <XenolithMiniMap position={pos} />}
+        <Stats />
       </XenolithGraph>
     </DemoStage>
   )

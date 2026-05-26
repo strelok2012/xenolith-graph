@@ -32,6 +32,7 @@ function toInitOptions(props: XenolithProps): XenolithEditorOptions {
   if (props.disableGrid !== undefined) opts.disableGrid = props.disableGrid
   if (props.snap !== undefined) opts.snap = props.snap
   if (props.resizeToWindow !== undefined) opts.resizeToWindow = props.resizeToWindow
+  if (props.isValidConnection !== undefined) opts.isValidConnection = props.isValidConnection
   return opts
 }
 

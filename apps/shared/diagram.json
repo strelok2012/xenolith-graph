@@ -1,0 +1,42 @@
+{
+  "version": "xenolith.v1",
+  "nodes": [
+    { "id": "start", "type": "Note", "position": { "x": 0, "y": 140 },
+      "render": { "title": "Start", "category": "logic" },
+      "pins": [
+        { "id": "start:in",  "kind": "data", "direction": "in",  "type": "flow", "multiple": true },
+        { "id": "start:out", "kind": "data", "direction": "out", "type": "flow", "multiple": true }
+      ] },
+    { "id": "build", "type": "Note", "position": { "x": 250, "y": 140 },
+      "render": { "title": "Build", "category": "logic" },
+      "pins": [
+        { "id": "build:in",  "kind": "data", "direction": "in",  "type": "flow", "multiple": true },
+        { "id": "build:out", "kind": "data", "direction": "out", "type": "flow", "multiple": true }
+      ] },
+    { "id": "test", "type": "Note", "position": { "x": 500, "y": 140 },
+      "render": { "title": "Run tests", "category": "logic" },
+      "pins": [
+        { "id": "test:in",  "kind": "data", "direction": "in",  "type": "flow", "multiple": true },
+        { "id": "test:out", "kind": "data", "direction": "out", "type": "flow", "multiple": true }
+      ] },
+    { "id": "ship", "type": "Note", "position": { "x": 780, "y": 40 },
+      "render": { "title": "Ship 🚀", "category": "logic" },
+      "pins": [
+        { "id": "ship:in",  "kind": "data", "direction": "in",  "type": "flow", "multiple": true },
+        { "id": "ship:out", "kind": "data", "direction": "out", "type": "flow", "multiple": true }
+      ] },
+    { "id": "fix", "type": "Note", "position": { "x": 780, "y": 250 },
+      "render": { "title": "Fix & retry", "category": "logic" },
+      "pins": [
+        { "id": "fix:in",  "kind": "data", "direction": "in",  "type": "flow", "multiple": true },
+        { "id": "fix:out", "kind": "data", "direction": "out", "type": "flow", "multiple": true }
+      ] }
+  ],
+  "edges": [
+    { "id": "e1", "from": { "node": "start", "pin": "start:out" }, "to": { "node": "build", "pin": "build:in" }, "opts": { "markerEnd": "arrow", "animated": true } },
+    { "id": "e2", "from": { "node": "build", "pin": "build:out" }, "to": { "node": "test", "pin": "test:in" }, "opts": { "markerEnd": "arrow", "animated": true } },
+    { "id": "e3", "from": { "node": "test", "pin": "test:out" }, "to": { "node": "ship", "pin": "ship:in" }, "opts": { "markerEnd": "arrow", "animated": true, "label": "pass" } },
+    { "id": "e4", "from": { "node": "test", "pin": "test:out" }, "to": { "node": "fix", "pin": "fix:in" }, "opts": { "markerEnd": "arrow", "animated": true, "label": "fail" } },
+    { "id": "e5", "from": { "node": "fix", "pin": "fix:out" }, "to": { "node": "build", "pin": "build:in" }, "opts": { "markerEnd": "arrow", "animated": true, "label": "retry" } }
+  ]
+}

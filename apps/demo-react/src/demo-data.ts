@@ -9,8 +9,6 @@ export function loadDemo(editor: XenolithEditor): void {
   for (const schema of demoSchemas) editor.registry.register(schema)
   editor.loadJSON(demoGraph)
   editor.fitView({ padding: 48, maxZoom: 1 })
-  // Expose the live editor for e2e / console debugging.
-  ;(window as unknown as { __xenoEditor?: unknown }).__xenoEditor = editor
 }
 
 export { demoGraph, demoSchemas }

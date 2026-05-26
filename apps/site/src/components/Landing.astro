@@ -13,8 +13,8 @@ const { lang } = Astro.props
 
 const docPath = lang === 'en' ? '/xenolith-graph/guides/install/' : `/xenolith-graph/${lang}/guides/install/`
 const playgroundPath = '/xenolith-graph/playground/'
-const demosPath = '/xenolith-graph/demos/'
-const demosLabel = lang === 'ru' ? 'ComfyUI демо' : lang === 'zh' ? 'ComfyUI 演示' : 'ComfyUI demo'
+const examplesPath = '/xenolith-graph/examples/'
+const examplesLabel = lang === 'ru' ? 'Примеры' : lang === 'zh' ? '示例' : 'Examples'
 
 const t = (() => {
   if (lang === 'ru') return {
@@ -22,7 +22,7 @@ const t = (() => {
     h1a:     'Вызовите',
     h1b:     'init',
     h1c:     'один раз — и получите редактор, который полюбят.',
-    sub:     'Красивый редактор узловых графов для веба — из коробки, без сборки дизайна с нуля. Перетаскивайте ноды, тяните связи, переключайте темы в один клик. Откройте playground или живое ComfyUI-демо и попробуйте сами за 10 секунд.',
+    sub:     'Красивый редактор узловых графов для веба — из коробки, без сборки дизайна с нуля. Перетаскивайте ноды, тяните связи, переключайте темы в один клик. Откройте playground или примеры и попробуйте сами за 10 секунд.',
     ctaPrimary:   'Открыть документацию',
     ctaSecondary: 'GitHub',
     showcaseA: 'Xen — тема по умолчанию',
@@ -65,7 +65,7 @@ editor.connect(a, 0, b, 1, { sourceType: 'float' })
     h1a:     '调用一次',
     h1b:     'init',
     h1c:     '，即可交付让人喜爱的节点编辑器。',
-    sub:     '面向 Web 的精美节点图编辑器，开箱即用，无需从零搭建设计。拖拽节点、拉出连线、一键切换主题。打开 playground 或实时 ComfyUI 演示，10 秒上手。',
+    sub:     '面向 Web 的精美节点图编辑器，开箱即用，无需从零搭建设计。拖拽节点、拉出连线、一键切换主题。打开 playground 或示例，10 秒上手。',
     ctaPrimary:   '查看文档',
     ctaSecondary: 'GitHub',
     showcaseA: 'Xen — 默认主题',
@@ -108,7 +108,7 @@ editor.connect(a, 0, b, 1, { sourceType: 'float' })
     h1a:     'Call',
     h1b:     'init',
     h1c:     'once — and ship a node editor people love.',
-    sub:     'A beautiful node-graph editor for the web — gorgeous out of the box, no design work required. Drag nodes, pull connections, swap the whole look with one click. Open the playground or the live ComfyUI demo and try it yourself in ten seconds.',
+    sub:     'A beautiful node-graph editor for the web — gorgeous out of the box, no design work required. Drag nodes, pull connections, swap the whole look with one click. Open the playground or browse the examples and try it yourself in ten seconds.',
     ctaPrimary:   'Open documentation',
     ctaSecondary: 'GitHub',
     showcaseA: 'Xen — the default theme',
@@ -163,7 +163,7 @@ editor.connect(a, 0, b, 1, { sourceType: 'float' })
       <div class="xn-cta-row">
         <a class="xn-btn xn-btn-primary" href={docPath}>{t.ctaPrimary} <span aria-hidden="true">→</span></a>
         <a class="xn-btn xn-btn-ghost" href={playgroundPath}>{lang === 'ru' ? 'Открыть playground' : lang === 'zh' ? '打开 playground' : 'Open playground'}</a>
-        <a class="xn-btn xn-btn-ghost" href={demosPath}>{demosLabel}</a>
+        <a class="xn-btn xn-btn-ghost" href={examplesPath}>{examplesLabel}</a>
         <a class="xn-btn xn-btn-ghost" href="https://github.com/XenolithEngine/xenolith-graph">{t.ctaSecondary}</a>
       </div>
     </div>

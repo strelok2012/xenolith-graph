@@ -5,11 +5,14 @@
   "type": "module",
   "exports": {
     ".": "./demo-graph.ts",
-    "./comfy": "./comfy-import.ts"
+    "./comfy": "./comfy-import.ts",
+    "./image-pipeline": "./image-pipeline.ts",
+    "./diagram": "./diagram.ts"
   },
   "types": "./demo-graph.ts",
   "dependencies": {
     "@xenolith/core": "workspace:*",
-    "@xenolith/editor": "workspace:*"
+    "@xenolith/editor": "workspace:*",
+    "@xenolith/render-pixi": "workspace:*"
   }
 }

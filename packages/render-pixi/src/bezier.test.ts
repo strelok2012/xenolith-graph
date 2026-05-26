@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeEdgePath, sampleBezier, type EdgeTokens, type EdgePath } from './bezier.js'
+import { computeEdgePath, sampleBezier, endTangent, arrowHead, type EdgeTokens, type EdgePath } from './bezier.js'
 import { createPinId, type PinId } from '@xenolith/core'
 import type { PinLayout } from './layout.js'
 
@@ -166,5 +166,32 @@ describe('bezierMidpoint', () => {
     const m = bezierMidpoint(path)
     expect(m.x).toBeCloseTo(mid.x, 6)
     expect(m.y).toBeCloseTo(mid.y, 6)
+  })
+})
+
+describe('endTangent', () => {
+  it('points in the direction of travel into the end (horizontal right)', () => {
+    const path = computeEdgePath(out(0, 0), inp(200, 0), TOKENS)
+    const t = endTangent(path)
+    expect(t.x).toBeCloseTo(1, 5)
+    expect(t.y).toBeCloseTo(0, 5)
+  })
+
+  it('is a unit vector', () => {
+    const path = computeEdgePath(out(0, 0), inp(120, 90), TOKENS)
+    const t = endTangent(path)
+    expect(Math.hypot(t.x, t.y)).toBeCloseTo(1, 5)
+  })
+})
+
+describe('arrowHead', () => {
+  it('places the tip at the path end and the base `size` behind it', () => {
+    const path = computeEdgePath(out(0, 0), inp(200, 0), TOKENS)
+    const [tip, left, right] = arrowHead(path, 10)
+    expect(tip).toEqual({ x: 200, y: 0 })
+    expect(left.x).toBeCloseTo(190, 5)
+    expect(right.x).toBeCloseTo(190, 5)
+    expect(left.y).toBeCloseTo(-5, 5)
+    expect(right.y).toBeCloseTo(5, 5)
   })
 })

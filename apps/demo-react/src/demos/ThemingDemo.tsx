@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { XenolithGraph, XenolithPanel, XenolithButton } from '@xenolith/react'
+import { XenolithGraph, XenolithPanel, XenolithButton, XenolithControls } from '@xenolith/react'
 import { xenTheme } from '@xenolith/render-pixi'
 import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
 import { DemoStage } from '../Layout.js'
@@ -17,6 +17,7 @@ export function ThemingDemo() {
         resizeToWindow={false}
         onReady={loadDemo}
       >
+        <XenolithControls position="top-right" orientation="horizontal" />
         <XenolithPanel position="top-left" style={{ display: 'flex', gap: 6, padding: 6 }}>
           <XenolithButton active={theme === 'xen'} onClick={() => setTheme('xen')}>Xen</XenolithButton>
           <XenolithButton active={theme === 'lg'} onClick={() => setTheme('lg')}>Liquid Glass</XenolithButton>

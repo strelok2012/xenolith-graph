@@ -1,14 +1,16 @@
 import { DemoPage } from '../Layout.js'
 import { BindingDemo } from '../demos/BindingDemo.js'
 
-const code = `function Inspector({ editor, nodeId }) {
+const code = `function Inspector() {
+  const editor = useXenolithEditor()
+  const [nodeId] = useSelection()                 // reactive — no event wiring
   const [, rerender] = useReducer((n) => n + 1, 0)
 
   // editor → form: a widget dragged inside the canvas refreshes the inputs.
   useEffect(() => editor.on('widget:changed', rerender), [editor])
 
   const node = editor.graph.getNode(nodeId)
-  return node.widgets.map((w) => (
+  return node?.widgets.map((w) => (
     <label key={w.id}>
       {w.label}
       <input
@@ -19,8 +21,8 @@ const code = `function Inspector({ editor, nodeId }) {
   ))
 }
 
-// nodeId comes from the selection event:
-<XenolithGraph onSelectionChange={(e) => setNodeId(e.nodeIds[0])} />`
+// Drop it inside the editor — selection comes from the hook:
+<XenolithGraph onReady={load}><Inspector /></XenolithGraph>`
 
 export function Binding() {
   return (
