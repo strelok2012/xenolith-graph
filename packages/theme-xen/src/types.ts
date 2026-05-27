@@ -133,7 +133,9 @@ export interface XenTokens {
       arrowSize: number
     }
     comment: {
-      radius: number
+      /** Corner radius. Omit to inherit the node radius (so a comment frame reads 1:1 with a node
+       *  header in any theme); set it to deliberately diverge. */
+      radius?: number
       headerHeight: number
       minWidth: number
       minHeight: number

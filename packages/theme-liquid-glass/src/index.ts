@@ -25,6 +25,11 @@ export const liquidGlassTheme: XenolithTheme = {
   // Disabled for now: the freeze/unfreeze at gesture start/end causes a hitch that hurts
   // smoothness more than the per-frame glass cost. Revisit with proper LOD/virtualization (#59).
   freezeOnNavigate: false,
+  // Glass nodes are far heavier per node than flat Xen ones (per-node backdrop RTs + the refraction
+  // shader), so the GPU ceiling is hit at fewer nodes — virtualize earlier than the 300 default.
+  virtualizeThreshold: 150,
+  // Comment header mirrors the LG node header: a flat accent tint over the (non-glass) comment body.
+  commentHeaderStyle: 'tint',
   // CSS frosted-glass approximation for DOM chrome (insert palette). Translucent cool-white
   // panel + heavy backdrop blur + luminous 1px rim + soft inner highlight — the WWDC25 look
   // without the backdrop-sampling shader (overkill for chrome).

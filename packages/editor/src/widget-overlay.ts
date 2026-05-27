@@ -64,6 +64,20 @@ export interface TextEditOptions {
   numeric?: boolean
   style: WidgetFieldStyle
   onCommit: (value: string) => void
+  /** Fired live on every keystroke — lets the caller mirror the value into WebGL-rendered text so the
+   *  DOM field itself can stay invisible (no font-metric mismatch / jump). */
+  onInput?: (value: string) => void
+  /** Fired once when the editor closes (commit, Escape, or blur) — restore any hidden UI underneath. */
+  onClose?: () => void
+  /** Select all text on open (default true). Pass false to just place the caret at the end — used
+   *  when the field overlays existing text 1:1 and a selection highlight would look like a stray box. */
+  selectAll?: boolean
+  /** Caret colour override (used with a transparent text fill, where the glyphs are drawn elsewhere
+   *  e.g. in WebGL — only the blinking caret should show through). */
+  caretColor?: string
+  /** Grow the field's width to fit the text as it's typed (never shrinking below the initial rect),
+   *  so the caret keeps tracking the end of long single-line text instead of clamping at the edge. */
+  autoGrow?: boolean
 }
 
 export interface ComboEditOptions {
@@ -85,6 +99,7 @@ export class WidgetOverlay {
   #el: HTMLElement | null = null
   #styleTag: HTMLStyleElement | null = null
   #onDocPointerDown: ((e: Event) => void) | null = null
+  #onClose: (() => void) | null = null
 
   constructor(host: HTMLElement, style: PaletteStyle | undefined) {
     this.#host = host
@@ -121,10 +136,14 @@ export class WidgetOverlay {
     }
     this.#el?.remove()
     this.#el = null
+    const onClose = this.#onClose
+    this.#onClose = null
+    onClose?.()
   }
 
   editText(opts: TextEditOptions): void {
     this.close()
+    this.#onClose = opts.onClose ?? null
     const st = opts.style
     const el = document.createElement(opts.multiline ? 'textarea' : 'input') as HTMLInputElement | HTMLTextAreaElement
     if (opts.numeric && !opts.multiline) (el as HTMLInputElement).inputMode = 'decimal'
@@ -162,8 +181,24 @@ export class WidgetOverlay {
       font:         `${st.fontWeight} ${st.fontSize}px ${st.fontFamily}`,
       resize:       'none',
       textAlign:    opts.numeric ? 'right' : 'left',
-      ...(this.#style.backdropFilter ? { backdropFilter: this.#style.backdropFilter, WebkitBackdropFilter: this.#style.backdropFilter } : {}),
+      ...(opts.caretColor ? { caretColor: opts.caretColor } : {}),
+      // A transparent field draws its glyphs elsewhere (WebGL, underneath) — a backdrop blur would
+      // smear that text into nothing, so skip it unless the field has its own opaque background.
+      ...(this.#style.backdropFilter && st.background !== 'transparent'
+        ? { backdropFilter: this.#style.backdropFilter, WebkitBackdropFilter: this.#style.backdropFilter }
+        : {}),
     })
+    if (opts.autoGrow && !opts.multiline) {
+      // Fit width to the content (caret keeps tracking the text end); never below the initial rect.
+      const baseW = opts.rect.width
+      const grow = (): void => {
+        el.style.width = '0px'
+        el.style.width = `${Math.max(baseW, el.scrollWidth + 4)}px`
+      }
+      el.addEventListener('input', grow)
+      requestAnimationFrame(grow)
+    }
+    if (opts.onInput) el.addEventListener('input', () => opts.onInput!(el.value))
     let committed = false
     const commit = (): void => {
       if (committed) return
@@ -190,7 +225,12 @@ export class WidgetOverlay {
     this.#host.appendChild(el)
     this.#el = el
     el.focus()
-    if ('select' in el) (el as HTMLInputElement).select()
+    if (opts.selectAll === false) {
+      const end = el.value.length
+      try { el.setSelectionRange(end, end) } catch { /* number inputs reject setSelectionRange */ }
+    } else if ('select' in el) {
+      (el as HTMLInputElement).select()
+    }
   }
 
   /** Themed popover colour picker anchored under the swatch — an HSV square + hue strip + hex

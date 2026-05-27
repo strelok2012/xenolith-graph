@@ -1,4 +1,4 @@
-import type { Edge, Node, NodeId, EdgeId, Pin, WidgetSpec } from '@xenolith/core'
+import type { Edge, Node, NodeId, EdgeId, Pin, WidgetSpec, Comment } from '@xenolith/core'
 import type { RenderEdgeOptions, RenderNodeOptions } from '@xenolith/render-pixi'
 
 export const XENOLITH_GRAPH_VERSION = 'xenolith.v1' as const
@@ -9,6 +9,15 @@ export interface XenolithGraphV1 {
   viewport?: { x: number; y: number; zoom: number }
   nodes: XenolithNodeV1[]
   edges: XenolithEdgeV1[]
+  comments?: XenolithCommentV1[]
+}
+
+export interface XenolithCommentV1 {
+  id: string
+  position: { x: number; y: number }
+  size: { x: number; y: number }
+  text: string
+  color?: string
 }
 
 export interface XenolithNodeV1 {
@@ -41,6 +50,7 @@ export interface XenolithEdgeV1 {
 export interface SerializeInput {
   nodes: ReadonlyArray<Readonly<Node>>
   edges: ReadonlyArray<Readonly<Edge>>
+  comments?: ReadonlyArray<Readonly<Comment>>
   renderOpts: ReadonlyMap<NodeId | string, RenderNodeOptions>
   edgeOpts:   ReadonlyMap<EdgeId  | string, RenderEdgeOptions>
   viewport?: { x: number; y: number; zoom: number }
@@ -50,6 +60,7 @@ export interface ParsedGraph {
   viewport?: { x: number; y: number; zoom: number }
   nodes: Node[]
   edges: Edge[]
+  comments: Comment[]
   renderOpts: Map<string, RenderNodeOptions>
   edgeOpts:   Map<string, RenderEdgeOptions>
 }
@@ -103,12 +114,24 @@ function serializeEdge(e: Readonly<Edge>, opts: RenderEdgeOptions | undefined): 
   return out
 }
 
+function serializeComment(c: Readonly<Comment>): XenolithCommentV1 {
+  const out: XenolithCommentV1 = {
+    id:       String(c.id),
+    position: { x: c.position.x, y: c.position.y },
+    size:     { x: c.size.x, y: c.size.y },
+    text:     c.text,
+  }
+  if (c.color !== undefined) out.color = c.color
+  return out
+}
+
 export function serializeXenolithGraph(input: SerializeInput): XenolithGraphV1 {
   const out: XenolithGraphV1 = {
     version: XENOLITH_GRAPH_VERSION,
     nodes: input.nodes.map((n) => serializeNode(n, input.renderOpts.get(String(n.id) as NodeId))),
     edges: input.edges.map((e) => serializeEdge(e, input.edgeOpts.get(String(e.id) as EdgeId))),
   }
+  if (input.comments && input.comments.length > 0) out.comments = input.comments.map(serializeComment)
   if (input.viewport) out.viewport = { ...input.viewport }
   return out
 }
@@ -228,6 +251,21 @@ function parseEdge(v: unknown, idx: number): { edge: Edge; opts?: RenderEdgeOpti
   return opts ? { edge, opts } : { edge }
 }
 
+function parseComment(v: unknown, idx: number): Comment {
+  const where = `comments[${idx}]`
+  if (!isPlainObject(v)) throw new Error(`xenolith.v1 parse: ${where} must be an object`)
+  if (typeof v['id'] !== 'string') throw new Error(`xenolith.v1 parse: ${where}.id must be string`)
+  if (typeof v['text'] !== 'string') throw new Error(`xenolith.v1 parse: ${where}.text must be string`)
+  const comment: Comment = {
+    id:       v['id'] as Comment['id'],
+    position: assertVec2(v['position'], `${where}.position`),
+    size:     assertVec2(v['size'], `${where}.size`),
+    text:     v['text'],
+  }
+  if (typeof v['color'] === 'string') comment.color = v['color']
+  return comment
+}
+
 export function parseXenolithGraph(data: unknown): ParsedGraph {
   if (!isPlainObject(data)) throw new Error('xenolith.v1 parse: payload must be an object')
   const version = data['version']
@@ -256,7 +294,14 @@ export function parseXenolithGraph(data: unknown): ParsedGraph {
     if (opts) edgeOpts.set(String(edge.id), opts)
   })
 
-  const out: ParsedGraph = { nodes, edges, renderOpts, edgeOpts }
+  const rawComments = data['comments']
+  const comments: Comment[] = []
+  if (rawComments !== undefined) {
+    if (!Array.isArray(rawComments)) throw new Error('xenolith.v1 parse: comments must be an array')
+    rawComments.forEach((raw, i) => comments.push(parseComment(raw, i)))
+  }
+
+  const out: ParsedGraph = { nodes, edges, comments, renderOpts, edgeOpts }
   const rawViewport = data['viewport']
   if (isPlainObject(rawViewport)
       && typeof rawViewport['x'] === 'number'

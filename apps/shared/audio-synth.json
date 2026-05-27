@@ -1,0 +1,46 @@
+{
+  "version": "xenolith.v1",
+  "nodes": [
+    { "id": "osc", "type": "Oscillator", "position": { "x": 0, "y": 60 },
+      "render": { "title": "Oscillator" },
+      "state": { "wave": "sawtooth", "freq": 220 },
+      "pins": [
+        { "id": "osc:out", "kind": "data", "direction": "out", "type": "audio", "multiple": true, "label": "Out" }
+      ],
+      "widgets": [
+        { "id": "wave", "type": "combo",  "key": "wave", "label": "Wave", "values": ["sine", "square", "sawtooth", "triangle"] },
+        { "id": "freq", "type": "slider", "key": "freq", "label": "Freq", "min": 50, "max": 1200, "step": 1 }
+      ] },
+    { "id": "filter", "type": "Filter", "position": { "x": 260, "y": 60 },
+      "render": { "title": "Filter" },
+      "state": { "ftype": "lowpass", "cutoff": 900 },
+      "pins": [
+        { "id": "filter:in",  "kind": "data", "direction": "in",  "type": "audio", "multiple": false, "label": "In" },
+        { "id": "filter:out", "kind": "data", "direction": "out", "type": "audio", "multiple": true,  "label": "Out" }
+      ],
+      "widgets": [
+        { "id": "ftype",  "type": "combo",  "key": "ftype", "label": "Type", "values": ["lowpass", "highpass", "bandpass"] },
+        { "id": "cutoff", "type": "slider", "key": "cutoff", "label": "Cutoff", "min": 80, "max": 8000, "step": 10 }
+      ] },
+    { "id": "gain", "type": "Gain", "position": { "x": 520, "y": 60 },
+      "render": { "title": "Gain" },
+      "state": { "level": 0.25 },
+      "pins": [
+        { "id": "gain:in",  "kind": "data", "direction": "in",  "type": "audio", "multiple": false, "label": "In" },
+        { "id": "gain:out", "kind": "data", "direction": "out", "type": "audio", "multiple": true,  "label": "Out" }
+      ],
+      "widgets": [
+        { "id": "level", "type": "slider", "key": "level", "label": "Level", "min": 0, "max": 1, "step": 0.01 }
+      ] },
+    { "id": "output", "type": "Output", "position": { "x": 780, "y": 90 },
+      "render": { "title": "🔊 Output" },
+      "pins": [
+        { "id": "output:in", "kind": "data", "direction": "in", "type": "audio", "multiple": false, "label": "In" }
+      ] }
+  ],
+  "edges": [
+    { "id": "e-of", "from": { "node": "osc",    "pin": "osc:out" },    "to": { "node": "filter", "pin": "filter:in" } },
+    { "id": "e-fg", "from": { "node": "filter", "pin": "filter:out" }, "to": { "node": "gain",   "pin": "gain:in" } },
+    { "id": "e-go", "from": { "node": "gain",   "pin": "gain:out" },   "to": { "node": "output", "pin": "output:in" } }
+  ]
+}

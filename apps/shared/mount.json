@@ -1,0 +1,15 @@
+{
+  "version": "xenolith.v1",
+  "nodes": [
+    { "id": "greeter", "type": "Greeter", "position": { "x": 0, "y": 0 },
+      "render": { "title": "Greeter" },
+      "state": { "msg": "Hello, Xenolith" },
+      "pins": [
+        { "id": "greeter:out", "kind": "data", "direction": "out", "type": "string", "multiple": true, "label": "Out" }
+      ],
+      "widgets": [
+        { "id": "msg", "type": "text", "key": "msg", "label": "Message" }
+      ] }
+  ],
+  "edges": []
+}

@@ -54,6 +54,15 @@ export interface XenolithTheme {
    *  and restores the live nodes on settle. Hides the per-frame cost of expensive materials (the
    *  Liquid Glass shader) during navigation. Cheap/flat themes (Xen) leave it false. */
   freezeOnNavigate?: boolean
+  /** How a comment/group header is painted so it matches the theme's node header. `'gradient'`
+   *  (default, Xen): horizontal accent fade + white highlight + rim. `'tint'` (Liquid Glass): flat
+   *  accent tint, mirroring the LG node header tint. */
+  commentHeaderStyle?: 'gradient' | 'tint'
+  /** Viewport-virtualization threshold: once a graph exceeds this many nodes, the editor keeps a
+   *  live PIXI view only for nodes near the viewport (off-screen nodes are data only). Defaults to
+   *  300. Heavier themes (Liquid Glass — per-node backdrop RTs + shader) set a LOWER value so the
+   *  GPU ceiling is reached at fewer nodes. At or below the threshold the graph renders 1:1. */
+  virtualizeThreshold?: number
   /** Custom node rendering pipeline. Themes that need backdrop sampling read ctx.backdropTexture. */
   renderNode?: (node: Node, opts: RenderNodeOptions, ctx: ThemeRenderContext) => NodeView
   /** Custom reroute-knot rendering. Falls back to the Xen disc (`renderRerouteNode`) when omitted.

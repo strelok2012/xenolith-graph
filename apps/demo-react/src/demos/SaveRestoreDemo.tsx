@@ -1,20 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { XenolithGraph, XenolithControls, XenolithPanel, XenolithButton, useXenolithEditor, useGraphJSON } from '@xenolith/react'
+import { initSaveRestore, downloadGraph, uploadGraph, saveToLocal, restoreFromLocal, hasSaved } from '@xenolith/demo/save-restore'
 import { DemoStage } from '../Layout.js'
-import { loadDemo } from '../demo-data.js'
 
-// Persistence: the whole graph is JSON (editor.toJSON ⇄ loadJSON). This showcases real save/restore —
-// download/upload a .json file, and autosave to localStorage on every edit (driven by useGraphJSON).
-
-const KEY = 'xeno:save-restore-demo'
-
-function download(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = filename
-  document.body.appendChild(a); a.click(); a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 0)
-}
+// Persistence: the whole graph is JSON (editor.toJSON ⇄ loadJSON). The file + localStorage helpers
+// live in the framework-agnostic core (@xenolith/demo/save-restore); only the autosave-on-edit is
+// React here, since it rides useGraphJSON's reactive change stream.
 
 function SavePanel() {
   const editor = useXenolithEditor()
@@ -23,35 +14,25 @@ function SavePanel() {
   const fileRef = useRef<HTMLInputElement | null>(null)
   const first = useRef(true)
 
-  // Autosave (debounced) to localStorage whenever the graph changes — useGraphJSON re-emits on edits.
+  // Autosave (debounced) whenever the graph changes — useGraphJSON re-emits on edits.
   useEffect(() => {
-    if (!json) return
+    if (!json || !editor) return
     if (first.current) { first.current = false; return } // skip the initial load
-    const t = setTimeout(() => { localStorage.setItem(KEY, JSON.stringify(json)); setSavedAt(Date.now()) }, 500)
+    const t = setTimeout(() => { saveToLocal(editor); setSavedAt(Date.now()) }, 500)
     return () => clearTimeout(t)
-  }, [json])
-
-  const restore = (): void => {
-    const s = localStorage.getItem(KEY)
-    if (!s || !editor) return
-    try { editor.loadJSON(JSON.parse(s)); editor.fitView({ padding: 48, maxZoom: 1 }) } catch { /* corrupt */ }
-  }
-  const upload = (file?: File): void => {
-    if (!file || !editor) return
-    void file.text().then((t) => { try { editor.loadJSON(JSON.parse(t)); editor.fitView({ padding: 48, maxZoom: 1 }) } catch { /* bad file */ } })
-  }
+  }, [json, editor])
 
   const btn: React.CSSProperties = { width: '100%' }
   return (
     <XenolithPanel position="top-left" style={{ display: 'flex', flexDirection: 'column', gap: 6, width: 180 }}>
       <p style={{ margin: 0, fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--xeno-muted)' }}>Save / restore</p>
-      <XenolithButton style={btn} onClick={() => editor && download(editor.exportJSON(), 'graph.json')}>↓ Download .json</XenolithButton>
+      <XenolithButton style={btn} onClick={() => editor && downloadGraph(editor)}>↓ Download .json</XenolithButton>
       <XenolithButton style={btn} onClick={() => fileRef.current?.click()}>↑ Upload .json</XenolithButton>
-      <XenolithButton style={btn} onClick={restore} disabled={savedAt === null && !localStorage.getItem(KEY)}>↺ Restore last</XenolithButton>
+      <XenolithButton style={btn} onClick={() => editor && restoreFromLocal(editor)} disabled={savedAt === null && !hasSaved()}>↺ Restore last</XenolithButton>
       <span style={{ color: 'var(--xeno-muted)', fontSize: 11, lineHeight: 1.4 }}>
         {savedAt ? '✓ Autosaved to your browser' : 'Edit the graph — it autosaves to localStorage.'}
       </span>
-      <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={(e) => upload(e.target.files?.[0])} />
+      <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f && editor) uploadGraph(editor, f) }} />
     </XenolithPanel>
   )
 }
@@ -60,15 +41,7 @@ function SavePanel() {
 export function SaveRestoreDemo() {
   return (
     <DemoStage>
-      <XenolithGraph
-        className="xeno"
-        resizeToWindow={false}
-        onReady={(editor) => {
-          loadDemo(editor) // registers the demo node schemas and loads the demo graph
-          const saved = localStorage.getItem(KEY)
-          if (saved) { try { editor.loadJSON(JSON.parse(saved)); editor.fitView({ padding: 48, maxZoom: 1 }) } catch { /* corrupt — keep the demo */ } }
-        }}
-      >
+      <XenolithGraph className="xeno" resizeToWindow={false} onReady={(editor) => initSaveRestore(editor)}>
         <XenolithControls position="bottom-left" />
         <SavePanel />
       </XenolithGraph>

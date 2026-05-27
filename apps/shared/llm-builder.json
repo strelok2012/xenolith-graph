@@ -1,0 +1,49 @@
+{
+  "version": "xenolith.v1",
+  "nodes": [
+    { "id": "input", "type": "Input", "position": { "x": 0, "y": 40 },
+      "render": { "title": "Input" },
+      "state": { "value": "autumn leaves" },
+      "pins": [
+        { "id": "input:out", "kind": "data", "direction": "out", "type": "text", "multiple": true, "label": "Out" }
+      ],
+      "widgets": [
+        { "id": "value", "type": "text", "key": "value", "label": "Value" }
+      ] },
+    { "id": "prompt", "type": "Prompt", "position": { "x": 250, "y": 40 },
+      "render": { "title": "Prompt" },
+      "state": { "template": "Write a haiku about {input}." },
+      "pins": [
+        { "id": "prompt:in",  "kind": "data", "direction": "in",  "type": "text", "multiple": false, "label": "In" },
+        { "id": "prompt:out", "kind": "data", "direction": "out", "type": "text", "multiple": true,  "label": "Out" }
+      ],
+      "widgets": [
+        { "id": "template", "type": "custom", "renderer": "prompt-edit", "key": "template", "label": "Template", "height": 60 }
+      ] },
+    { "id": "model", "type": "Model", "position": { "x": 510, "y": 40 },
+      "render": { "title": "Model" },
+      "state": { "model": "GPT-4o mini", "temp": 0.7 },
+      "pins": [
+        { "id": "model:in",  "kind": "data", "direction": "in",  "type": "text", "multiple": false, "label": "In" },
+        { "id": "model:out", "kind": "data", "direction": "out", "type": "text", "multiple": true,  "label": "Out" }
+      ],
+      "widgets": [
+        { "id": "model", "type": "combo", "key": "model", "label": "Model", "values": ["GPT-4o mini", "Claude 3.5", "Llama 3"] },
+        { "id": "temp",  "type": "slider", "key": "temp", "label": "Temp", "min": 0, "max": 1, "step": 0.05 }
+      ] },
+    { "id": "output", "type": "Output", "position": { "x": 770, "y": 40 },
+      "render": { "title": "Output" },
+      "state": { "result": "" },
+      "pins": [
+        { "id": "output:in", "kind": "data", "direction": "in", "type": "text", "multiple": false, "label": "In" }
+      ],
+      "widgets": [
+        { "id": "result", "type": "custom", "renderer": "output-view", "key": "result", "label": "Result", "height": 92 }
+      ] }
+  ],
+  "edges": [
+    { "id": "e-ip", "from": { "node": "input",  "pin": "input:out" },  "to": { "node": "prompt", "pin": "prompt:in" } },
+    { "id": "e-pm", "from": { "node": "prompt", "pin": "prompt:out" }, "to": { "node": "model",  "pin": "model:in" } },
+    { "id": "e-mo", "from": { "node": "model",  "pin": "model:out" },  "to": { "node": "output", "pin": "output:in" } }
+  ]
+}

@@ -1,19 +1,11 @@
 import { useState } from 'react'
 import { XenolithGraph, XenolithPanel, XenolithButton, XenolithControls, useXenolithEditor } from '@xenolith/react'
+import { loadDemo } from '@xenolith/demo/scene'
+import { exportGraphImage } from '@xenolith/demo/export-image'
 import { DemoStage } from '../Layout.js'
-import { loadDemo } from '../demo-data.js'
 
-// Showcase: render the whole graph to an image. editor.exportImage() draws every node (not just the
-// visible viewport) into an offscreen canvas at any scale and hands back a Blob — PNG for crisp UI,
-// JPG for smaller files, 2× for retina. Download it straight from the panel.
-
-function download(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = filename
-  document.body.appendChild(a); a.click(); a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 0)
-}
+// Showcase: render the whole graph to an image. The export + download logic lives in the
+// framework-agnostic core (@xenolith/demo/export-image); this React file is just the button panel.
 
 function ExportPanel(): React.ReactElement {
   const editor = useXenolithEditor()
@@ -21,10 +13,7 @@ function ExportPanel(): React.ReactElement {
   const exportAs = async (format: 'png' | 'jpeg', scale: number): Promise<void> => {
     if (!editor || busy) return
     setBusy(true)
-    try {
-      const blob = await editor.exportImage({ format, scale, padding: 48 })
-      download(blob, `graph@${scale}x.${format === 'jpeg' ? 'jpg' : 'png'}`)
-    } finally { setBusy(false) }
+    try { await exportGraphImage(editor, format, scale) } finally { setBusy(false) }
   }
   const full = { width: '100%' }
   return (

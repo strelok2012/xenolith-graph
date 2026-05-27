@@ -151,6 +151,11 @@ export class Minimap {
       this.#nodes.roundRect(p.x, p.y, Math.max(1.5, n.width * this.#scale), Math.max(1.5, n.height * this.#scale), g.nodeRadius)
     }
     this.#nodes.fill({ color: c.node })
+    // Bake the node layer to a texture: on a huge graph this Graphics holds tens of thousands of
+    // roundRects, and re-submitting that geometry every frame (the minimap repaints with the moving
+    // viewport frame) is the dominant cost. Cached, the per-frame minimap render is one textured quad.
+    this.#nodes.cacheAsTexture(true)
+    this.#nodes.updateCacheTexture()
   }
 
   #redrawFrame(): void {

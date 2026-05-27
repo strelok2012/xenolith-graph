@@ -1,0 +1,33 @@
+{
+  "version": "xenolith.v1",
+  "nodes": [
+    { "id": "a", "type": "A", "position": { "x": 0, "y": 40 }, "render": { "title": "A", "category": "data" },
+      "pins": [
+        { "id": "a:in",  "kind": "data", "direction": "in",  "type": "float", "multiple": false, "label": "In" },
+        { "id": "a:out", "kind": "data", "direction": "out", "type": "float", "multiple": true,  "label": "Out" }
+      ] },
+    { "id": "b", "type": "B", "position": { "x": 230, "y": 40 }, "render": { "title": "B", "category": "data" },
+      "pins": [
+        { "id": "b:in",  "kind": "data", "direction": "in",  "type": "float", "multiple": false, "label": "In" },
+        { "id": "b:out", "kind": "data", "direction": "out", "type": "float", "multiple": true,  "label": "Out" }
+      ] },
+    { "id": "c", "type": "C", "position": { "x": 460, "y": 40 }, "render": { "title": "C", "category": "data" },
+      "pins": [
+        { "id": "c:in",  "kind": "data", "direction": "in",  "type": "float", "multiple": false, "label": "In" },
+        { "id": "c:out", "kind": "data", "direction": "out", "type": "float", "multiple": true,  "label": "Out" }
+      ] },
+    { "id": "text", "type": "Text", "position": { "x": 40, "y": 210 }, "render": { "title": "Text", "category": "logic" },
+      "pins": [
+        { "id": "text:out", "kind": "data", "direction": "out", "type": "string", "multiple": true, "label": "Out" }
+      ] },
+    { "id": "caption", "type": "Caption", "position": { "x": 460, "y": 210 }, "render": { "title": "Caption", "category": "logic" },
+      "pins": [
+        { "id": "caption:in", "kind": "data", "direction": "in", "type": "string", "multiple": false, "label": "In" }
+      ] }
+  ],
+  "edges": [
+    { "id": "e-ab", "from": { "node": "a",    "pin": "a:out" },    "to": { "node": "b",       "pin": "b:in" } },
+    { "id": "e-bc", "from": { "node": "b",    "pin": "b:out" },    "to": { "node": "c",       "pin": "c:in" } },
+    { "id": "e-tc", "from": { "node": "text", "pin": "text:out" }, "to": { "node": "caption", "pin": "caption:in" } }
+  ]
+}

@@ -15,6 +15,7 @@ import {
   type Renderer,
   type Texture,
   type TextStyleFontWeight,
+  type LinearGradientOptions,
 } from 'pixi.js'
 import type { StateStyle } from '@xenolith/theme-xen'
 import type { Node, Pin } from '@xenolith/core'
@@ -230,6 +231,26 @@ export function clearGlowTextureCache(): void {
   glowTextureCache.clear()
 }
 
+/** A FillGradient owns a GPU texture that Graphics.destroy() does NOT release (per PIXI docs), so a
+ *  fresh `new FillGradient` per node leaks one texture per node on every create/destroy — which, under
+ *  virtualization's pan/zoom churn, exhausts GPU memory and crashes the context. Gradients here use
+ *  `textureSpace: 'local'` (0–1 coords), so one instance is valid for nodes of ANY size: cache by the
+ *  options signature and share. Shared instances are never destroyed on node teardown (like glow). */
+const gradientCache = new Map<string, FillGradient>()
+
+function sharedGradient(options: LinearGradientOptions): FillGradient {
+  const key = JSON.stringify(options)
+  let g = gradientCache.get(key)
+  if (!g) { g = new FillGradient(options); gradientCache.set(key, g) }
+  return g
+}
+
+/** Drop the shared gradient cache (theme switch / disposal) — releases the gradient textures. */
+export function clearGradientCache(): void {
+  for (const g of gradientCache.values()) g.destroy()
+  gradientCache.clear()
+}
+
 function makeBorderLayer(style: StateStyle, w: number, h: number, radius: number): Container {
   const layer = new Container()
   layer.visible = false
@@ -336,7 +357,7 @@ export function renderNode(
   const headerRadius = Math.max(geo.node.radius - 2, 0)
 
   const gradient = resolveCategoryGradient(opts.category, tokens)
-  const headerFill = new FillGradient({
+  const headerFill = sharedGradient({
     type: 'linear',
     start: { x: 0, y: 0 },
     end: { x: 1, y: 0 },
@@ -354,7 +375,7 @@ export function renderNode(
     1,
     (tokens.effect.headerInnerShadow.blur + tokens.effect.headerInnerShadow.offsetY) / headerInnerHeight,
   )
-  const highlightFill = new FillGradient({
+  const highlightFill = sharedGradient({
     type: 'linear',
     start: { x: 0, y: 0 },
     end: { x: 0, y: 1 },
@@ -368,7 +389,7 @@ export function renderNode(
   buildTopRoundedRect(headerHighlight, padding, padding, headerInnerWidth, headerInnerHeight, headerRadius).fill(highlightFill)
   expanded.addChild(headerHighlight)
 
-  const rimGradient = new FillGradient({
+  const rimGradient = sharedGradient({
     type: 'linear',
     start: { x: 0, y: 0 },
     end: { x: 0, y: 1 },
@@ -502,7 +523,7 @@ export function renderNode(
   collapsed.addChild(pillBg)
 
   // Figma stops are at 12.63% / 51.57% / 90.91% — accent confined to centre, fading at edges.
-  const pillFill = new FillGradient({
+  const pillFill = sharedGradient({
     type: 'linear',
     start: { x: 0, y: 0 },
     end: { x: 1, y: 0 },
@@ -526,7 +547,7 @@ export function renderNode(
     1,
     (tokens.effect.pillInnerShadow.blur + tokens.effect.pillInnerShadow.offsetY) / pillH,
   )
-  const pillHighlightFill = new FillGradient({
+  const pillHighlightFill = sharedGradient({
     type: 'linear',
     start: { x: 0, y: 0 },
     end: { x: 0, y: 1 },
@@ -542,7 +563,7 @@ export function renderNode(
   collapsed.addChild(pillHighlight)
 
   // Thin bright stroke along the very top edge of the capsule — mirrors expanded's `headerRim`.
-  const pillRimFill = new FillGradient({
+  const pillRimFill = sharedGradient({
     type: 'linear',
     start: { x: 0, y: 0 },
     end: { x: 0, y: 1 },

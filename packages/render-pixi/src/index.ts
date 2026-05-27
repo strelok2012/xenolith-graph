@@ -18,7 +18,7 @@ export {
 } from './style.js'
 export type { CategoryGradient } from './style.js'
 
-export { renderNode, readPinHandle, markPinInteractive, clearGlowTextureCache } from './node-renderer.js'
+export { renderNode, readPinHandle, markPinInteractive, clearGlowTextureCache, clearGradientCache } from './node-renderer.js'
 export type { RenderNodeOptions, NodeView, NodeVisualState, PinHandle } from './node-renderer.js'
 
 export { renderRerouteNode, rerouteSize, renderRerouteNodeBox, rerouteBoxSize, rerouteStateColor } from './reroute-renderer.js'
@@ -54,3 +54,11 @@ export { xenTheme } from './xen-theme.js'
 
 export { rectFromPoints, rectIntersects, nodeBounds, computeOverlapBackdropPlan } from './geom.js'
 export type { Rect as GeomRect, Vec2 as GeomVec2, NodeBoundsTokens } from './geom.js'
+
+export { renderComment } from './comment-renderer.js'
+export type { CommentView } from './comment-renderer.js'
+export { renderMacroFrame } from './macro-frame.js'
+export type { MacroFrameView, MacroFrameState, FrameRect } from './macro-frame.js'
+
+export { shouldVirtualize, visibleWorldRect, reconcileVisibleNodes, useLOD, lodLevel, cellKey, cellsForRect } from './virtualize.js'
+export type { Reconciliation, LODLevel, LODThresholds } from './virtualize.js'

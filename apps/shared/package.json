@@ -7,7 +7,17 @@
     ".": "./demo-graph.ts",
     "./comfy": "./comfy-import.ts",
     "./image-pipeline": "./image-pipeline.ts",
-    "./diagram": "./diagram.ts"
+    "./diagram": "./diagram.ts",
+    "./llm-builder": "./llm-builder.ts",
+    "./audio-synth": "./audio-synth.ts",
+    "./connection-validation": "./connection-validation.ts",
+    "./export-image": "./export-image.ts",
+    "./save-restore": "./save-restore.ts",
+    "./scene": "./scene.ts",
+    "./builtin-widgets": "./builtin-widgets.ts",
+    "./canvas-widget": "./canvas-widget.ts",
+    "./stress-test": "./stress-test.ts",
+    "./mount": "./mount.ts"
   },
   "types": "./demo-graph.ts",
   "dependencies": {

@@ -1,4 +1,4 @@
-import { Application, BitmapFontManager, Container, EventEmitter as PixiEventEmitter, FederatedPointerEvent, Graphics, Rectangle, RenderTexture, Sprite, Text, Texture, type ContainerChild, type TextureSource } from 'pixi.js'
+import { Application, BitmapFontManager, Color, Container, EventEmitter as PixiEventEmitter, FederatedPointerEvent, Graphics, Rectangle, RenderTexture, Sprite, Text, Texture, TilingSprite, type ColorSource, type ContainerChild, type TextureSource } from 'pixi.js'
 import {
   AddNode,
   CommandBus,
@@ -7,6 +7,13 @@ import {
   EventEmitter,
   Graph,
   MoveNode,
+  AddComment,
+  RemoveComment,
+  MoveComment,
+  ResizeComment,
+  SetCommentText,
+  nodesInsideComment,
+  createCommentId,
   NodeRegistry,
   RemoveNode,
   Selection,
@@ -15,6 +22,13 @@ import {
   createReroute,
   rerouteNodeSchema,
   REROUTE_NODE_TYPE,
+  isMacro,
+  createMacro,
+  macroMembers,
+  planMacroCollapse,
+  planMacroExpand,
+  MACRO_TYPE,
+  type MacroProxyRecord,
   createEdgeId,
   createNodeId,
   createPinId,
@@ -27,13 +41,17 @@ import {
   type EdgeId,
   type Node,
   type NodeId,
+  type Comment,
+  type CommentId,
   type Pin,
   type PinId,
   type WidgetSpec,
+  type NodeSchema,
 } from '@xenolith/core'
 import {
   bezierMidpoint,
   clearGlowTextureCache,
+  clearGradientCache,
   computeEdgePath,
   computeNodeLayout,
   computeOverlapBackdropPlan,
@@ -46,6 +64,11 @@ import {
   rectFromPoints,
   rectIntersects,
   renderNode,
+  renderComment,
+  type CommentView,
+  renderMacroFrame,
+  type MacroFrameView,
+  resolveCategoryGradient,
   renderRerouteNode,
   renderRerouteNodeBox,
   rerouteSize,
@@ -59,6 +82,13 @@ import {
   screenToWorld,
   worldToScreen,
   snapToGrid,
+  shouldVirtualize,
+  visibleWorldRect,
+  lodLevel,
+  cellKey,
+  cellsForRect,
+  type LODLevel,
+  type LODThresholds,
   Viewport,
   xenTheme,
   resolveWidgetStyle,
@@ -77,6 +107,7 @@ import {
   type NodeSizeTokens,
   type TextMeasurer,
   type ThemeRenderContext,
+  type GeomRect,
   type ViewportState,
   type XenolithTheme,
   type ZoomBounds,
@@ -86,6 +117,7 @@ import { canConnect } from './pin-compat.js'
 import { computeRerouteBridges } from './reroute-bridge.js'
 import { spliceCompatible, danglingRerouteRemovalPlan } from './edge-insert.js'
 import { InsertPalette } from './palette.js'
+import { pruneOrphanInlineReroutes } from './clipboard-prune.js'
 import { EdgeContextMenu } from './edge-menu.js'
 import { WidgetOverlay, type OverlayRect } from './widget-overlay.js'
 import { Minimap, type MinimapPosition } from './minimap.js'
@@ -107,6 +139,7 @@ export type {
   XenolithNodeV1,
   XenolithPinV1,
   XenolithEdgeV1,
+  XenolithCommentV1,
   XenolithGraphVersion,
 } from './serialize.js'
 
@@ -181,9 +214,22 @@ interface EdgeRecord {
   lastToY?:   number | undefined
 }
 
+/** Reserved palette type that inserts a comment frame instead of a node. Lives in `#builtins` so it
+ *  shows up in the standard insert search; `#insertFromPalette` intercepts it. */
+const COMMENT_PALETTE_TYPE = '$comment'
+const commentPaletteSchema: NodeSchema = {
+  type: COMMENT_PALETTE_TYPE,
+  title: 'Comment',
+  category: 'Layout',
+  description: 'Group nodes in a labelled frame',
+  keywords: ['comment', 'group', 'frame', 'note', 'section'],
+  pins: [],
+}
+
 interface ClipboardSnapshot {
   nodes: Node[]
   edges: Edge[]
+  comments: Comment[]
   renderOpts: Map<NodeId, RenderNodeOptions>
   edgeOpts:   Map<EdgeId, RenderEdgeOptions>
 }
@@ -219,6 +265,12 @@ type MarqueeState =
       gfx: Graphics
       shift: boolean
     }
+
+/** Multiply a colour's RGB by `f` (<1 darkens) — used to tone down LOD node fills. */
+function darkenColor(c: ColorSource, f: number): number {
+  const col = new Color(c)
+  return new Color([col.red * f, col.green * f, col.blue * f]).toNumber()
+}
 
 export class XenolithEditor {
   readonly graph: Graph
@@ -265,6 +317,15 @@ export class XenolithEditor {
   readonly #world: Container<ContainerChild>
   readonly #edgesLayer: Container<ContainerChild>
   readonly #nodesLayer: Container<ContainerChild>
+  readonly #lodLayer: Container<ContainerChild>
+  #commentsLayer!: Container
+  #commentHeadersLayer!: Container
+  #macroFramesLayer!: Container
+  /** Top layer (above nodes): an EXPANDED macro's frame + member views are reparented here so the
+   *  whole group paints over everything else. Nested macros stack by depth within it. */
+  #macroOverlayLayer!: Container
+  readonly #macroFrames = new Map<NodeId, MacroFrameView>()
+  readonly #commentViews = new Map<CommentId, CommentView>()
   readonly #viewport: Viewport
   readonly #interaction: InteractionManager | null
   readonly #zoomBounds: ZoomBounds
@@ -281,6 +342,9 @@ export class XenolithEditor {
   /** Render opts per edge, kept persistent so undo of a DisconnectEdge can re-materialise the
    *  edge graphics with the same wire colour / type hint it had before. */
   readonly #edgeOpts = new Map<EdgeId, RenderEdgeOptions>()
+  /** Edge ids incident to each node (both endpoints), so edge virtualization can materialise only
+   *  the wires touching a visible node without scanning every edge. */
+  readonly #edgesByNode = new Map<NodeId, EdgeId[]>()
   /** In-memory clipboard buffer set by `copySelection()` and consumed by `paste()`. Stores
    *  references to live node/edge objects + render opts at copy time — survives selection
    *  changes but not editor disposal. We skip JSON serialise/parse on the clipboard path; that
@@ -314,6 +378,14 @@ export class XenolithEditor {
   #hoveredId: NodeId | null = null
   readonly #marqueeHovered = new Set<NodeId>()
   #dragState: DragState = { kind: 'idle' }
+  #commentDrag:
+    | { kind: 'move'; id: CommentId; startScreen: { x: number; y: number }; commentStart: { x: number; y: number }; nodeStarts: Map<NodeId, { x: number; y: number }> }
+    | { kind: 'resize'; id: CommentId; startScreen: { x: number; y: number }; sizeStart: { x: number; y: number } }
+    | null = null
+  #commentLastTap = 0
+  #selectedComments = new Set<CommentId>()
+  /** Members of every currently-collapsed macro — their node views + internal edges are hidden. */
+  #hiddenMembers = new Set<NodeId>()
   #interactive = true
   #isValidConnection: ((c: ConnectionRequest) => boolean) | undefined
   #statusGfx: Graphics | null = null
@@ -325,6 +397,7 @@ export class XenolithEditor {
     this.#theme = theme
     this.#textMeasure = this.#makeTextMeasure(theme)
     this.#builtins.register(rerouteNodeSchema)
+    this.#builtins.register(commentPaletteSchema)
     if (theme.needsBackdrop) {
       this.#backdropRT = this.#createBackdropRT()
     }
@@ -341,7 +414,29 @@ export class XenolithEditor {
       this.#gridLayer = this.#createGrid()
       this.#world.addChild(this.#gridLayer)
     }
+    // Comment frames are split across two layers so wires read correctly: the translucent BODY sits
+    // under the edges (wires between inner nodes draw on top of the tint), while the HEADER bar sits
+    // above the edges (the header always reads over any wire crossing the top of the frame).
+    this.#commentsLayer = new Container({ label: 'comments' })
+    this.#world.addChild(this.#commentsLayer)
+    // Expanded-macro frames sit just above comment bodies, below edges — members + their wires draw
+    // on top of the frame, same layering as a comment body.
+    this.#macroFramesLayer = new Container({ label: 'macro-frames' })
+    this.#world.addChild(this.#macroFramesLayer)
     this.#world.addChild(this.#edgesLayer, this.#nodesLayer)
+    // Above nodes: an expanded macro's frame + members reparent here so the whole group is on top.
+    this.#macroOverlayLayer = new Container({ label: 'macro-overlay' })
+    this.#world.addChild(this.#macroOverlayLayer)
+    this.#commentHeadersLayer = new Container({ label: 'comment-headers' })
+    this.#world.addChildAt(this.#commentHeadersLayer, this.#world.getChildIndex(this.#nodesLayer))
+    // LOD batch layer — at far zoom the whole graph is drawn as Graphics batches (nodes + edges) and
+    // the live per-node/edge layers are hidden. Sits BELOW #nodesLayer so the sprite-level edge batch
+    // renders under the node sprites (above it the wires would paint over the nodes); world-space so
+    // pan/zoom ride the transform for free.
+    this.#lodLayer = new Container({ label: 'lod' })
+    this.#lodLayer.eventMode = 'none'
+    this.#lodLayer.visible = false
+    this.#world.addChildAt(this.#lodLayer, this.#world.getChildIndex(this.#nodesLayer))
     // Node status rings — world space, ABOVE nodes so they read clearly. Painted in #drawStatuses.
     this.#statusGfx = new Graphics()
     this.#statusGfx.eventMode = 'none'
@@ -359,9 +454,11 @@ export class XenolithEditor {
       this.#interaction = new InteractionManager(app.canvas as HTMLCanvasElement)
       this.#interaction.attach()
       this.#interaction.onZoom(({ focal, factor }) => {
+        if (this.#htmlFieldFocused()) return // typing/picking in a DOM overlay — wheel must not zoom
         this.#viewport.zoomAt(focal, factor, this.#zoomBounds)
       })
       this.#interaction.onPan(({ dx, dy }) => {
+        if (this.#htmlFieldFocused()) return
         this.#viewport.pan(dx, dy)
       })
       app.stage.eventMode = 'static'
@@ -414,16 +511,20 @@ export class XenolithEditor {
       if (this.#animatedEdges.size > 0 && !this.#frozen) { this.#dashPhase += 1.6; this.#needsRender = true }
       if (!this.#needsRender) return
       this.#needsRender = false
+      // Coalesce viewport-driven culling to one pass per frame: a fast wheel-zoom fires many
+      // viewport:changed events, and culling on each would thrash create/destroy. Doing it here
+      // throttles it to the frame rate.
+      if (this.#cullPending) { this.#cullPending = false; this.#cullToViewport() }
       // While frozen (mid zoom/pan) the live nodes are hidden behind baked sprites that ride the
-      // world transform — skip edge redraw, the backdrop RT and the glass shader entirely.
-      if (!this.#frozen) {
+      // world transform — skip edge redraw, the backdrop RT and the glass shader entirely. Same in
+      // LOD: the live node/edge layers are hidden behind the flat batch, so the backdrop RT and a
+      // backdrop-sampling theme's per-frame shader (Liquid Glass) are pure wasted work.
+      if (!this.#frozen && this.#lodLevel === 'full') {
         for (const edgeId of this.#edgeRecords.keys()) this.#redrawEdge(edgeId)
         this.#updateBackdrop()
         this.#theme.onFrame?.(this.#themeContext())
         this.#drawStatuses()
       }
-      // Redraw the minimap frame BEFORE the render — otherwise its new geometry lands a frame late
-      // and, after a single recenter click, never gets painted (needsRender was already consumed).
       this.#minimap?.setViewport(this.#viewport.state, this.#app.screen.width, this.#app.screen.height)
       this.#app.render()
       this.#positionDomWidgets()
@@ -451,6 +552,7 @@ export class XenolithEditor {
     this.#applyThemeVars()
     this.#isValidConnection = opts.isValidConnection
     if (opts.controls) this.setControls(typeof opts.controls === 'object' ? opts.controls : {})
+    this.#updateGrid() // size the infinite grid to the initial viewport
   }
 
   #hostResizeObserver: ResizeObserver | null = null
@@ -495,9 +597,21 @@ export class XenolithEditor {
   /** Mark the scene dirty so the next ticker frame repaints. Cheap to call repeatedly — the flag
    *  collapses many calls in one frame into a single render. */
   #requestRender = (): void => { this.#needsRender = true }
+  #resizeScheduled = false
   readonly #onResize = (): void => {
-    this.#minimap?.place(this.#app.screen.width, this.#app.screen.height)
-    this.#requestRender()
+    // PIXI's `resizeTo: window` resizes the renderer on its OWN rAF, so the `resize` event fires
+    // BEFORE `this.#app.screen` updates. Defer a frame (coalesced) so chrome reads fresh dims —
+    // otherwise the minimap/grid keep the pre-resize layout (e.g. after closing devtools).
+    if (this.#resizeScheduled) return
+    this.#resizeScheduled = true
+    requestAnimationFrame(() => {
+      this.#resizeScheduled = false
+      this.#minimap?.place(this.#app.screen.width, this.#app.screen.height)
+      this.#minimap?.setViewport(this.#viewport.state, this.#app.screen.width, this.#app.screen.height)
+      this.#updateGrid()
+      this.#positionDomWidgets()
+      this.#requestRender()
+    })
   }
 
   #minimapSyncScheduled = false
@@ -562,7 +676,8 @@ export class XenolithEditor {
    *  empty). A 130ms idle debounce restores the live nodes. Cheap themes (Xen) just repaint. (The
    *  per-node bake is also the basis for LOD: freeze off-screen / far-zoom nodes the same way.) */
   #onViewportChanged(): void {
-    if (!this.#theme.freezeOnNavigate) { this.#requestRender(); return }
+    this.#updateGrid()
+    if (!this.#theme.freezeOnNavigate) { this.#cullPending = true; this.#requestRender(); return }
     if (this.#frozen && this.#captureStale()) this.#endFreeze()
     if (!this.#frozen) this.#beginFreeze()
     this.#requestRender()
@@ -633,11 +748,287 @@ export class XenolithEditor {
     this.#requestRender()
   }
 
+  // ─── Viewport virtualization (#59) ────────────────────────────────────────────────────────────
+  // Past the threshold (theme.virtualizeThreshold, default 300) only nodes near the viewport keep a
+  // live PIXI view; off-screen nodes are data only (0 GPU). Hysteresis (inner create-band / outer
+  // keep-band) stops create/destroy churn — and the resulting flicker — during a pan. At or below
+  // the threshold this is fully inert: every node renders 1:1, exactly as before.
+  #virtualizeInnerMargin = 256
+  #virtualizeOuterMargin = 768
+  #cullPending = false
+  // Three-tier LOD: 'full' real nodes (close), 'sprite' one baked texture per node TYPE (mid —
+  // recognisable + cheap, and crucially no LG per-node backdrop RTs), 'flat' a single batch of rects
+  // (far). Boundaries carry hysteresis so a hovering zoom doesn't thrash. See lodLevel().
+  #lodLevel: LODLevel = 'full'
+  #lodThresholds: LODThresholds = { lowEnter: 0.18, lowExit: 0.24, highEnter: 0.42, highExit: 0.52 }
+  /** Baked node textures, shared by signature (type + collapsed + category + size) — a handful of
+   *  textures cover the whole graph since the node type-set is small. */
+  readonly #bakeCache = new Map<string, Texture>()
+  // Spatial grid: buckets node ids by world cell so culling queries only nodes near the viewport
+  // instead of scanning the whole graph each frame — the O(N)-per-frame trap at 100k+ nodes.
+  readonly #spatialCell = 1024
+  readonly #spatialGrid = new Map<string, NodeId[]>()
+  #spatialMaxW = 0
+  #spatialMaxH = 0
+
+  #virtualizeActive(): boolean {
+    return shouldVirtualize(this.graph.nodeCount, this.#theme.virtualizeThreshold ?? 300)
+  }
+
+  /** Materialise a node's view if it has none; otherwise just refresh its position. */
+  #ensureView(node: Node): NodeView {
+    const existing = this.#views.get(node.id)
+    if (existing) { existing.container.position.set(node.position.x, node.position.y); return existing }
+    const opts = this.#renderOpts.get(node.id) ?? {}
+    this.#ensureSize(node, opts)
+    const view = this.#renderNode(node, opts)
+    this.#views.set(node.id, view)
+    this.#nodesLayer.addChild(view.container)
+    this.#wireNodeInteraction(node.id, view)
+    view.container.position.set(node.position.x, node.position.y)
+    return view
+  }
+
+  /** Destroy a view because the node scrolled off-screen. The node stays as data, so — unlike a
+   *  node removed from the graph — we must NOT clear its status or drop it from the selection. */
+  #destroyViewOffscreen(id: NodeId): void {
+    const view = this.#views.get(id)
+    if (!view) return
+    view.container.destroy({ children: true })
+    this.#views.delete(id)
+    this.#marqueeHovered.delete(id)
+    if (this.#hoveredId === id) this.#hoveredId = null
+  }
+
+  /** Insert one node into the spatial grid (by its top-left cell) and grow the tracked max size. */
+  #addToSpatialGrid(node: Node): void {
+    const key = cellKey(node.position.x, node.position.y, this.#spatialCell)
+    const bucket = this.#spatialGrid.get(key)
+    if (bucket) bucket.push(node.id); else this.#spatialGrid.set(key, [node.id])
+    if (node.size) {
+      if (node.size.x > this.#spatialMaxW) this.#spatialMaxW = node.size.x
+      if (node.size.y > this.#spatialMaxH) this.#spatialMaxH = node.size.y
+    }
+  }
+
+  /** Rebuild the whole grid from the current graph — cheap O(N), run only on graph edits (sync),
+   *  not per frame. Keeps buckets free of moved/removed ids. */
+  #rebuildSpatialGrid(): void {
+    this.#spatialGrid.clear()
+    this.#spatialMaxW = 0
+    this.#spatialMaxH = 0
+    for (const n of this.graph.nodes()) this.#addToSpatialGrid(n as Node)
+  }
+
+  /** Node ids whose bounds intersect `rect`, gathered from the grid cells the rect overlaps (padded
+   *  by the largest node so a node whose top-left sits just outside the rect is still caught). */
+  #nodesInRect(rect: GeomRect): NodeId[] {
+    const padded: GeomRect = {
+      x: rect.x - this.#spatialMaxW,
+      y: rect.y - this.#spatialMaxH,
+      width: rect.width + this.#spatialMaxW,
+      height: rect.height + this.#spatialMaxH,
+    }
+    const out: NodeId[] = []
+    for (const key of cellsForRect(padded, this.#spatialCell)) {
+      const bucket = this.#spatialGrid.get(key)
+      if (!bucket) continue
+      for (const id of bucket) {
+        const n = this.graph.getNode(id)
+        if (n && rectIntersects(nodeBounds(n as Node, this.#theme.tokens), rect)) out.push(id)
+      }
+    }
+    return out
+  }
+
+  #addEdgeToIndex(edge: Edge): void {
+    for (const nodeId of [edge.from.node, edge.to.node]) {
+      const bucket = this.#edgesByNode.get(nodeId)
+      if (bucket) bucket.push(edge.id); else this.#edgesByNode.set(nodeId, [edge.id])
+    }
+  }
+
+  #rebuildEdgeIndex(): void {
+    this.#edgesByNode.clear()
+    for (const e of this.graph.edges()) this.#addEdgeToIndex(e as Edge)
+  }
+
+  /** Add an edge as DATA only (model + opts + index), no Graphics — the virtualized loadJSON path.
+   *  #cullEdges materialises the visible ones later. */
+  #addEdgeData(edge: Edge, opts: RenderEdgeOptions): void {
+    this.graph._addEdge(edge)
+    this.#edgeOpts.set(edge.id, opts)
+    this.#addEdgeToIndex(edge)
+  }
+
+  /** Materialise only edges incident to a currently-live node; dispose the rest. Keeps the edge
+   *  Graphics count O(visible) — without this, app.render walks every wire in the graph each frame
+   *  (the real lag on large connected graphs). Only meaningful at the full LOD level. */
+  #cullEdges(): void {
+    const desired = new Set<EdgeId>()
+    for (const nodeId of this.#views.keys()) {
+      const inc = this.#edgesByNode.get(nodeId)
+      if (inc) for (const eid of inc) desired.add(eid)
+    }
+    for (const eid of desired) {
+      if (!this.#edgeRecords.has(eid)) {
+        const edge = this.graph.getEdge(eid)
+        if (edge) this.#materializeEdge(edge as Edge, this.#edgeOpts.get(eid) ?? {})
+      }
+    }
+    for (const eid of [...this.#edgeRecords.keys()]) {
+      if (!desired.has(eid)) this.#disposeEdgeGraphics(eid)
+    }
+  }
+
+  /** World-space inner (create) and outer (keep) overscan rects for the current viewport. */
+  #virtualizeBands(): { inner: GeomRect; outer: GeomRect } {
+    const vp = this.#viewport.state
+    const sw = Math.max(1, this.#app.screen.width)
+    const sh = Math.max(1, this.#app.screen.height)
+    return {
+      inner: visibleWorldRect(sw, sh, vp, this.#virtualizeInnerMargin),
+      outer: visibleWorldRect(sw, sh, vp, this.#virtualizeOuterMargin),
+    }
+  }
+
+  /** Reconcile live views with the viewport (pan/zoom path) across the three LOD levels. */
+  #cullToViewport(): void {
+    if (!this.#virtualizeActive()) return
+    // Comments virtualize on the same pan/zoom pass as nodes (thousands off-screen otherwise).
+    if (this.graph.commentCount > 0) this.#syncComments()
+    const level = lodLevel(this.#viewport.state.zoom, this.#lodLevel, this.#lodThresholds)
+    if (level !== this.#lodLevel) this.#applyLODLevel(level)
+    // 'flat' draws the whole graph as static batch Graphics in world space — pan/zoom ride the
+    // transform for free, nothing to reconcile.
+    if (this.#lodLevel === 'flat') { this.#requestRender(); return }
+    // 'full' and 'sprite' both virtualize per node; #ensureView builds the right kind of view.
+    // The spatial grid keeps this O(visible): only nodes in the viewport's cells are examined, never
+    // the whole graph. Hysteresis — create in the inner band, destroy past the outer band.
+    const { inner, outer } = this.#virtualizeBands()
+    const outerIds = new Set<string>(this.#nodesInRect(outer).map(String))
+    let changed = false
+    for (const id of this.#nodesInRect(inner)) {
+      if (!this.#views.has(id)) { const n = this.graph.getNode(id); if (n) { this.#ensureView(n as Node); changed = true } }
+    }
+    for (const id of [...this.#views.keys()]) {
+      if (!outerIds.has(String(id))) { this.#destroyViewOffscreen(id); changed = true }
+    }
+    if (!changed) return
+    if (this.#lodLevel === 'full') this.#cullEdges() // wires follow the live nodes
+    this.#updateVisualStates()
+    // NOT #scheduleMinimapSync(): culling only changes which views are live, not the graph data the
+    // minimap draws (node positions are unchanged). Rebuilding it here meant an O(N) minimap repaint
+    // every pan frame — the real lag at 100k+. The minimap's viewport frame still updates each tick.
+    this.#requestRender()
+  }
+
+  /** Switch detail level: wipe live views (full↔sprite swaps the view kind; flat has none), toggle
+   *  the layers, and (re)build the batch Graphics the new level needs. One-off cost per crossing. */
+  #applyLODLevel(level: LODLevel): void {
+    this.#lodLevel = level
+    // Comments collapse to a plain rectangle at any non-full LOD (no per-frame gradient/title cost).
+    const simpleComments = level !== 'full'
+    for (const v of this.#commentViews.values()) v.setSimplified(simpleComments)
+    for (const id of [...this.#views.keys()]) this.#destroyViewOffscreen(id)
+    this.#lodLayer.removeChildren().forEach((c) => c.destroy())
+    // Leaving full: the per-edge Graphics are replaced by the LOD line batch, so free them.
+    if (level !== 'full') for (const id of [...this.#edgeRecords.keys()]) this.#disposeEdgeGraphics(id)
+    if (level === 'full') {
+      this.#nodesLayer.visible = true
+      this.#edgesLayer.visible = true
+      this.#lodLayer.visible = false
+    } else if (level === 'sprite') {
+      // Real edges hidden; draw them as the cheap line batch. Nodes become baked sprites (built lazily
+      // by #cullToViewport via #ensureView), so the live node layer stays visible to host them.
+      this.#nodesLayer.visible = true
+      this.#edgesLayer.visible = false
+      this.#lodLayer.addChild(this.#buildLODEdges())
+      this.#lodLayer.visible = true
+    } else {
+      this.#nodesLayer.visible = false
+      this.#edgesLayer.visible = false
+      this.#lodLayer.addChild(this.#buildLODEdges(), this.#buildLODNodes())
+      this.#lodLayer.visible = true
+    }
+  }
+
+  /** Faint thin straight lines centre-to-centre for every edge, in one Graphics. The real bezier
+   *  routing is invisible at this zoom and a per-edge Graphics each is what makes the wire-web crawl. */
+  #buildLODEdges(): Graphics {
+    const edges = new Graphics()
+    for (const e of this.graph.edges()) {
+      const a = this.graph.getNode(e.from.node), b = this.graph.getNode(e.to.node)
+      if (!a || !b) continue
+      const aw = a.size?.x ?? 0, ah = a.size?.y ?? 0, bw = b.size?.x ?? 0, bh = b.size?.y ?? 0
+      edges.moveTo(a.position.x + aw / 2, a.position.y + ah / 2)
+      edges.lineTo(b.position.x + bw / 2, b.position.y + bh / 2)
+    }
+    edges.stroke({ color: 0x8a93a6, width: 2, alpha: 0.18 })
+    return edges
+  }
+
+  /** One rounded rect per node, category colour at reduced brightness, all in one Graphics → a single
+   *  draw call for the whole graph at far zoom. */
+  #buildLODNodes(): Graphics {
+    const tokens = this.#theme.tokens
+    const radius = tokens.geometry.node.radius
+    const nodes = new Graphics()
+    for (const n of this.graph.nodes()) {
+      const w = n.size?.x ?? tokens.geometry.node.minWidth
+      const h = n.size?.y ?? tokens.geometry.node.headerHeight
+      const cat = resolveCategoryGradient(this.#renderOpts.get(n.id)?.category, tokens)
+      nodes.roundRect(n.position.x, n.position.y, w, h, radius).fill({ color: darkenColor(cat.start, 0.55) })
+    }
+    return nodes
+  }
+
+  /** Bake a node's default appearance (empty state — widgets at defaults) to a shared texture keyed
+   *  by type/collapsed/category/size. Uses the base Xen renderNode (not theme.renderNode) so the LG
+   *  glass shader — and its per-node backdrop RTs — are skipped entirely: the sprite is flat pixels. */
+  #bakeNodeTexture(node: Node): Texture {
+    const opts = this.#renderOpts.get(node.id) ?? {}
+    const tokens = this.#theme.tokens
+    const w = Math.max(1, Math.ceil(node.size?.x ?? tokens.geometry.node.minWidth))
+    const h = Math.max(1, Math.ceil(node.size?.y ?? tokens.geometry.node.headerHeight))
+    const sig = `${node.type}|${opts.collapsed ? 'c' : 'e'}|${opts.category ?? ''}|${w}x${h}`
+    const cached = this.#bakeCache.get(sig)
+    if (cached) return cached
+    const blank: Node = { ...node, state: {} }
+    const view = renderNode(blank, tokens, { ...opts, renderer: this.#app.renderer as never, customWidgets: this.#widgetControllers })
+    // generateTexture() bakes the container correctly even when called repeatedly mid-frame — a raw
+    // renderer.render(target) loop only filled the first texture and left the rest blank.
+    const tex = this.#app.renderer.generateTexture({ target: view.container, frame: new Rectangle(0, 0, w, h) })
+    view.container.destroy({ children: true })
+    this.#bakeCache.set(sig, tex)
+    return tex
+  }
+
+  /** Sprite-LOD view: a single baked-texture sprite. Edges are drawn by the line batch, so
+   *  pinLocalPosition isn't needed for wires here (returns null). */
+  #spriteViewFor(node: Node): NodeView {
+    const container = new Container({ label: `node:${node.id}` })
+    container.position.set(node.position.x, node.position.y)
+    container.addChild(new Sprite(this.#bakeNodeTexture(node)))
+    return {
+      container,
+      setVisualState: () => {},
+      setCollapsed: () => {},
+      isCollapsed: () => false,
+      pinLocalPosition: () => null,
+    }
+  }
+
 
   /** Double-click on empty canvas opens the insert palette at the cursor. Skipped when the
    *  cursor is over a node (so double-clicking a node body never spawns a palette on top of it). */
   readonly #onDoubleClick = (e: MouseEvent): void => {
-    if (this.#hoveredId !== null) return
+    if (this.#hoveredId !== null) {
+      // Double-clicking a macro node toggles it (collapsed ⇄ expanded).
+      const n = this.graph.getNode(this.#hoveredId)
+      if (n && isMacro(n)) this.toggleMacro(this.#hoveredId)
+      return
+    }
     this.openPalette({ x: e.offsetX, y: e.offsetY })
   }
 
@@ -903,6 +1294,9 @@ export class XenolithEditor {
       return this.#theme.renderRerouteNode?.(node, enriched, this.#themeContext())
         ?? renderRerouteNodeBox(node, this.#theme.tokens, enriched)
     }
+    // Mid-zoom sprite LOD: a baked-texture sprite instead of the live node (recognisable + cheap, and
+    // for Liquid Glass it skips the per-node backdrop RTs that make overlaps crawl).
+    if (this.#lodLevel === 'sprite') return this.#spriteViewFor(node)
     return this.#theme.renderNode?.(node, enriched, this.#themeContext()) ?? renderNode(node, this.#theme.tokens, enriched)
   }
   #drawEdge(g: Graphics, from: PinLayout, to: PinLayout, opts: RenderEdgeOptions): Graphics {
@@ -913,6 +1307,276 @@ export class XenolithEditor {
   }
   #createGrid(): Container {
     return this.#theme.createGrid?.() ?? createGridSprite(this.#theme.tokens)
+  }
+
+  /** Reconcile comment-frame VIEWS with the graph's comments, viewport-virtualized exactly like
+   *  nodes: past the threshold only comments intersecting the viewport band get a live PIXI view
+   *  (each owns FillGradient textures + a BitmapText — thousands of them off-screen is what crashed
+   *  a doubled-up demo). Off-screen comments stay as graph data and re-materialise on pan. */
+  #syncComments(): void {
+    const virtualize = this.#virtualizeActive()
+    const bands = virtualize ? this.#virtualizeBands() : null
+    const seen = new Set<string>()
+    for (const c of this.graph.comments()) {
+      seen.add(String(c.id))
+      const live = this.#commentViews.has(c.id)
+      let want = true
+      if (bands) {
+        const r = { x: c.position.x, y: c.position.y, width: c.size.x, height: c.size.y }
+        want = live ? rectIntersects(r, bands.outer) : rectIntersects(r, bands.inner)
+      }
+      if (!want) { if (live) this.#destroyCommentView(c.id); continue }
+      this.#ensureCommentView(c as Comment)
+    }
+    for (const [id] of [...this.#commentViews]) {
+      if (!seen.has(String(id))) { this.#destroyCommentView(id); this.#selectedComments.delete(id) }
+    }
+    this.#requestRender()
+  }
+
+  /** Create the view if missing (or refresh it), restoring selected visual + LOD state. */
+  #ensureCommentView(c: Comment): void {
+    const existing = this.#commentViews.get(c.id)
+    if (existing) { existing.update(c); return }
+    const view = renderComment(c, this.#theme.tokens, this.#theme.commentHeaderStyle ?? 'gradient')
+    if (this.#lodLevel !== 'full') view.setSimplified(true)
+    if (this.#selectedComments.has(c.id)) view.setVisualState('selected')
+    this.#commentViews.set(c.id, view)
+    this.#commentsLayer.addChild(view.container)
+    this.#commentHeadersLayer.addChild(view.headerLayer)
+    this.#wireCommentInteraction(c.id, view)
+  }
+
+  /** Drop a comment's live view (frees gradients + BitmapText); the graph data + selection remain. */
+  #destroyCommentView(id: CommentId): void {
+    const v = this.#commentViews.get(id)
+    if (!v) return
+    v.destroy()
+    this.#commentViews.delete(id)
+  }
+
+  /** Wire a comment's header (drag-to-move-with-contents, double-click-to-rename) and resize grip. */
+  #wireCommentInteraction(id: CommentId, view: CommentView): void {
+    view.header.on('pointerover', () => { if (!this.#selectedComments.has(id)) { view.setVisualState('hover'); this.#requestRender() } })
+    view.header.on('pointerout', () => { if (!this.#selectedComments.has(id)) { view.setVisualState('default'); this.#requestRender() } })
+    // Right-click → context menu: rename, recolour (built-in colour picker), delete.
+    view.header.on('rightdown', (e: FederatedPointerEvent) => {
+      if (!this.#interactive) return
+      e.stopPropagation()
+      this.#ensureEdgeMenu().open({ x: e.global.x, y: e.global.y }, [
+        { label: 'Rename', onSelect: () => this.#editCommentText(id, view) },
+        { label: 'Colour…', onSelect: () => this.#editCommentColor(id, view) },
+        { label: 'Delete', onSelect: () => this.removeComment(id) },
+      ])
+    })
+    view.header.on('pointerdown', (e: FederatedPointerEvent) => {
+      if (e.button !== 0 || !this.#interactive) return
+      e.stopPropagation()
+      this.#selectComment(id)
+      const now = performance.now()
+      if (now - this.#commentLastTap < 320) {
+        this.#commentLastTap = 0
+        this.#commentDrag = null
+        // Defer past this pointer event — opening/focusing the input synchronously inside pointerdown
+        // lets the rest of the gesture steal focus, so the field never appears (menu Rename works
+        // because it fires from a separate, later event).
+        requestAnimationFrame(() => this.#editCommentText(id, this.#commentViews.get(id) ?? view))
+        return
+      }
+      this.#commentLastTap = now
+      const c = this.graph.getComment(id)
+      if (!c) return
+      // Capture the nodes sitting inside the frame NOW; drag moves them together with it.
+      const members = nodesInsideComment(c, [...this.graph.nodes()])
+      const nodeStarts = new Map<NodeId, { x: number; y: number }>()
+      for (const nid of members) {
+        const n = this.graph.getNode(nid)
+        if (n) nodeStarts.set(nid, { x: n.position.x, y: n.position.y })
+      }
+      this.#commentDrag = {
+        kind: 'move', id,
+        startScreen: { x: e.global.x, y: e.global.y },
+        commentStart: { x: c.position.x, y: c.position.y },
+        nodeStarts,
+      }
+    })
+    view.resizeHandle.on('pointerdown', (e: FederatedPointerEvent) => {
+      if (e.button !== 0 || !this.#interactive) return
+      e.stopPropagation()
+      const c = this.graph.getComment(id)
+      if (!c) return
+      this.#commentDrag = { kind: 'resize', id, startScreen: { x: e.global.x, y: e.global.y }, sizeStart: { x: c.size.x, y: c.size.y } }
+    })
+  }
+
+  /** Live-drag the comment frame (and, in 'move', its captured member nodes); returns true if it
+   *  handled the move so the caller can early-out of the node-drag path. */
+  #updateCommentDrag(screen: { x: number; y: number }): void {
+    const d = this.#commentDrag
+    if (!d) return
+    const zoom = this.#viewport.state.zoom
+    const dx = (screen.x - d.startScreen.x) / zoom
+    const dy = (screen.y - d.startScreen.y) / zoom
+    const view = this.#commentViews.get(d.id)
+    const c = this.graph.getComment(d.id)
+    if (!view || !c) return
+    if (d.kind === 'move') {
+      view.container.position.set(d.commentStart.x + dx, d.commentStart.y + dy)
+      view.headerLayer.position.set(d.commentStart.x + dx, d.commentStart.y + dy)
+      const affected = new Set<EdgeId>()
+      for (const [nid, start] of d.nodeStarts) {
+        this.#views.get(nid)?.container.position.set(start.x + dx, start.y + dy)
+        for (const eid of this.#edgesByNode.get(nid) ?? []) affected.add(eid)
+      }
+      for (const eid of affected) this.#redrawEdge(eid)
+    } else {
+      const geo = this.#theme.tokens.geometry.comment
+      const w = Math.max(geo.minWidth, d.sizeStart.x + dx)
+      const h = Math.max(geo.minHeight, d.sizeStart.y + dy)
+      view.update({ ...(c as Comment), size: { x: w, y: h } })
+    }
+    this.#requestRender()
+  }
+
+  /** Commit the live comment drag/resize through the command bus (one undoable step). */
+  #endCommentDrag(screen: { x: number; y: number }): void {
+    const d = this.#commentDrag
+    if (!d) return
+    this.#commentDrag = null
+    const zoom = this.#viewport.state.zoom
+    const dx = (screen.x - d.startScreen.x) / zoom
+    const dy = (screen.y - d.startScreen.y) / zoom
+    if (d.kind === 'move') {
+      if (dx === 0 && dy === 0) return
+      this.commandBus.transaction(() => {
+        this.commandBus.apply(new MoveComment(d.id, { x: d.commentStart.x + dx, y: d.commentStart.y + dy }))
+        for (const [nid, start] of d.nodeStarts) {
+          this.commandBus.apply(new MoveNode(nid, { x: start.x + dx, y: start.y + dy }))
+        }
+      })
+    } else {
+      const geo = this.#theme.tokens.geometry.comment
+      const w = Math.max(geo.minWidth, d.sizeStart.x + dx)
+      const h = Math.max(geo.minHeight, d.sizeStart.y + dy)
+      this.commandBus.apply(new ResizeComment(d.id, { x: w, y: h }))
+    }
+  }
+
+  /** Open the inline editor over a comment's header to rename it. */
+  #editCommentText(id: CommentId, view: CommentView): void {
+    const c = this.graph.getComment(id)
+    if (!c) return
+    const vp = this.#viewport.state
+    const sx = c.position.x * vp.zoom + vp.x
+    const sy = c.position.y * vp.zoom + vp.y
+    const t = this.#theme.tokens
+    const ct = t.typography.comment
+    const base = c as Comment
+    // The DOM field stays fully transparent and borderless — only its caret shows. The visible glyphs
+    // are the live WebGL title (updated per keystroke via onInput), so ZERO font-metric mismatch and
+    // the text never shifts. setEditing(true) makes the title show its FULL text (no ellipsis) while
+    // editing — it may run past the frame, which is fine; the user sees everything they type.
+    view.setEditing(true)
+    this.#requestRender()
+    this.#ensureWidgetOverlay().editText({
+      rect: { x: sx, y: sy, width: c.size.x * vp.zoom, height: view.headerHeight * vp.zoom },
+      value: c.text,
+      style: {
+        background:  'transparent',
+        text:        'transparent',
+        border:      'transparent',
+        borderWidth: 0,
+        radius:      0,
+        paddingX:    10 * vp.zoom,
+        paddingY:    2 * vp.zoom,
+        fontSize:    ct.size * vp.zoom,
+        fontFamily:  t.typography.fontFamily,
+        fontWeight:  '700',
+        placeholder: '',
+        selection:   'transparent',
+      },
+      caretColor: ct.color,
+      selectAll: false,
+      autoGrow: true,
+      onInput:  (text: string) => { this.#commentViews.get(id)?.update({ ...base, text }); this.#requestRender() },
+      onCommit: (text: string) => { this.commandBus.apply(new SetCommentText(id, text)); this.#syncComments() },
+      // Restore ellipsis truncation + re-sync from the graph (an Escape/cancel reverts the preview).
+      onClose:  () => { this.#commentViews.get(id)?.setEditing(false); this.#syncComments() },
+    })
+  }
+
+  /** Open the built-in colour picker over a comment's header; live-preview, commit one undoable step. */
+  #editCommentColor(id: CommentId, view: CommentView): void {
+    const c = this.graph.getComment(id)
+    if (!c) return
+    const vp = this.#viewport.state
+    const sx = c.position.x * vp.zoom + vp.x
+    const sy = c.position.y * vp.zoom + vp.y
+    this.#ensureWidgetOverlay().editColor({
+      rect: { x: sx, y: sy, width: c.size.x * vp.zoom, height: view.headerHeight * vp.zoom },
+      value: c.color ?? '#8A38F5',
+      onInput: (hex: string) => { view.update({ ...(c as Comment), color: hex }); this.#requestRender() },
+      onCommit: (hex: string) => this.setCommentColor(id, hex),
+    })
+  }
+
+  /** True when a DOM input/textarea/select/contenteditable has focus (a widget or comment editor) —
+   *  callers suppress canvas zoom/pan so the wheel scrolls/does nothing instead of warping the view. */
+  #htmlFieldFocused(): boolean {
+    const el = document.activeElement as HTMLElement | null
+    if (!el) return false
+    const tag = el.tagName
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable
+  }
+
+  #ensureEdgeMenu(): EdgeContextMenu {
+    if (!this.#edgeMenu) this.#edgeMenu = new EdgeContextMenu(this.#host, this.#theme.paletteStyle)
+    return this.#edgeMenu
+  }
+
+  /** Select a comment exclusively (clears node selection + any other comment). */
+  #selectComment(id: CommentId): void {
+    if (this.#selectedComments.size === 1 && this.#selectedComments.has(id)) return
+    this.#clearCommentSelection()
+    if (this.selection.size > 0) { this.selection.clear(); this.#updateVisualStates() }
+    this.#selectedComments.add(id)
+    const v = this.#commentViews.get(id)
+    if (v) {
+      v.setVisualState('selected')
+      // Raise above other comments so a comment dragged over another sits on top (both layers).
+      this.#commentsLayer.setChildIndex(v.container, this.#commentsLayer.children.length - 1)
+      this.#commentHeadersLayer.setChildIndex(v.headerLayer, this.#commentHeadersLayer.children.length - 1)
+    }
+    this.#requestRender()
+  }
+
+  #clearCommentSelection(): void {
+    if (this.#selectedComments.size === 0) return
+    for (const id of this.#selectedComments) this.#commentViews.get(id)?.setVisualState('default')
+    this.#selectedComments.clear()
+  }
+
+  /** Make the background grid effectively infinite: instead of one giant fixed TilingSprite (which
+   *  runs out on huge graphs — hence empty zones when you pan far), resize/reposition it to cover
+   *  exactly the visible world rect each viewport change, keeping the dot pattern phase-aligned to
+   *  the world grid. Only applies to the default TilingSprite grid; custom theme grids are left as-is. */
+  #updateGrid(): void {
+    const layer = this.#gridLayer
+    // The grid TilingSprite is the layer itself (Xen) or nested in a backdrop Container (Liquid
+    // Glass wraps it with a gradient sprite). Find whichever and keep it covering the viewport.
+    const g = layer instanceof TilingSprite
+      ? layer
+      : layer?.children.find((c): c is TilingSprite => c instanceof TilingSprite)
+    if (!g) return
+    const vp = this.#viewport.state
+    const sw = Math.max(1, this.#app.screen.width)
+    const sh = Math.max(1, this.#app.screen.height)
+    const rect = visibleWorldRect(sw, sh, vp, 64) // small overscan so a fast pan never shows an edge
+    g.position.set(rect.x, rect.y)
+    g.width = rect.width
+    g.height = rect.height
+    const spacing = this.#theme.tokens.background.grid.spacing
+    g.tilePosition.set(-rect.x % spacing, -rect.y % spacing)
   }
 
   #createBackdropRT(): RenderTexture {
@@ -953,6 +1617,18 @@ export class XenolithEditor {
       for (const rt of this.#perNodeBackdropRT.values()) rt.resize(sw, sh)
     }
 
+    // Comment frames (body + header layers) are NOT part of the glass refraction stack — keep them
+    // out of every backdrop render so glass nodes don't sample/refract them (and we don't pay to
+    // draw them per node).
+    const commentsWereVisible = this.#commentsLayer.visible
+    const commentHeadersWereVisible = this.#commentHeadersLayer.visible
+    const macroFramesWereVisible = this.#macroFramesLayer.visible
+    const macroOverlayWasVisible = this.#macroOverlayLayer.visible
+    this.#commentsLayer.visible = false
+    this.#commentHeadersLayer.visible = false
+    this.#macroFramesLayer.visible = false
+    this.#macroOverlayLayer.visible = false
+
     // Paint-order list of node IDs with their world-space AABBs. During a drag we use the
     // container.position (live, snap-aware) instead of node.position (only committed on drop)
     // so overlap detection works during the drag, not after.
@@ -961,6 +1637,10 @@ export class XenolithEditor {
     for (const [id, view] of this.#views) {
       const node = this.graph.getNode(id)
       if (!node) continue
+      // Skip nodes that aren't part of the live node layer: collapsed-macro members (hidden) and
+      // expanded-macro members (in the overlay). Otherwise Pass 2 would toggle them visible into a
+      // personal backdrop RT and the glass node above would refract those ghosts (the LG artifact).
+      if (this.#hiddenMembers.has(id) || view.container.parent !== this.#nodesLayer) continue
       const size = node.size ?? { x: 150, y: 70 }
       rects.push({
         id:     String(id),
@@ -1039,6 +1719,10 @@ export class XenolithEditor {
       }
     }
     this.#lastOverlapPlan = plan
+    this.#commentsLayer.visible = commentsWereVisible
+    this.#commentHeadersLayer.visible = commentHeadersWereVisible
+    this.#macroFramesLayer.visible = macroFramesWereVisible
+    this.#macroOverlayLayer.visible = macroOverlayWasVisible
   }
 
   /** Theme hooks read this to drive backdrop-sampling shaders. */
@@ -1086,18 +1770,443 @@ export class XenolithEditor {
         : measureNodeSize(node, render.title ?? node.type, this.#sizeTokens(), this.#textMeasure)
   }
 
-  addNode(node: Node, render: RenderNodeOptions = {}): Node {
+  /** Add a node as DATA only — graph model + render opts + size, no PIXI view. Used by the
+   *  virtualized loadJSON path where views are materialised lazily by #cullToViewport(). */
+  #addNodeData(node: Node, render: RenderNodeOptions = {}): void {
     this.#ensureSize(node, render)
     this.graph._addNode(node)
     this.#renderOpts.set(node.id, render)
-    const view = this.#renderNode(node, render)
-    this.#views.set(node.id, view)
-    this.#nodesLayer.addChild(view.container)
-    this.#wireNodeInteraction(node.id, view)
+    this.#addToSpatialGrid(node)
+  }
+
+  addNode(node: Node, render: RenderNodeOptions = {}): Node {
+    this.#addNodeData(node, render)
+    // Virtualized + off-screen → leave it as data; #cullToViewport materialises it when it scrolls
+    // into view. This is what lets procedural mass-adds (addNode in a loop) stay bounded too.
+    if (!this.#virtualizeActive() || this.#nodeIntersects(node, this.#virtualizeBands().inner)) {
+      this.#ensureView(node)
+    }
     if (node.widgets?.some((w) => w.type === 'custom')) this.#syncDomWidgets()
     this.#scheduleMinimapSync()
     this.#requestRender()
     return node
+  }
+
+  // ----- comments (public API) — all go through the command bus, so they're undoable -----
+
+  /** Add a comment/group frame. Defaults to a frame at the last cursor world-position. Returns its id. */
+  addComment(opts: { position?: { x: number; y: number }; size?: { x: number; y: number }; text?: string; color?: string } = {}): CommentId {
+    const id = createCommentId()
+    const comment: Comment = {
+      id,
+      position: opts.position ?? (this.#lastPointerWorld ? { ...this.#lastPointerWorld } : { x: 0, y: 0 }),
+      size: opts.size ?? { x: 240, y: 160 },
+      text: opts.text ?? 'Comment',
+      ...(opts.color !== undefined ? { color: opts.color } : {}),
+    }
+    this.commandBus.apply(new AddComment(comment))
+    return id
+  }
+
+  removeComment(id: CommentId): void {
+    if (this.graph.getComment(id)) this.commandBus.apply(new RemoveComment(id))
+  }
+
+  setCommentText(id: CommentId, text: string): void {
+    if (this.graph.getComment(id)) this.commandBus.apply(new SetCommentText(id, text))
+  }
+
+  setCommentColor(id: CommentId, color: string): void {
+    const c = this.graph.getComment(id)
+    if (c) this.commandBus.apply(new SetCommentText(id, c.text, color))
+  }
+
+  // ----- macro (public API) — inline collapse, pin-proxied; all through the command bus -----
+
+  /** Group nodes into a collapsed macro. Boundary edges are rewired onto proxy pins (planMacroCollapse);
+   *  members + internal edges hide. Defaults to the current selection. Returns the macro's id, or null
+   *  if there's nothing groupable (macros can't be nested into a new macro here). */
+  createMacroFromSelection(memberIds?: NodeId[], title = 'Macro'): NodeId | null {
+    const ids = (memberIds ?? this.selection.ids()) as NodeId[]
+    // Members may themselves be macros — macro-in-macro nesting is allowed (a nested macro is just a
+    // collapsed node with proxy pins by the time it's a member).
+    const members = ids.filter((id) => !!this.graph.getNode(id))
+    if (members.length === 0) return null
+    let minX = Infinity, minY = Infinity
+    for (const id of members) { const n = this.graph.getNode(id)!; minX = Math.min(minX, n.position.x); minY = Math.min(minY, n.position.y) }
+    // Place the collapsed macro at the top-left of its members (so it lands where the anchor node was,
+    // not floating above the group).
+    const macro = createMacro({ x: minX, y: minY }, members)
+    const edges = [...this.graph.edges()] as Edge[]
+    const plan = planMacroCollapse(macro.id, members, edges, (n, p) => this.#pinInfo(n, p), { pin: createPinId, edge: createEdgeId })
+    macro.pins = plan.pins
+    macro.state['proxyMap'] = plan.proxyMap as unknown
+    // Collapsed macro reads as an ORDINARY node with pins (NOT a pill) — render.collapsed stays false;
+    // state.collapsed (macro semantics: members hidden) is the toggle. Title names the group.
+    const render: RenderNodeOptions = { category: 'macro', title }
+    this.#renderOpts.set(macro.id, render)
+    this.commandBus.transaction(() => {
+      this.commandBus.apply(new AddNode(macro))
+      for (const eid of plan.disconnect) this.commandBus.apply(new DisconnectEdge(eid))
+      for (const e of plan.connect) this.commandBus.apply(new ConnectPins(e))
+    })
+    this.selection.replaceWith([macro.id])
+    return macro.id
+  }
+
+  /** Expand a collapsed macro: re-point each proxy edge from the macro pin back to the member pin and
+   *  reveal members, with a brief grow-in animation. Idempotent. */
+  expandMacro(id: NodeId): void {
+    const m = this.graph.getNode(id)
+    if (!m || !isMacro(m) || !m.state['collapsed']) return
+    // Only one open macro per nesting line: collapse any expanded macro that isn't an ancestor of the
+    // one being opened (so opening a macro inside another keeps the chain, but opening a sibling closes
+    // the previously-open one). Collapse deepest-first to unwind cleanly.
+    const stale = [...this.graph.nodes()]
+      .filter((n) => isMacro(n) && !n.state['collapsed'] && n.id !== id && !this.#macroIsAncestor(n.id, id))
+      .sort((a, b) => this.#macroDepthOf(b.id) - this.#macroDepthOf(a.id))
+    for (const n of stale) this.#setMacroCollapsed(n.id, true)
+    this.#setMacroCollapsed(id, false)
+    this.#animateMacroExpand(id)
+  }
+  /** Re-collapse an expanded macro, animating the group shrinking back into the node first. */
+  collapseMacro(id: NodeId): void {
+    const m = this.graph.getNode(id)
+    if (!m || !isMacro(m) || m.state['collapsed']) return
+    this.#animateMacroCollapse(id, () => this.#setMacroCollapsed(id, true))
+  }
+
+  /** Shrink-out: members + frame collapse toward the macro centre (mirror of the expand grow-in),
+   *  then `onDone` flips the model to collapsed. */
+  #animateMacroCollapse(id: NodeId, onDone: () => void): void {
+    const macro = this.graph.getNode(id)
+    if (!macro) { onDone(); return }
+    const cx = macro.position.x + (macro.size?.x ?? 0) / 2
+    const cy = macro.position.y + (macro.size?.y ?? 0) / 2
+    const members = macroMembers(macro as Node).map((mid) => this.#views.get(mid)).filter((v): v is NodeView => !!v)
+    const frame = this.#macroFrames.get(id)
+    const targets: Container[] = [...members.map((v) => v.container), ...(frame ? [frame.container] : [])]
+    if (targets.length === 0) { onDone(); return }
+    const origin = new Map<Container, { x: number; y: number }>()
+    for (const t of targets) origin.set(t, { x: t.position.x, y: t.position.y })
+    const start = performance.now(), dur = 160
+    const tick = (): void => {
+      const raw = Math.min(1, (performance.now() - start) / dur)
+      const e = raw * raw // ease-in
+      for (const t of targets) {
+        const o = origin.get(t)!
+        t.alpha = 1 - e
+        t.scale.set(1 - 0.4 * e)
+        t.position.set(cx + (o.x - cx) * (1 - e), cy + (o.y - cy) * (1 - e))
+      }
+      this.#requestRender()
+      if (raw < 1) requestAnimationFrame(tick)
+      else { for (const t of targets) { const o = origin.get(t)!; t.alpha = 1; t.scale.set(1); t.position.set(o.x, o.y) } onDone() }
+    }
+    tick()
+  }
+
+  /** Grow-in: after the model expands, fade + scale the revealed members and frame up from the macro
+   *  node's centre, so a double-click visibly "unfolds" the group rather than snapping. */
+  #animateMacroExpand(id: NodeId): void {
+    const macro = this.graph.getNode(id)
+    if (!macro) return
+    const cx = macro.position.x + (macro.size?.x ?? 0) / 2
+    const cy = macro.position.y + (macro.size?.y ?? 0) / 2
+    // Defer one frame so #syncFromGraph has materialised the member views + the frame.
+    requestAnimationFrame(() => {
+      const members = macroMembers(macro as Node).map((mid) => this.#views.get(mid)).filter((v): v is NodeView => !!v)
+      const frame = this.#macroFrames.get(id)
+      const targets: Container[] = [...members.map((v) => v.container), ...(frame ? [frame.container] : [])]
+      if (targets.length === 0) return
+      const origin = new Map<Container, { x: number; y: number }>()
+      for (const t of targets) origin.set(t, { x: t.position.x, y: t.position.y })
+      const start = performance.now(), dur = 200
+      const tick = (): void => {
+        const raw = Math.min(1, (performance.now() - start) / dur)
+        const e = 1 - Math.pow(1 - raw, 3) // ease-out cubic
+        for (const t of targets) {
+          const o = origin.get(t)!
+          const s = 0.6 + 0.4 * e
+          t.alpha = e
+          // lerp position from the macro centre toward its real spot, scaled in.
+          t.position.set(cx + (o.x - cx) * e, cy + (o.y - cy) * e)
+          t.scale.set(s)
+        }
+        this.#requestRender()
+        if (raw < 1) requestAnimationFrame(tick)
+        else for (const t of targets) { const o = origin.get(t)!; t.alpha = 1; t.scale.set(1); t.position.set(o.x, o.y) }
+      }
+      tick()
+    })
+  }
+  toggleMacro(id: NodeId): void {
+    const m = this.graph.getNode(id)
+    if (!m || !isMacro(m)) return
+    if (m.state['collapsed']) this.expandMacro(id) // animated
+    else this.collapseMacro(id)
+  }
+
+  /** Materialise declarative collapsed macros loaded from JSON: derive proxy pins + rewire boundary
+   *  edges, deepest-nested first so an inner macro is already a collapsed node (with pins) before an
+   *  outer macro computes its own boundary. Operates on pure model state (called before views exist). */
+  #materializeLoadedMacros(): void {
+    const macros = [...this.graph.nodes()].filter(
+      (n) => isMacro(n) && n.state['collapsed'] && (n.pins?.length ?? 0) === 0,
+    ) as Node[]
+    if (macros.length === 0) return
+    const parentOf = (nid: NodeId): Node | undefined => {
+      for (const n of this.graph.nodes()) if (isMacro(n) && macroMembers(n as Node).includes(nid)) return n as Node
+      return undefined
+    }
+    const depthOf = (id: NodeId): number => { let d = 0, p = parentOf(id); while (p) { d++; p = parentOf(p.id) } return d }
+    macros.sort((a, b) => depthOf(b.id) - depthOf(a.id)) // deepest first
+    for (const macro of macros) {
+      const members = macroMembers(macro)
+      if (members.length === 0) continue
+      const edges = [...this.graph.edges()] as Edge[]
+      const plan = planMacroCollapse(macro.id, members, edges, (n, p) => this.#pinInfo(n, p), { pin: createPinId, edge: createEdgeId })
+      macro.pins = plan.pins
+      macro.state['proxyMap'] = plan.proxyMap as unknown
+      // Size was measured with the (then empty) pin list — recompute now that proxy pins exist, else
+      // the pins overflow a too-short node body.
+      delete (macro as { size?: unknown }).size
+      this.#ensureSize(macro, this.#renderOpts.get(macro.id) ?? {})
+      for (const eid of plan.disconnect) this.graph._removeEdge(eid)
+      for (const e of plan.connect) this.graph._addEdge(e)
+    }
+  }
+
+  #pinInfo(node: NodeId, pin: PinId): { type: string; label?: string } {
+    const n = this.graph.getNode(node)
+    const p = n?.pins.find((pp) => String(pp.id) === String(pin))
+    return { type: String(p?.type ?? 'any'), ...(p?.label !== undefined ? { label: p.label } : {}) }
+  }
+
+  #findEdge(from: { node: NodeId; pin: PinId }, to: { node: NodeId; pin: PinId }): Edge | undefined {
+    for (const e of this.graph.edges()) {
+      if (e.from.node === from.node && String(e.from.pin) === String(from.pin) &&
+          e.to.node === to.node && String(e.to.pin) === String(to.pin)) return e as Edge
+    }
+    return undefined
+  }
+
+  /** Toggle a macro between collapsed (edges on the macro proxy pins) and expanded (edges back on the
+   *  member pins). Pins are fixed for the macro's lifetime — we only re-point the boundary edges. */
+  #setMacroCollapsed(id: NodeId, collapsed: boolean): void {
+    const macro = this.graph.getNode(id)
+    if (!macro || !isMacro(macro) || !!macro.state['collapsed'] === collapsed) return
+    const proxyMap = (macro.state['proxyMap'] ?? []) as MacroProxyRecord[]
+    this.commandBus.transaction(() => {
+      for (const r of proxyMap) {
+        const ext = { node: r.externalNode, pin: r.externalPin }
+        const mem = { node: r.memberNode, pin: r.memberPin }
+        const macroEnd = { node: id, pin: r.macroPin }
+        // The non-external end is the macro pin when collapsing, the member pin when expanding;
+        // the edge to drop is wired to the opposite end.
+        const nextEnd = collapsed ? macroEnd : mem
+        const prevEnd = collapsed ? mem : macroEnd
+        const cur = r.direction === 'in' ? this.#findEdge(ext, prevEnd) : this.#findEdge(prevEnd, ext)
+        if (cur) this.commandBus.apply(new DisconnectEdge(cur.id))
+        const next: Edge = r.direction === 'in'
+          ? { id: createEdgeId(), from: ext, to: nextEnd }
+          : { id: createEdgeId(), from: nextEnd, to: ext }
+        this.commandBus.apply(new ConnectPins(next))
+      }
+      this.commandBus.apply(new SetNodeState(id, { collapsed }))
+    })
+  }
+
+  /** Hide member views/edges of collapsed macros, and hide the macro node itself while EXPANDED (a
+   *  themed frame stands in for it). Called after each graph sync; cheap (touches only live views). */
+  #applyMacroVisibility(): void {
+    const hidden = new Set<NodeId>()
+    const expandedMacros = new Set<NodeId>()
+    for (const n of this.graph.nodes()) {
+      if (!isMacro(n)) continue
+      if (n.state['collapsed']) for (const m of macroMembers(n as Node)) hidden.add(m)
+      else expandedMacros.add(n.id)
+    }
+    this.#hiddenMembers = hidden
+    for (const [nid, view] of this.#views) view.container.visible = !hidden.has(nid) && !expandedMacros.has(nid)
+    for (const [eid, rec] of this.#edgeRecords) {
+      const e = this.graph.getEdge(eid)
+      rec.graphics.visible = !(e !== undefined && (hidden.has(e.from.node) || hidden.has(e.to.node)))
+    }
+    this.#syncMacroFrames(expandedMacros)
+    this.#reparentMacros()
+  }
+
+  /** Keep macro z-order correct: an EXPANDED macro's frame + members reparent into #macroOverlayLayer
+   *  (above all ordinary nodes) so the whole group reads as one thing on top; a COLLAPSED macro's node
+   *  rises to the top of #nodesLayer. Nested macros stack by depth (deeper → on top). */
+  /** The macro whose member list contains `nid` (its immediate container), or undefined. */
+  #macroParentOf(nid: NodeId): Node | undefined {
+    for (const n of this.graph.nodes()) if (isMacro(n) && macroMembers(n as Node).includes(nid)) return n as Node
+    return undefined
+  }
+  /** Nesting depth of a node (how many macros transitively contain it). */
+  #macroDepthOf(id: NodeId): number {
+    let d = 0, p = this.#macroParentOf(id)
+    while (p) { d++; p = this.#macroParentOf(p.id) }
+    return d
+  }
+  /** Is `ancestor` a (transitive) container of `id`? */
+  #macroIsAncestor(ancestor: NodeId, id: NodeId): boolean {
+    let p = this.#macroParentOf(id)
+    while (p) { if (p.id === ancestor) return true; p = this.#macroParentOf(p.id) }
+    return false
+  }
+  /** Deepest currently-expanded macro (the innermost open one) — what a click-outside collapses first. */
+  #deepestExpandedMacro(): NodeId | null {
+    let best: NodeId | null = null, bestD = -1
+    for (const n of this.graph.nodes()) {
+      if (!isMacro(n) || n.state['collapsed']) continue
+      const d = this.#macroDepthOf(n.id)
+      if (d > bestD) { bestD = d; best = n.id }
+    }
+    return best
+  }
+
+  #reparentMacros(): void {
+    const depthOf = (id: NodeId): number => this.#macroDepthOf(id)
+
+    const overlayMembers = new Map<NodeId, number>() // member id → owner macro depth
+    const overlayFrames: { id: NodeId; depth: number }[] = []
+    const collapsedMacros: { id: NodeId; depth: number }[] = []
+    for (const n of this.graph.nodes()) {
+      if (!isMacro(n)) continue
+      const depth = depthOf(n.id)
+      if (n.state['collapsed']) collapsedMacros.push({ id: n.id, depth })
+      else {
+        for (const mid of macroMembers(n as Node)) overlayMembers.set(mid, depth)
+        overlayFrames.push({ id: n.id, depth })
+      }
+    }
+    // Reparent node views: expanded-macro members → overlay, everything else → the node layer.
+    for (const [nid, view] of this.#views) {
+      const target = overlayMembers.has(nid) ? this.#macroOverlayLayer : this.#nodesLayer
+      if (view.container.parent !== target) target.addChild(view.container)
+    }
+    // Expanded frames → overlay too (collapsed/removed frames stay/are gone in #macroFramesLayer).
+    for (const f of overlayFrames) {
+      const fr = this.#macroFrames.get(f.id)
+      if (fr && fr.container.parent !== this.#macroOverlayLayer) this.#macroOverlayLayer.addChild(fr.container)
+    }
+    // Any edge incident to an overlay member → overlay (so its whole length, including the stub from
+    // the frame edge to the inlet pin, draws inside the expanded macro above the frame). Boundary
+    // edges (one end external) ride over the scene briefly — acceptable for a thin wire.
+    const overlayEdges: Container[] = []
+    for (const [eid, rec] of this.#edgeRecords) {
+      const e = this.graph.getEdge(eid)
+      const inside = !!e && (overlayMembers.has(e.from.node) || overlayMembers.has(e.to.node))
+      const target = inside ? this.#macroOverlayLayer : this.#edgesLayer
+      if (rec.graphics.parent !== target) target.addChild(rec.graphics)
+      if (inside) overlayEdges.push(rec.graphics)
+    }
+    // Order inside the overlay: frames (backgrounds) → member wires → member nodes; deeper on top.
+    const order: Container[] = []
+    overlayFrames.sort((a, b) => a.depth - b.depth)
+    for (const f of overlayFrames) { const fr = this.#macroFrames.get(f.id); if (fr) order.push(fr.container) }
+    order.push(...overlayEdges)
+    const members = [...overlayMembers].sort((a, b) => a[1] - b[1])
+    for (const [mid] of members) { const v = this.#views.get(mid); if (v) order.push(v.container) }
+    order.forEach((c, i) => this.#macroOverlayLayer.setChildIndex(c, i))
+    // Collapsed macro nodes rise above ordinary nodes (shallowest first → deepest on top).
+    collapsedMacros.sort((a, b) => a.depth - b.depth)
+    for (const m of collapsedMacros) {
+      const v = this.#views.get(m.id)
+      if (v?.container.visible && v.container.parent === this.#nodesLayer) {
+        this.#nodesLayer.setChildIndex(v.container, this.#nodesLayer.children.length - 1)
+      }
+    }
+  }
+
+  /** Reconcile expanded-macro frame views: a themed rectangle behind each expanded macro's members,
+   *  sized to their bounds. Double-click the header to collapse. */
+  /** World-space rect of an expanded macro's frame (members bounds + padding + header strip). */
+  #macroFrameRect(id: NodeId): { x: number; y: number; width: number; height: number } | null {
+    const macro = this.graph.getNode(id)
+    if (!macro) return null
+    const members = macroMembers(macro as Node).map((m) => this.graph.getNode(m)).filter((n): n is Node => !!n)
+    if (members.length === 0) return null
+    const pad = 18, headerH = this.#theme.tokens.geometry.comment.headerHeight
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const m of members) {
+      const b = nodeBounds(m, this.#theme.tokens)
+      minX = Math.min(minX, b.x); minY = Math.min(minY, b.y)
+      maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height)
+    }
+    return { x: minX - pad, y: minY - pad - headerH, width: (maxX - minX) + pad * 2, height: (maxY - minY) + pad * 2 + headerH }
+  }
+
+  #syncMacroFrames(expandedMacros: ReadonlySet<NodeId>): void {
+    for (const id of expandedMacros) {
+      const rect = this.#macroFrameRect(id)
+      if (!rect) continue
+      let frame = this.#macroFrames.get(id)
+      if (!frame) {
+        frame = renderMacroFrame(this.#theme.tokens, this.#theme.commentHeaderStyle ?? 'gradient')
+        this.#macroFramesLayer.addChild(frame.container)
+        this.#wireMacroFrame(id, frame)
+        this.#macroFrames.set(id, frame)
+      }
+      frame.update(rect, this.#renderOpts.get(id)?.title ?? 'Macro')
+    }
+    for (const [id, frame] of [...this.#macroFrames]) {
+      if (!expandedMacros.has(id)) { frame.destroy(); this.#macroFrames.delete(id) }
+    }
+  }
+
+  #macroFrameLastTap = 0
+  #wireMacroFrame(id: NodeId, frame: MacroFrameView): void {
+    frame.header.on('pointerover', () => { frame.setState('hover'); this.#requestRender() })
+    frame.header.on('pointerout', () => { frame.setState('default'); this.#requestRender() })
+    frame.header.on('pointerdown', (e: FederatedPointerEvent) => {
+      if (e.button !== 0 || !this.#interactive) return
+      e.stopPropagation()
+      const now = performance.now()
+      // Double-click the header to rename (collapse is via click-outside). Like a comment header.
+      if (now - this.#macroFrameLastTap < 320) { this.#macroFrameLastTap = 0; requestAnimationFrame(() => this.#editMacroTitle(id)); return }
+      this.#macroFrameLastTap = now
+    })
+  }
+
+  /** Inline-rename an expanded macro via the same transparent overlay the comment header uses — the
+   *  live glyphs are the frame's WebGL title, so no jump. Commits to the macro's render title. */
+  #editMacroTitle(id: NodeId): void {
+    const frame = this.#macroFrames.get(id)
+    const rect = this.#macroFrameRect(id)
+    if (!frame || !rect) return
+    const vp = this.#viewport.state
+    const t = this.#theme.tokens, ct = t.typography.comment
+    const headerH = t.geometry.comment.headerHeight
+    const current = this.#renderOpts.get(id)?.title ?? 'Macro'
+    this.#ensureWidgetOverlay().editText({
+      rect: { x: rect.x * vp.zoom + vp.x + 2 * vp.zoom, y: rect.y * vp.zoom + vp.y + 2 * vp.zoom, width: rect.width * vp.zoom - 4 * vp.zoom, height: headerH * vp.zoom - 4 * vp.zoom },
+      value: current,
+      style: {
+        background: 'transparent', text: 'transparent', border: 'transparent', borderWidth: 0, radius: 0,
+        paddingX: 8 * vp.zoom, paddingY: 2 * vp.zoom, fontSize: ct.size * vp.zoom,
+        fontFamily: t.typography.fontFamily, fontWeight: '700', placeholder: '', selection: 'transparent',
+      },
+      caretColor: ct.color, selectAll: false, autoGrow: true,
+      onInput: (text) => { this.#macroFrames.get(id)?.update(this.#macroFrameRect(id) ?? rect, text); this.#requestRender() },
+      onCommit: (text) => {
+        const r = this.#renderOpts.get(id) ?? {}; r.title = text; this.#renderOpts.set(id, r)
+        // Rebuild the collapsed node view so the renamed title shows when collapsed too.
+        const v = this.#views.get(id)
+        if (v) { v.container.destroy({ children: true }); this.#views.delete(id) }
+        const node = this.graph.getNode(id)
+        if (node) this.#ensureView(node as Node)
+        this.#applyMacroVisibility()
+        this.#requestRender()
+      },
+    })
+  }
+
+  #nodeIntersects(node: Node, rect: GeomRect): boolean {
+    return rectIntersects(nodeBounds(node, this.#theme.tokens), rect)
   }
 
   connect(
@@ -1115,7 +2224,12 @@ export class XenolithEditor {
       to:   { node: toNode.id,   pin: toPinModel.id   },
     }
     this.graph._addEdge(edge)
-    this.#materializeEdge(edge, opts)
+    this.#addEdgeToIndex(edge) // keep the index in sync, or the next cull would dispose this edge
+    this.#edgeOpts.set(edge.id, opts) // so a later #cullEdges re-materialise keeps the wire's opts
+    // Materialise now only at the full level and when (not virtualizing) or the edge touches a live
+    // node; otherwise it's data + index and #cullEdges draws it when an endpoint scrolls in.
+    const incident = this.#views.has(fromNode.id) || this.#views.has(toNode.id)
+    if (this.#lodLevel === 'full' && (!this.#virtualizeActive() || incident)) this.#materializeEdge(edge, opts)
     this.#requestRender()
     return edge.id
   }
@@ -1441,12 +2555,28 @@ export class XenolithEditor {
     }
     this.#renderOpts.set(node.id, render)
     this.commandBus.apply(new AddNode(node))
+    // Inserted while a macro is open → the new node joins that macro (otherwise you couldn't build
+    // a macro's contents). Add it to the open macro's member list and reparent it into the overlay.
+    const open = this.#deepestExpandedMacro()
+    if (open) {
+      const macro = this.graph.getNode(open)
+      if (macro) {
+        this.commandBus.apply(new SetNodeState(open, { members: [...macroMembers(macro as Node), node.id] }))
+        this.#applyMacroVisibility()
+      }
+    }
     this.selection.replaceWith([node.id])
     return node
   }
 
   #insertFromPalette(type: string, screen: { x: number; y: number }): void {
     const world = screenToWorld(screen, this.#viewport.state)
+    if (type === COMMENT_PALETTE_TYPE) {
+      // Comments are frames, not nodes — anchor the new frame's top-left at the cursor.
+      this.#pendingEdgeSplice = null
+      this.addComment({ position: snapToGrid(world, this.#snapSize), size: { x: 240, y: 180 }, text: 'New comment' })
+      return
+    }
     const splice = this.#pendingEdgeSplice
     this.#pendingEdgeSplice = null
     const node = splice
@@ -1584,6 +2714,7 @@ export class XenolithEditor {
     return serializeXenolithGraph({
       nodes:      Array.from(this.graph.nodes()),
       edges:      Array.from(this.graph.edges()),
+      comments:   Array.from(this.graph.comments()),
       renderOpts: this.#renderOpts as ReadonlyMap<NodeId, RenderNodeOptions>,
       edgeOpts:   new Map(Array.from(this.#edgeRecords).map(([id, r]) => [id, r.opts])),
       viewport:   this.#viewport.state,
@@ -1649,15 +2780,32 @@ export class XenolithEditor {
   loadJSON(data: unknown): void {
     const parsed = parseXenolithGraph(data)
     this.#clearAll()
-    for (const node of parsed.nodes) {
-      const render = parsed.renderOpts.get(String(node.id)) ?? {}
-      this.addNode(node, render)
-    }
-    for (const edge of parsed.edges) {
-      const opts = parsed.edgeOpts.get(String(edge.id)) ?? {}
-      this.#loadEdge(edge, opts)
-    }
+    // Past the virtualization threshold, materialising a view per node here is exactly what blows
+    // up GPU memory on huge graphs. So add nodes as DATA only and let one #cullToViewport() pass
+    // materialise just the visible ones. Below the threshold, take the normal 1:1 path (addNode).
+    const willVirtualize = shouldVirtualize(parsed.nodes.length, this.#theme.virtualizeThreshold ?? 300)
+    // Add EVERYTHING as data first (no views yet) so declarative collapsed macros can derive their
+    // pins + rewire boundary edges on pure model state before anything is rendered.
+    for (const node of parsed.nodes) this.#addNodeData(node, parsed.renderOpts.get(String(node.id)) ?? {})
+    for (const edge of parsed.edges) this.#addEdgeData(edge, parsed.edgeOpts.get(String(edge.id)) ?? {})
+    for (const comment of parsed.comments) this.graph._addComment(comment)
+    // A macro is stored DECLARATIVELY: a Macro node with state.members + collapsed, its members and
+    // their real edges present as ordinary data. Materialise the collapse (derive proxy pins, rewire)
+    // deepest-nested first, so an inner macro is a real collapsed node before an outer one collapses.
+    this.#materializeLoadedMacros()
     if (parsed.viewport) this.#viewport.setState(parsed.viewport)
+    // Build views: virtualized → cull near viewport; otherwise materialise everything 1:1.
+    if (willVirtualize) this.#cullToViewport()
+    else {
+      for (const n of this.graph.nodes()) this.#ensureView(n as Node)
+      for (const e of this.graph.edges()) if (!this.#edgeRecords.has(e.id)) this.#materializeEdge(e as Edge, this.#edgeOpts.get(e.id) ?? {})
+    }
+    this.#syncComments()
+    this.#applyMacroVisibility()
+    // Refresh the minimap — loadJSON adds nodes as data (#addNodeData), which doesn't schedule a
+    // minimap sync the way addNode does, so do it explicitly (otherwise the minimap keeps its 1×1
+    // default bounds and renders empty).
+    this.#scheduleMinimapSync()
     // loadJSON bypasses the command bus, so run the reroute type propagation explicitly.
     this.#propagateRerouteTypes()
     // A fresh load is not undoable — drop any prior history so the old graph's commands can't be
@@ -1692,6 +2840,25 @@ export class XenolithEditor {
     this.#perNodeBackdropRT.clear()
     this.#lastOverlapPlan = new Map()
     this.#clipboard = null
+    // Reset LOD: a fresh graph starts at full detail with the live layers visible. Drop the LOD
+    // batch and the baked textures (the new graph may have a different type-set).
+    this.#lodLevel = 'full'
+    this.#lodLayer.removeChildren().forEach((c) => c.destroy())
+    this.#lodLayer.visible = false
+    this.#nodesLayer.visible = true
+    this.#edgesLayer.visible = true
+    for (const tex of this.#bakeCache.values()) tex.destroy(true)
+    this.#bakeCache.clear()
+    this.#spatialGrid.clear()
+    this.#spatialMaxW = 0
+    this.#spatialMaxH = 0
+    this.#edgesByNode.clear()
+    for (const v of this.#commentViews.values()) v.destroy()
+    this.#commentViews.clear()
+    for (const f of this.#macroFrames.values()) f.destroy()
+    this.#macroFrames.clear()
+    this.#hiddenMembers.clear()
+    for (const id of [...this.graph.comments()].map((c) => c.id)) this.graph._removeComment(id)
   }
 
   /** Undo the most recent committed command (drag-drop MoveNode, ConnectPins from pin-drag, etc).
@@ -1705,9 +2872,15 @@ export class XenolithEditor {
   canUndo(): boolean { return this.commandBus.canUndo() }
   canRedo(): boolean { return this.commandBus.canRedo() }
 
-  /** Select every node in the graph. */
+  /** Select every node AND every comment in the graph. */
   selectAll(): void {
     this.selection.replaceWith(Array.from(this.graph.nodes()).map((n) => n.id))
+    this.#clearCommentSelection()
+    for (const c of this.graph.comments()) {
+      this.#selectedComments.add(c.id)
+      this.#commentViews.get(c.id)?.setVisualState('selected')
+    }
+    this.#requestRender()
   }
 
   /** Delete every selected node along with its incident edges. Each removal goes through
@@ -1774,7 +2947,16 @@ export class XenolithEditor {
 
   #snapshotSelection(): ClipboardSnapshot | null {
     const ids = new Set(this.selection.ids())
-    if (ids.size === 0) return null
+    // Selected comments copy WITH their contents: everything geometrically inside each frame.
+    const comments: Comment[] = []
+    const allNodes = [...this.graph.nodes()] as Node[]
+    for (const cid of this.#selectedComments) {
+      const c = this.graph.getComment(cid)
+      if (!c) continue
+      comments.push(c as Comment)
+      for (const id of nodesInsideComment(c, allNodes)) ids.add(id)
+    }
+    if (ids.size === 0 && comments.length === 0) return null
     const nodes: Node[] = []
     const renderOpts = new Map<NodeId, RenderNodeOptions>()
     for (const n of this.graph.nodes()) {
@@ -1783,15 +2965,18 @@ export class XenolithEditor {
       const r = this.#renderOpts.get(n.id)
       if (r) renderOpts.set(n.id, { ...r })
     }
-    const edges: Edge[] = []
+    const rawEdges: Edge[] = []
     const edgeOpts = new Map<EdgeId, RenderEdgeOptions>()
     for (const e of this.graph.edges()) {
       if (!ids.has(e.from.node) || !ids.has(e.to.node)) continue
-      edges.push(e as Edge)
+      rawEdges.push(e as Edge)
       const o = this.#edgeOpts.get(e.id)
       if (o) edgeOpts.set(e.id, { ...o })
     }
-    return { nodes, edges, renderOpts, edgeOpts }
+    // Drop orphan inline reroutes so the clipboard never carries a dangling dot (an inline reroute
+    // with a severed feed/outgoing edge). See pruneOrphanInlineReroutes.
+    const { nodes: prunedNodes, edges } = pruneOrphanInlineReroutes(nodes, rawEdges)
+    return { nodes: prunedNodes, edges, comments, renderOpts, edgeOpts }
   }
 
   /** In-process clone of a snapshot. Re-IDs every node/pin/edge, rewires edges to the new pin
@@ -1800,16 +2985,19 @@ export class XenolithEditor {
     snap: ClipboardSnapshot,
     target?: { x: number; y: number } | { dx: number; dy: number },
   ): NodeId[] {
-    if (snap.nodes.length === 0) return []
+    if (snap.nodes.length === 0 && snap.comments.length === 0) return []
     let translate: { dx: number; dy: number }
     if (target && 'dx' in target) {
       translate = { dx: target.dx, dy: target.dy }
     } else if (target && 'x' in target) {
-      // Centroid → target point.
+      // Centroid → target point. Fall back to comment positions when copying a bare frame.
+      const pts = snap.nodes.length > 0
+        ? snap.nodes.map((n) => n.position)
+        : snap.comments.map((c) => c.position)
       let cx = 0, cy = 0
-      for (const n of snap.nodes) { cx += n.position.x; cy += n.position.y }
-      cx /= snap.nodes.length
-      cy /= snap.nodes.length
+      for (const p of pts) { cx += p.x; cy += p.y }
+      cx /= pts.length
+      cy /= pts.length
       translate = { dx: target.x - cx, dy: target.y - cy }
     } else {
       translate = { dx: 24, dy: 24 }
@@ -1854,11 +3042,22 @@ export class XenolithEditor {
       const opts = snap.edgeOpts.get(oldEdge.id)
       if (opts) this.#edgeOpts.set(newEdgeId, { ...opts })
     }
+    const newComments: Comment[] = snap.comments.map((c) => {
+      const clone: Comment = {
+        ...c,
+        id: createCommentId(),
+        position: { x: c.position.x + translate.dx, y: c.position.y + translate.dy },
+        size: { ...c.size },
+      }
+      return clone
+    })
     this.commandBus.transaction(() => {
+      for (const comment of newComments) this.commandBus.apply(new AddComment(comment))
       for (const node of newNodes) this.commandBus.apply(new AddNode(node))
       for (const edge of newEdges) this.commandBus.apply(new ConnectPins(edge))
     })
     this.selection.replaceWith(newNodes.map((n) => n.id))
+    if (newComments.length > 0) this.#selectComment(newComments[newComments.length - 1]!.id)
     return newNodes.map((n) => n.id)
   }
 
@@ -1976,6 +3175,9 @@ export class XenolithEditor {
   }
 
   get viewport(): ViewportState { return this.#viewport.state }
+  /** How many nodes currently have a live PIXI view. With virtualization (#59) on a large graph this
+   *  stays O(visible) — far below `graph.nodeCount` — which is what keeps GPU memory bounded. */
+  get renderedNodeCount(): number { return this.#views.size }
   /** Set the viewport (pan/zoom) directly. */
   setViewport(state: ViewportState): void { this.#viewport.setState(state) }
   /** Convert a point in host/screen pixels (relative to the canvas top-left) to world coordinates —
@@ -2005,6 +3207,9 @@ export class XenolithEditor {
     // Drop baked glow textures — geometry tokens (radii, sizes via padding) may have changed,
     // and any cached strokes from the previous theme would render with stale dimensions.
     clearGlowTextureCache()
+    clearGradientCache()
+    for (const tex of this.#bakeCache.values()) tex.destroy(true)
+    this.#bakeCache.clear()
 
     // Invalidate per-edge endpoint cache so the ticker repaints every wire with the new theme's
     // drawEdge (colour / tension / etc) on the next frame — without this the skip-on-unchanged
@@ -2034,6 +3239,7 @@ export class XenolithEditor {
       this.#gridLayer.destroy({ children: true })
       this.#gridLayer = this.#createGrid()
       this.#world.addChildAt(this.#gridLayer, 0)
+      this.#updateGrid()
     }
 
     // Re-render every node through the new theme. We rebuild each NodeView from the source-of-
@@ -2051,6 +3257,14 @@ export class XenolithEditor {
       this.#nodesLayer.addChild(newView.container)
       this.#wireNodeInteraction(id, newView)
     }
+    // Comments + macro frames are theme-rendered too (geometry.comment, typography.comment, accent) —
+    // rebuild with the new tokens, otherwise they keep the previous theme's look in the new theme.
+    for (const v of this.#commentViews.values()) v.destroy()
+    this.#commentViews.clear()
+    for (const f of this.#macroFrames.values()) f.destroy()
+    this.#macroFrames.clear()
+    this.#syncComments()
+    this.#applyMacroVisibility() // re-hide collapsed members + rebuild expanded frames in the new theme
     this.#updateVisualStates()
     // Refresh DOM widget hosts' --xeno-* CSS vars (and their controllers) for the new theme.
     this.#syncDomWidgets()
@@ -2110,6 +3324,13 @@ export class XenolithEditor {
       return
     }
     if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) {
+      if (this.#selectedComments.size > 0) {
+        e.preventDefault()
+        const ids = [...this.#selectedComments]
+        this.#clearCommentSelection()
+        this.commandBus.transaction(() => { for (const id of ids) this.removeComment(id) })
+        // Fall through to also delete any selected nodes; bail only if there are none.
+      }
       if (this.selection.size === 0) return
       e.preventDefault()
       this.deleteSelected()
@@ -2135,8 +3356,16 @@ export class XenolithEditor {
       this.duplicateSelected()
       return
     }
-    if (mod && (e.key === 'c' || e.key === 'C')) {
+    if (mod && (e.key === 'g' || e.key === 'G')) {
+      // Cmd/Ctrl+G — group the current selection into a collapsed macro.
       if (this.selection.size === 0) return
+      e.preventDefault()
+      this.createMacroFromSelection()
+      return
+    }
+    if (mod && (e.key === 'c' || e.key === 'C')) {
+      // A bare comment selection (no nodes) is still copyable — it carries its contents.
+      if (this.selection.size === 0 && this.#selectedComments.size === 0) return
       e.preventDefault()
       this.copySelection()
       return
@@ -2352,19 +3581,29 @@ export class XenolithEditor {
   /** Reconcile views with the graph model. Called after every command apply/undo/redo so that
    *  user-driven mutations (Delete, Cmd+Z, Cmd+D, paste) immediately reflect on the canvas. */
   #syncFromGraph(): void {
+    // Node positions/membership may have changed (drag commit, delete, paste) — refresh the spatial
+    // grid + edge index once so culling queries stay correct. O(N) but only on edits, never per frame.
+    this.#rebuildSpatialGrid()
+    this.#rebuildEdgeIndex()
+    // Virtualization: past the threshold, only nodes near the viewport get a live view. A node is
+    // wanted if it's in the inner (create) band, or already live and still in the outer (keep) band
+    // — the hysteresis that avoids churn. Off-screen nodes drop their view but stay as graph data.
+    const virtualize = this.#virtualizeActive()
+    const bands = virtualize ? this.#virtualizeBands() : null
     const seenNodes = new Set<NodeId>()
     for (const node of this.graph.nodes()) {
       seenNodes.add(node.id)
-      let view = this.#views.get(node.id)
-      if (!view) {
-        const opts = this.#renderOpts.get(node.id) ?? {}
-        this.#ensureSize(node as Node, opts)
-        view = this.#renderNode(node, opts)
-        this.#views.set(node.id, view)
-        this.#nodesLayer.addChild(view.container)
-        this.#wireNodeInteraction(node.id, view)
+      const live = this.#views.has(node.id)
+      let want = true
+      if (bands) {
+        const b = nodeBounds(node as Node, this.#theme.tokens)
+        want = live ? rectIntersects(b, bands.outer) : rectIntersects(b, bands.inner)
       }
-      view.container.position.set(node.position.x, node.position.y)
+      if (!want) {
+        if (live) this.#destroyViewOffscreen(node.id) // left the band — view goes, data stays
+        continue
+      }
+      this.#ensureView(node as Node) // creates if missing, refreshes position otherwise
     }
     let droppedFromSelection = false
     for (const [id, view] of Array.from(this.#views)) {
@@ -2381,14 +3620,21 @@ export class XenolithEditor {
       this.selection.replaceWith(this.selection.ids().filter((id) => seenNodes.has(id)))
     }
 
-    const seenEdges = new Set<EdgeId>()
-    for (const edge of this.graph.edges()) {
-      seenEdges.add(edge.id)
-      if (this.#edgeRecords.has(edge.id)) continue
-      this.#materializeEdge(edge as Edge, this.#edgeOpts.get(edge.id) ?? {})
-    }
-    for (const id of Array.from(this.#edgeRecords.keys())) {
-      if (!seenEdges.has(id)) this.#disposeEdgeGraphics(id)
+    if (this.#virtualizeActive()) {
+      // Edges are virtualized too: only those incident to a live node get Graphics (full level);
+      // in sprite/flat the LOD batch draws them, so no per-edge records.
+      if (this.#lodLevel === 'full') this.#cullEdges()
+    } else {
+      // Small graph — materialise every edge (the original 1:1 path).
+      const seenEdges = new Set<EdgeId>()
+      for (const edge of this.graph.edges()) {
+        seenEdges.add(edge.id)
+        if (this.#edgeRecords.has(edge.id)) continue
+        this.#materializeEdge(edge as Edge, this.#edgeOpts.get(edge.id) ?? {})
+      }
+      for (const id of Array.from(this.#edgeRecords.keys())) {
+        if (!seenEdges.has(id)) this.#disposeEdgeGraphics(id)
+      }
     }
 
     this.#propagateRerouteTypes()
@@ -2396,8 +3642,16 @@ export class XenolithEditor {
     // selected in the same tick) — the selection change fired before its view existed, and
     // render-on-demand won't repaint on its own.
     this.#updateVisualStates()
+    this.#syncComments() // keep comment frames in sync on every mutation (incl. undo/redo)
+    this.#applyMacroVisibility() // hide members of collapsed macros (incl. undo/redo)
     this.#syncDomWidgets()
     this.#scheduleMinimapSync()
+    // If a graph edit lands while zoomed out, refresh whatever batch the current LOD level draws.
+    if (this.#lodLevel !== 'full') {
+      this.#lodLayer.removeChildren().forEach((c) => c.destroy())
+      this.#lodLayer.addChild(this.#buildLODEdges())
+      if (this.#lodLevel === 'flat') this.#lodLayer.addChild(this.#buildLODNodes())
+    }
     this.#requestRender()
   }
 
@@ -2496,6 +3750,9 @@ export class XenolithEditor {
       // stays live, so you can drag anywhere without grabbing the graph.
       if (!this.#interactive) return
       this.#requestRender()
+      // A click that reaches the stage (empty canvas / node, not a comment header) drops comment
+      // selection — the comment's own header pointerdown stops propagation before this runs.
+      if (this.#selectedComments.size > 0) { this.#clearCommentSelection(); this.#requestRender() }
       const pin = readPinHandle(e.target)
       if (pin) {
         // Alt+pin on a connected pin = "tear off" the edge and continue dragging the loose
@@ -2514,6 +3771,10 @@ export class XenolithEditor {
         return
       }
       if (e.target !== stage) return
+      // Click-outside: a click on empty canvas while a macro is expanded collapses the innermost open
+      // one (the frame body captures clicks inside it, so reaching the stage means truly outside).
+      const openMacro = this.#deepestExpandedMacro()
+      if (openMacro) { this.collapseMacro(openMacro); return }
       const startScreen = { x: e.global.x, y: e.global.y }
       marquee = {
         kind: 'pending',
@@ -2527,6 +3788,7 @@ export class XenolithEditor {
       const current = { x: e.global.x, y: e.global.y }
       this.#lastPointerScreen = current
       this.#lastPointerWorld = screenToWorld(current, this.#viewport.state)
+      if (this.#commentDrag) { this.#updateCommentDrag(current); return }
       // Edge midpoint hover affordance — only while fully idle (no drag / marquee).
       if (this.#dragState.kind === 'idle' && marquee.kind === 'idle') {
         this.#updateEdgeMidpointHover(this.#lastPointerWorld)
@@ -2607,6 +3869,10 @@ export class XenolithEditor {
 
     const endStage = (e: FederatedPointerEvent): void => {
       this.#requestRender()
+      if (this.#commentDrag) {
+        this.#endCommentDrag({ x: e.global.x, y: e.global.y })
+        return
+      }
       if (this.#dragState.kind === 'pin-drag') {
         this.#endPinDrag(readPinHandle(e.target))
         return
@@ -2661,6 +3927,14 @@ export class XenolithEditor {
       if (readPinHandle(e.target)) return
       // Locked: nothing on the node responds — no widget edit, no select, no drag (pan stays live).
       if (!this.#interactive) return
+      // Modal macro: while a macro is expanded, only its (transitive) members are interactive. A click
+      // on any node outside the open macro is a click-outside → collapse it and consume the event.
+      const openMacro = this.#deepestExpandedMacro()
+      if (openMacro && !this.#macroIsAncestor(openMacro, id)) {
+        this.collapseMacro(openMacro)
+        e.stopPropagation()
+        return
+      }
       // Widget interaction pre-empts node drag: hit-test the pointer against this node's widgets.
       if (view.widgetHit) {
         const local = e.getLocalPosition(view.container)
@@ -2670,9 +3944,10 @@ export class XenolithEditor {
           return
         }
       }
-      // Raise the interacted node (and, via the z-sync in #positionDomWidgets, its DOM widget) to
-      // the top of the paint order so overlapping nodes/widgets stack correctly.
-      this.#nodesLayer.setChildIndex(view.container, this.#nodesLayer.children.length - 1)
+      // Raise the interacted node to the top of ITS layer (a macro member lives in the overlay layer,
+      // not #nodesLayer — using the wrong layer would throw and break the drag).
+      const layer = view.container.parent ?? this.#nodesLayer
+      layer.setChildIndex(view.container, layer.children.length - 1)
       if (!this.selection.contains(id)) {
         this.selection.select(id, e.shiftKey ? 'toggle' : 'replace')
       }

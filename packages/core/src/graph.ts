@@ -50,9 +50,10 @@ export class Graph {
   readonly #comments = new Map<CommentId, Comment>()
   #version = 0
 
-  get version(): number   { return this.#version }
-  get nodeCount(): number { return this.#nodes.size }
-  get edgeCount(): number { return this.#edges.size }
+  get version(): number      { return this.#version }
+  get nodeCount(): number    { return this.#nodes.size }
+  get edgeCount(): number    { return this.#edges.size }
+  get commentCount(): number { return this.#comments.size }
 
   getNode(id: NodeId): Readonly<Node> | undefined { return this.#nodes.get(id) }
   hasNode(id: NodeId): boolean                    { return this.#nodes.has(id) }
@@ -64,6 +65,45 @@ export class Graph {
   hasEdge(id: EdgeId): boolean                    { return this.#edges.has(id) }
   *edges(): IterableIterator<Readonly<Edge>> {
     for (const e of this.#edges.values()) yield e
+  }
+
+  getComment(id: CommentId): Readonly<Comment> | undefined { return this.#comments.get(id) }
+  hasComment(id: CommentId): boolean                        { return this.#comments.has(id) }
+  *comments(): IterableIterator<Readonly<Comment>> {
+    for (const c of this.#comments.values()) yield c
+  }
+
+  /** @internal */
+  _addComment(comment: Comment): void {
+    if (this.#comments.has(comment.id)) {
+      throw new Error(`Graph: duplicate comment id ${comment.id}`)
+    }
+    this.#comments.set(comment.id, comment)
+    this.#version++
+  }
+
+  /** @internal */
+  _removeComment(id: CommentId): Comment | undefined {
+    const comment = this.#comments.get(id)
+    if (!comment) return undefined
+    this.#comments.delete(id)
+    this.#version++
+    return comment
+  }
+
+  /** @internal — patch mutable Comment fields in place (identity `id` is immutable). */
+  _patchComment(
+    id: CommentId,
+    patch: Partial<Pick<Comment, 'position' | 'size' | 'text' | 'color'>>,
+  ): Readonly<Comment> | undefined {
+    const comment = this.#comments.get(id)
+    if (!comment) return undefined
+    if (patch.position !== undefined) comment.position = patch.position
+    if (patch.size     !== undefined) comment.size     = patch.size
+    if (patch.text     !== undefined) comment.text     = patch.text
+    if (patch.color    !== undefined) comment.color    = patch.color
+    this.#version++
+    return comment
   }
 
   /** @internal — call only from CommandBus-applied commands. */

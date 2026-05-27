@@ -1,0 +1,15 @@
+{
+  "version": "xenolith.v1",
+  "nodes": [
+    { "id": "mixer", "type": "Mixer", "position": { "x": 0, "y": 0 },
+      "render": { "title": "Mixer" },
+      "state": { "gain": 0.6 },
+      "pins": [
+        { "id": "mixer:out", "kind": "data", "direction": "out", "type": "float", "multiple": true, "label": "Out" }
+      ],
+      "widgets": [
+        { "id": "gain", "type": "custom", "renderer": "level", "key": "gain", "label": "Gain", "height": 30 }
+      ] }
+  ],
+  "edges": []
+}

@@ -1,0 +1,20 @@
+{
+  "version": "xenolith.v1",
+  "nodes": [
+    { "id": "controls", "type": "Controls", "position": { "x": 0, "y": 0 },
+      "render": { "title": "All widgets" },
+      "state": { "amount": 0.6, "count": 8, "enabled": true, "mode": "Multiply", "tint": "#FCB400", "name": "node" },
+      "pins": [
+        { "id": "controls:out", "kind": "data", "direction": "out", "type": "any", "multiple": true, "label": "Out" }
+      ],
+      "widgets": [
+        { "id": "amount",  "type": "slider", "key": "amount",  "label": "Amount",  "min": 0, "max": 1,   "step": 0.01 },
+        { "id": "count",   "type": "number", "key": "count",   "label": "Count",   "min": 0, "max": 100, "step": 1 },
+        { "id": "enabled", "type": "toggle", "key": "enabled", "label": "Enabled" },
+        { "id": "mode",    "type": "combo",  "key": "mode",    "label": "Mode", "values": ["Add", "Subtract", "Multiply"] },
+        { "id": "tint",    "type": "color",  "key": "tint",    "label": "Tint" },
+        { "id": "name",    "type": "text",   "key": "name",    "label": "Name" }
+      ] }
+  ],
+  "edges": []
+}

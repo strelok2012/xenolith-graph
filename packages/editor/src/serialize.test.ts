@@ -51,6 +51,23 @@ function mkNode(
   return node
 }
 
+describe('comments round-trip', () => {
+  it('serializes comments and parses them back identically', () => {
+    const out = serializeXenolithGraph(input({
+      comments: [{ id: 'c1' as never, position: { x: 10, y: 20 }, size: { x: 300, y: 200 }, text: 'Group', color: '#85C244' }],
+    }))
+    expect(out.comments).toEqual([{ id: 'c1', position: { x: 10, y: 20 }, size: { x: 300, y: 200 }, text: 'Group', color: '#85C244' }])
+    const parsed = parseXenolithGraph(JSON.parse(JSON.stringify(out)))
+    expect(parsed.comments).toEqual([{ id: 'c1', position: { x: 10, y: 20 }, size: { x: 300, y: 200 }, text: 'Group', color: '#85C244' }])
+  })
+
+  it('omits the comments field when there are none, and parses a graph without it', () => {
+    const out = serializeXenolithGraph(input())
+    expect(out.comments).toBeUndefined()
+    expect(parseXenolithGraph(JSON.parse(JSON.stringify(out))).comments).toEqual([])
+  })
+})
+
 describe('serializeXenolithGraph', () => {
   it('produces an xenolith.v1 envelope with empty arrays for an empty graph', () => {
     const out = serializeXenolithGraph(input())

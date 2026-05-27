@@ -1,35 +1,12 @@
 import { useRef, useState } from 'react'
 import { XenolithGraph, XenolithPanel } from '@xenolith/react'
-import type { CanvasWidgetController, XenolithEditor } from '@xenolith/editor'
-import type { NodeId } from '@xenolith/core'
+import type { XenolithEditor, NodeId } from '@xenolith/editor'
+import { buildCanvasWidget } from '@xenolith/demo/canvas-widget'
 import { DemoStage } from '../Layout.js'
 
-/**
- * The simplest possible custom widget: a click/drag level bar. A CanvasWidgetController is just two
- * functions — `draw` paints into a 2D canvas, `onPointer` returns the new value during a drag. No
- * framework, no DOM. This is the whole thing:
- */
-export const levelWidget: CanvasWidgetController = {
-  draw(ctx, { value, width, height, accent, muted }) {
-    const v = typeof value === 'number' ? value : 0
-    ctx.fillStyle = muted                                    // readout (top-left, inside bounds)
-    ctx.font = '11px Inter'
-    ctx.textBaseline = 'top'
-    ctx.fillText(`${Math.round(v * 100)}%`, 0, 0)
-    const barY = height - 10                                 // bar along the bottom
-    ctx.fillStyle = 'rgba(255,255,255,0.10)'                 // track
-    ctx.fillRect(0, barY, width, 8)
-    ctx.fillStyle = accent                                   // fill up to the value
-    ctx.fillRect(0, barY, width * v, 8)
-  },
-  onPointer(phase, x, _y, { width }) {
-    if (phase === 'up') return undefined
-    return Math.max(0, Math.min(1, x / width))               // click/drag → new value
-  },
-}
-
-/** Island: register the bar widget, drop one node, and catch its value in React via onWidgetChange —
- *  shown in an in-editor panel. */
+// The simplest custom widget — a click/drag level bar — lives in the framework-agnostic core
+// (@xenolith/demo/canvas-widget): two functions, no DOM. This React file registers it via the core,
+// then catches the value through onWidgetChange and shows it (and a slider that writes it back).
 export function CanvasWidgetDemo() {
   const [gain, setGain] = useState(0.6)
   const editorRef = useRef<XenolithEditor | null>(null)
@@ -42,18 +19,7 @@ export function CanvasWidgetDemo() {
         onWidgetChange={(e) => { if (e.widgetId === 'gain') setGain(Number(e.value)) }}
         onReady={(editor) => {
           editorRef.current = editor
-          editor.registerWidget('level', levelWidget)
-          editor.registry.register({
-            type: 'Mixer',
-            title: 'Mixer',
-            pins: [{ kind: 'data', direction: 'out', type: 'float', label: 'Out' }],
-            widgets: [{ id: 'gain', label: 'Gain', type: 'custom', renderer: 'level', key: 'gain', height: 30 }],
-          })
-          const node = editor.registry.instantiate('Mixer', { x: 0, y: 0 })
-          node.state['gain'] = 0.6
-          editor.addNode(node)
-          nodeIdRef.current = node.id
-          editor.fitView({ padding: 90, maxZoom: 1 })
+          nodeIdRef.current = buildCanvasWidget(editor).nodeId
         }}
       >
         <XenolithPanel position="top-right" style={{ width: 220 }}>

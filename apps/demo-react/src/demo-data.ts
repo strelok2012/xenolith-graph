@@ -1,14 +1,4 @@
-import { demoGraph, demoSchemas, createCurveWidget, createXYPadWidget } from '@xenolith/demo'
-import type { XenolithEditor } from '@xenolith/editor'
-
-/** Register the canvas custom widgets + demo node schemas, load the shared demo graph, and frame it.
- *  Every page calls this in `onReady` so the registry has the schemas before `loadJSON`. */
-export function loadDemo(editor: XenolithEditor): void {
-  editor.registerWidget('curve', createCurveWidget())
-  editor.registerWidget('xypad', createXYPadWidget())
-  for (const schema of demoSchemas) editor.registry.register(schema)
-  editor.loadJSON(demoGraph)
-  editor.fitView({ padding: 48, maxZoom: 1 })
-}
-
-export { demoGraph, demoSchemas }
+// The shared demo scene now lives in @xenolith/demo/scene so every framework reuses it. This module
+// stays as a re-export so existing React demos keep their `../demo-data.js` import.
+export { loadDemo } from '@xenolith/demo/scene'
+export { demoGraph, demoSchemas } from '@xenolith/demo'

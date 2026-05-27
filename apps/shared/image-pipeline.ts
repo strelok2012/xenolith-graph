@@ -282,6 +282,7 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
 
 import type { XenolithEditor, NodeSchema, Node } from '@xenolith/editor'
 import type { CustomWidgetController } from '@xenolith/render-pixi'
+import { reachableFrom } from '@xenolith/core'
 
 export const OUT_RESULT = 'result'
 
@@ -368,6 +369,12 @@ export function buildImagePipeline(editor: XenolithEditor, widgets: ImagePipelin
   let busy = false
   const process = async (): Promise<void> => {
     if (busy) return
+    // If the Output is no longer wired up from the Source (an edge was cut), there is no result to
+    // show — clear it. Otherwise the Result node would keep displaying a stale image that can't exist.
+    if (!reachableFrom(editor.graph, source.id).has(output.id)) {
+      editor.setWidgetValue(output.id, OUT_RESULT, '')
+      return
+    }
     const src = editor.graph.getNode(source.id)?.state['src']
     if (typeof src !== 'string' || !src) return
     busy = true
@@ -379,12 +386,16 @@ export function buildImagePipeline(editor: XenolithEditor, widgets: ImagePipelin
     } catch { /* decode/GL failure — keep the previous result */ } finally { busy = false }
   }
 
+  // Re-process on any change that affects the result: a widget edit, OR the graph topology changing
+  // (connect/disconnect/remove) — rewiring the chain (e.g. bypassing a filter) must update the output
+  // immediately, not only after the next slider move.
   let timer: ReturnType<typeof setTimeout> | undefined
-  editor.on('widget:changed', (e) => {
-    if (e.widgetId === OUT_RESULT) return
-    clearTimeout(timer)
-    timer = setTimeout(() => { void process() }, 140)
-  })
+  const schedule = (): void => { clearTimeout(timer); timer = setTimeout(() => { void process() }, 140) }
+  editor.on('widget:changed', (e) => { if (e.widgetId !== OUT_RESULT) schedule() })
+  editor.on('edge:connected', schedule)
+  editor.on('edge:disconnected', schedule)
+  editor.on('node:removed', schedule)
+  editor.on('node:added', schedule) // undo of a delete re-adds the node + its edges → re-process
 
   editor.fitView({ padding: 56, maxZoom: 1 })
   void process()

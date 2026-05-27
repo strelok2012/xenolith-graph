@@ -131,6 +131,55 @@ importers:
         specifier: ^6.0.0
         version: 6.4.2(@types/node@24.12.4)
 
+  apps/fairqueue-demo:
+    dependencies:
+      '@xenolith/adapter-core':
+        specifier: workspace:*
+        version: link:../../packages/adapter-core
+      '@xenolith/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@xenolith/editor':
+        specifier: workspace:*
+        version: link:../../packages/editor
+      '@xenolith/react':
+        specifier: workspace:*
+        version: link:../../packages/react
+      '@xenolith/render-pixi':
+        specifier: workspace:*
+        version: link:../../packages/render-pixi
+      '@xenolith/theme-xen':
+        specifier: workspace:*
+        version: link:../../packages/theme-xen
+      pixi.js:
+        specifier: ^8.6.0
+        version: 8.18.1
+      react:
+        specifier: ^19.0.0
+        version: 19.2.6
+      react-dom:
+        specifier: ^19.0.0
+        version: 19.2.6(react@19.2.6)
+    devDependencies:
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.15
+      '@types/react-dom':
+        specifier: ^19.0.0
+        version: 19.2.3(@types/react@19.2.15)
+      '@vitejs/plugin-react':
+        specifier: ^4.3.0
+        version: 4.7.0(vite@6.4.2(@types/node@24.12.4))
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.2(@types/node@24.12.4)
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@24.12.4)(jsdom@25.0.1)
+
   apps/playground:
     dependencies:
       '@xenolith/core':

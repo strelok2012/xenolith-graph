@@ -8,6 +8,7 @@ import { Theming } from './pages/Theming.js'
 import { Viewport } from './pages/Viewport.js'
 import { CanvasWidget } from './pages/CanvasWidget.js'
 import { Hero } from './pages/Hero.js'
+import { Stress } from './pages/Stress.js'
 
 interface PageDef { id: string; label: string; el: ReactNode }
 
@@ -21,6 +22,7 @@ const PAGES: PageDef[] = [
   { id: 'viewport', label: '5 · Viewport & minimap', el: <Viewport /> },
   { id: 'canvas-widget', label: '6 · Custom widget (canvas)', el: <CanvasWidget /> },
   { id: 'hero', label: '7 · Bring your own UI', el: <Hero /> },
+  { id: 'stress', label: '8 · Stress (virtualize)', el: <Stress /> },
 ]
 
 export function App() {

@@ -4,7 +4,7 @@ import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
 import { demoGraph, demoSchemas, createCurveWidget, createXYPadWidget } from '@xenolith/demo'
 
 const editor = await XenolithEditor.init('#app', {
-  theme: liquidGlassTheme,
+  theme: xenTheme,
   zoomBounds: [0.1, 2],
   minimap: true,
 })
@@ -17,51 +17,58 @@ for (const schema of demoSchemas) editor.registry.register(schema)
 editor.loadJSON(demoGraph)
 editor.fitView({ padding: 56, maxZoom: 1 })
 
+// Standard in-editor controls panel (zoom / fit / reset / undo-redo / save / lock), top-right corner.
+editor.setControls({ position: 'top-right', orientation: 'horizontal' })
+
 // -----------------------------------------------------------------------------------------------
 // Theme switcher — proves runtime setTheme() works. Buttons in the top-left corner of the page.
 // -----------------------------------------------------------------------------------------------
 const themes: { label: string; theme: XenolithTheme }[] = [
-  { label: 'Liquid Glass', theme: liquidGlassTheme },
   { label: 'Xen',          theme: xenTheme },
+  { label: 'Liquid Glass', theme: liquidGlassTheme },
 ]
+// Lives in the editor's overlay root and styles itself purely from the theme's `--xeno-*` design
+// tokens (the editor re-writes them on setTheme), so the panel restyles with the active theme — no
+// ad-hoc CSS, same mechanism the in-editor chrome uses.
 const switcher = document.createElement('div')
+switcher.setAttribute('data-xeno-panel', '')
 switcher.style.cssText = `
-  position: fixed; top: 12px; left: 12px; z-index: 1000;
-  display: flex; gap: 6px;
-  background: rgba(0, 0, 0, 0.35);
-  padding: 6px;
-  border-radius: 8px;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  font-family: 'Inter', system-ui, sans-serif;
-  font-size: 12px;
+  position: absolute; top: 60px; right: 12px; pointer-events: auto;
+  display: flex; gap: 4px;
+  background: var(--xeno-panel); padding: 4px; border-radius: var(--xeno-radius);
+  border: 1px solid var(--xeno-border);
+  font-family: 'Inter', system-ui, sans-serif; font-size: 12px;
 `
 let active = themes[0]!
+const paint = (): void => {
+  for (const child of switcher.children) {
+    const on = (child as HTMLElement).textContent === active.label
+    const el = child as HTMLElement
+    el.style.background = on ? 'var(--xeno-accent)' : 'transparent'
+    el.style.color = on ? 'var(--xeno-canvas)' : 'var(--xeno-text)'
+  }
+}
 for (const entry of themes) {
   const btn = document.createElement('button')
   btn.textContent = entry.label
   btn.style.cssText = `
-    padding: 6px 12px;
-    border-radius: 5px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background: ${entry === active ? 'rgba(255, 255, 255, 0.18)' : 'transparent'};
-    color: #fff;
-    font: inherit;
-    cursor: pointer;
+    padding: 6px 12px; border-radius: calc(var(--xeno-radius) - 2px);
+    border: none; background: transparent; color: var(--xeno-text);
+    font: inherit; cursor: pointer;
   `
   btn.addEventListener('click', () => {
     if (entry === active) return
     active = entry
     editor.setTheme(entry.theme)
-    for (const child of switcher.children) {
-      const isActive = (child as HTMLElement).textContent === entry.label
-      ;(child as HTMLElement).style.background = isActive ? 'rgba(255, 255, 255, 0.18)' : 'transparent'
-    }
+    paint()
   })
   switcher.appendChild(btn)
 }
-document.body.appendChild(switcher)
+editor.overlayRoot.appendChild(switcher)
+paint()
+
+// Comments are inserted through the standard Tab/double-click palette (search "Comment"), not a
+// bespoke button — they're a first-class insert type like any node.
 
 // Expose the editor for e2e introspection (palette insert assertions, etc).
 ;(window as unknown as { __xenoEditor: XenolithEditor }).__xenoEditor = editor
