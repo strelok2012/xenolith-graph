@@ -29,8 +29,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r --filter '!@xenolith/playground' --filter '!@xenolith/site' run build
       - run: pnpm -r --filter '!@xenolith/playground' --filter '!@xenolith/site' run test
-      - name: Install Playwright Chromium
-        run: pnpm --filter @xenolith/playground exec playwright install --with-deps chromium
+      - name: Install Playwright browsers (chromium + firefox)
+        run: pnpm --filter @xenolith/playground exec playwright install --with-deps chromium firefox
       - name: E2E tests (skip @visual — Linux/macOS pixel diffs)
         run: pnpm --filter @xenolith/playground exec playwright test --grep-invert @visual
 
