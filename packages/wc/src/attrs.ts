@@ -26,5 +26,5 @@ export const FORWARDED_EVENTS = [
   'edge:connected', 'edge:disconnected',
   'selection:changed', 'viewport:changed',
   'widget:changed', 'widget:action',
-  'graph:loaded', 'history:changed',
+  'graph:loaded', 'history:changed', 'dive:changed',
 ] as const

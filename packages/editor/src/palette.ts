@@ -41,6 +41,12 @@ export class InsertPalette {
   #openedAt = { x: 0, y: 0 }
   #results: NodeSearchResult[] = []
   #activeIndex = 0
+  /** Browsing (empty query) groups rows under category section headers; a search query shows a flat
+   *  fuzzy-ranked list instead (ranking order matters more than grouping when you're filtering). */
+  #browse = true
+  /** Live row elements — kept so hover/arrow navigation can re-highlight WITHOUT rebuilding the list
+   *  (rebuilding on every hover detaches the row mid-click, which dropped clicks in Firefox/WebKit). */
+  #rows: HTMLElement[] = []
 
   constructor(host: HTMLElement, style: PaletteStyle | undefined, cb: PaletteCallbacks) {
     this.#host = host
@@ -181,7 +187,14 @@ export class InsertPalette {
 
   #refilter(): void {
     const q = this.#input?.value ?? ''
+    this.#browse = q.trim() === ''
     this.#results = this.#cb.search(q)
+    // Browsing: order by category (then title) so each category's rows are contiguous under one header.
+    if (this.#browse) {
+      const catKey = (r: NodeSearchResult): string => r.schema.category ?? '￿'
+      this.#results = [...this.#results].sort((a, b) =>
+        catKey(a).localeCompare(catKey(b)) || a.schema.title.localeCompare(b.schema.title))
+    }
     this.#activeIndex = 0
     this.#renderResults()
   }
@@ -213,7 +226,7 @@ export class InsertPalette {
   #move(delta: number): void {
     if (this.#results.length === 0) return
     this.#activeIndex = (this.#activeIndex + delta + this.#results.length) % this.#results.length
-    this.#renderResults()
+    this.#applyActiveHighlight()
   }
 
   #commit(index: number): void {
@@ -223,12 +236,39 @@ export class InsertPalette {
     this.#cb.insert(r.schema.type, this.#openedAt)
   }
 
+  /** Re-apply only the active-row background to the existing rows (no DOM rebuild). */
+  #applyActiveHighlight(): void {
+    const s = this.#style
+    this.#rows.forEach((row, i) => {
+      row.style.background = i === this.#activeIndex ? s.rowSelectedBackground : 'transparent'
+    })
+  }
+
   #renderResults(): void {
     const list = this.#list
     if (!list) return
     list.replaceChildren()
+    this.#rows = []
     const s = this.#style
+    let lastCategory: string | undefined
     this.#results.forEach((r, i) => {
+      // Browse mode: a header before each new category groups the list into navigable sections.
+      if (this.#browse) {
+        const cat = r.schema.category ?? 'Other'
+        if (cat !== lastCategory) {
+          lastCategory = cat
+          const header = document.createElement('div')
+          header.setAttribute('data-xeno-palette-section', '')
+          header.textContent = cat
+          Object.assign(header.style, {
+            fontSize: '10px', color: s.mutedColor, textTransform: 'uppercase',
+            letterSpacing: '0.06em', fontWeight: '600',
+            padding: '8px 9px 3px', position: 'sticky', top: '0',
+            background: s.panelBackground,
+          } satisfies Partial<CSSStyleDeclaration>)
+          list.appendChild(header)
+        }
+      }
       const row = document.createElement('div')
       row.setAttribute('data-xeno-palette-row', '')
       Object.assign(row.style, {
@@ -247,7 +287,8 @@ export class InsertPalette {
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
       } satisfies Partial<CSSStyleDeclaration>)
       line1.appendChild(this.#titleNode(r))
-      if (r.schema.category) {
+      // The per-row category badge is redundant under a section header — show it only when searching.
+      if (r.schema.category && !this.#browse) {
         const badge = document.createElement('span')
         badge.textContent = r.schema.category
         Object.assign(badge.style, {
@@ -276,13 +317,14 @@ export class InsertPalette {
 
       row.addEventListener('pointerenter', () => {
         this.#activeIndex = i
-        this.#renderResults()
+        this.#applyActiveHighlight() // highlight only — do NOT rebuild (would detach this row mid-click)
       })
       row.addEventListener('pointerdown', (e) => {
         e.preventDefault()
         this.#commit(i)
       })
       list.appendChild(row)
+      this.#rows.push(row)
     })
   }
 

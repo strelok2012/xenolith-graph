@@ -1,5 +1,5 @@
-import type { Edge, Node, NodeId, EdgeId, Pin, WidgetSpec, Comment } from '@xenolith/core'
-import type { RenderEdgeOptions, RenderNodeOptions } from '@xenolith/render-pixi'
+import type { Edge, Node, NodeId, EdgeId, Pin, WidgetSpec, Comment, TemplateDefinition, TemplateDefId, NodeGlyph } from '@xenolith/core'
+import type { RenderEdgeOptions, RenderNodeOptions, GraphCategoryPalette, CategoryColorSpec } from '@xenolith/render-pixi'
 
 export const XENOLITH_GRAPH_VERSION = 'xenolith.v1' as const
 export type XenolithGraphVersion = typeof XENOLITH_GRAPH_VERSION
@@ -10,6 +10,19 @@ export interface XenolithGraphV1 {
   nodes: XenolithNodeV1[]
   edges: XenolithEdgeV1[]
   comments?: XenolithCommentV1[]
+  /** Graph-owned category palette — overrides the theme's category tokens, so a host can colour its
+   *  own categories (agent/goodie/…) in the data without patching the theme. */
+  categories?: Record<string, CategoryColorSpec>
+  /** Reusable live-template definitions, keyed by definition id. Each `$templateInstance` node in
+   *  `nodes` (or in another template) references one by `state.definitionId`. Optional — old graphs
+   *  without it load unchanged. */
+  templates?: Record<string, XenolithTemplateV1>
+}
+
+export interface XenolithTemplateV1 {
+  title: string
+  nodes: XenolithNodeV1[]
+  edges: XenolithEdgeV1[]
 }
 
 export interface XenolithCommentV1 {
@@ -28,7 +41,13 @@ export interface XenolithNodeV1 {
   state?: Record<string, unknown>
   pins: XenolithPinV1[]
   widgets?: WidgetSpec[]
-  render?: { category?: string; title?: string; collapsed?: boolean }
+  render?: { category?: string; title?: string; collapsed?: boolean; color?: string }
+  /** Blueprint "pure" node flag — see {@link import('@xenolith/core').Node.pure}. */
+  pure?: boolean
+  /** Arbitrary host/plugin metadata, passed through verbatim. */
+  meta?: Record<string, unknown>
+  /** Header glyph icon (auto-drawn in the node header). */
+  glyph?: NodeGlyph
 }
 
 export interface XenolithPinV1 {
@@ -54,6 +73,10 @@ export interface SerializeInput {
   renderOpts: ReadonlyMap<NodeId | string, RenderNodeOptions>
   edgeOpts:   ReadonlyMap<EdgeId  | string, RenderEdgeOptions>
   viewport?: { x: number; y: number; zoom: number }
+  categories?: GraphCategoryPalette
+  /** Reusable live-template definitions. Their member nodes' render opts + edge opts are written to
+   *  the shared `renderOpts`/`edgeOpts` maps (node/edge ids are globally unique). */
+  templates?: ReadonlyArray<TemplateDefinition>
 }
 
 export interface ParsedGraph {
@@ -63,6 +86,9 @@ export interface ParsedGraph {
   comments: Comment[]
   renderOpts: Map<string, RenderNodeOptions>
   edgeOpts:   Map<string, RenderEdgeOptions>
+  categories?: GraphCategoryPalette
+  /** Parsed template definitions (render/edge opts for their nodes are merged into renderOpts/edgeOpts). */
+  templates?: TemplateDefinition[]
 }
 
 function serializePin(p: Pin): XenolithPinV1 {
@@ -87,11 +113,15 @@ function serializeNode(n: Readonly<Node>, render: RenderNodeOptions | undefined)
   if (n.size) out.size = { x: n.size.x, y: n.size.y }
   if (n.widgets && n.widgets.length > 0) out.widgets = n.widgets.map((w) => ({ ...w }) as WidgetSpec)
   if (n.state && Object.keys(n.state).length > 0) out.state = { ...n.state }
-  if (render && (render.category !== undefined || render.title !== undefined || render.collapsed !== undefined)) {
+  if (n.pure !== undefined) out.pure = n.pure
+  if (n.meta !== undefined) out.meta = { ...n.meta }
+  if (n.glyph !== undefined) out.glyph = { ...n.glyph }
+  if (render && (render.category !== undefined || render.title !== undefined || render.collapsed !== undefined || render.color !== undefined)) {
     const r: NonNullable<XenolithNodeV1['render']> = {}
     if (render.category  !== undefined) r.category  = render.category
     if (render.title     !== undefined) r.title     = render.title
     if (render.collapsed !== undefined) r.collapsed = render.collapsed
+    if (render.color     !== undefined) r.color     = render.color
     out.render = r
   }
   return out
@@ -132,12 +162,43 @@ export function serializeXenolithGraph(input: SerializeInput): XenolithGraphV1 {
     edges: input.edges.map((e) => serializeEdge(e, input.edgeOpts.get(String(e.id) as EdgeId))),
   }
   if (input.comments && input.comments.length > 0) out.comments = input.comments.map(serializeComment)
+  if (input.categories && Object.keys(input.categories).length > 0) out.categories = { ...input.categories }
+  if (input.templates && input.templates.length > 0) {
+    const templates: Record<string, XenolithTemplateV1> = {}
+    for (const def of input.templates) {
+      templates[String(def.id)] = {
+        title: def.title,
+        nodes: def.nodes.map((n) => serializeNode(n, input.renderOpts.get(String(n.id) as NodeId))),
+        edges: def.edges.map((e) => serializeEdge(e, input.edgeOpts.get(String(e.id) as EdgeId))),
+      }
+    }
+    out.templates = templates
+  }
   if (input.viewport) out.viewport = { ...input.viewport }
   return out
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/** Validate + normalise the optional top-level `categories` palette. Each entry is `{ color }` or
+ *  `{ gradient: { start, end } }`. Returns undefined when absent (so old graphs stay clean). */
+function parseCategories(raw: unknown): GraphCategoryPalette | undefined {
+  if (raw === undefined) return undefined
+  if (!isPlainObject(raw)) throw new Error('xenolith.v1 parse: categories must be an object')
+  const out: GraphCategoryPalette = {}
+  for (const [name, v] of Object.entries(raw)) {
+    if (!isPlainObject(v)) throw new Error(`xenolith.v1 parse: categories.${name} must be an object`)
+    if (typeof v['color'] === 'string') {
+      out[name] = { color: v['color'] }
+    } else if (isPlainObject(v['gradient']) && typeof v['gradient']['start'] === 'string' && typeof v['gradient']['end'] === 'string') {
+      out[name] = { gradient: { start: v['gradient']['start'], end: v['gradient']['end'] } }
+    } else {
+      throw new Error(`xenolith.v1 parse: categories.${name} must have { color } or { gradient: { start, end } }`)
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 function assertVec2(v: unknown, where: string): { x: number; y: number } {
@@ -206,6 +267,12 @@ function parseNode(v: unknown, idx: number): { node: Node; render?: RenderNodeOp
     if (!Array.isArray(v['widgets'])) throw new Error(`xenolith.v1 parse: ${where}.widgets must be array`)
     node.widgets = v['widgets'].map((w, i) => parseWidget(w, `${where}.widgets[${i}]`))
   }
+  if (typeof v['pure'] === 'boolean') node.pure = v['pure']
+  if (isPlainObject(v['meta'])) node.meta = { ...v['meta'] }
+  if (isPlainObject(v['glyph']) && typeof v['glyph']['icon'] === 'string') {
+    const side = v['glyph']['side']
+    node.glyph = { icon: v['glyph']['icon'], ...(side === 'left' || side === 'right' ? { side } : {}) }
+  }
 
   let render: RenderNodeOptions | undefined
   const rawRender = v['render']
@@ -214,6 +281,7 @@ function parseNode(v: unknown, idx: number): { node: Node; render?: RenderNodeOp
     if (typeof rawRender['category']  === 'string')  render.category  = rawRender['category']
     if (typeof rawRender['title']     === 'string')  render.title     = rawRender['title']
     if (typeof rawRender['collapsed'] === 'boolean') render.collapsed = rawRender['collapsed']
+    if (typeof rawRender['color']     === 'string')  render.color     = rawRender['color']
   }
   return render ? { node, render } : { node }
 }
@@ -266,6 +334,39 @@ function parseComment(v: unknown, idx: number): Comment {
   return comment
 }
 
+/** Parse the optional top-level `templates` map into definitions. Member-node render opts and edge
+ *  opts are merged into the shared maps (ids are globally unique) so the editor restores them. */
+function parseTemplates(
+  raw: unknown,
+  renderOpts: Map<string, RenderNodeOptions>,
+  edgeOpts: Map<string, RenderEdgeOptions>,
+): TemplateDefinition[] | undefined {
+  if (raw === undefined) return undefined
+  if (!isPlainObject(raw)) throw new Error('xenolith.v1 parse: templates must be an object')
+  const out: TemplateDefinition[] = []
+  for (const [id, v] of Object.entries(raw)) {
+    if (!isPlainObject(v)) throw new Error(`xenolith.v1 parse: templates.${id} must be an object`)
+    if (typeof v['title'] !== 'string') throw new Error(`xenolith.v1 parse: templates.${id}.title must be string`)
+    const rawNodes = v['nodes'], rawEdges = v['edges']
+    if (!Array.isArray(rawNodes)) throw new Error(`xenolith.v1 parse: templates.${id}.nodes must be an array`)
+    if (!Array.isArray(rawEdges)) throw new Error(`xenolith.v1 parse: templates.${id}.edges must be an array`)
+    const nodes: Node[] = []
+    rawNodes.forEach((rn, i) => {
+      const { node, render } = parseNode(rn, i)
+      nodes.push(node)
+      if (render) renderOpts.set(String(node.id), render)
+    })
+    const edges: Edge[] = []
+    rawEdges.forEach((re, i) => {
+      const { edge, opts } = parseEdge(re, i)
+      edges.push(edge)
+      if (opts) edgeOpts.set(String(edge.id), opts)
+    })
+    out.push({ id: id as TemplateDefId, title: v['title'], nodes, edges })
+  }
+  return out.length > 0 ? out : undefined
+}
+
 export function parseXenolithGraph(data: unknown): ParsedGraph {
   if (!isPlainObject(data)) throw new Error('xenolith.v1 parse: payload must be an object')
   const version = data['version']
@@ -302,6 +403,10 @@ export function parseXenolithGraph(data: unknown): ParsedGraph {
   }
 
   const out: ParsedGraph = { nodes, edges, comments, renderOpts, edgeOpts }
+  const categories = parseCategories(data['categories'])
+  if (categories) out.categories = categories
+  const templates = parseTemplates(data['templates'], renderOpts, edgeOpts)
+  if (templates) out.templates = templates
   const rawViewport = data['viewport']
   if (isPlainObject(rawViewport)
       && typeof rawViewport['x'] === 'number'

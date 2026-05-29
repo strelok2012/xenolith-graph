@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { Pin } from '@xenolith/core'
+import { TypeRegistry, type Pin } from '@xenolith/core'
 import { canConnect } from './pin-compat.js'
 
 const pin = (over: Partial<Pin> & Pick<Pin, 'id' | 'direction'>): Pin => ({
@@ -68,6 +68,45 @@ describe('canConnect', () => {
     const out = pin({ id: 'a' as any, direction: 'out', type: 'float' })
     const inn = pin({ id: 'b' as any, direction: 'in',  type: 'float' })
     expect(canConnect(out, inn, false)).toBe(canConnect(inn, out, false))
+  })
+
+  describe('compatibleWith via a TypeRegistry', () => {
+    const types = new TypeRegistry()
+    types.register({ id: 'struct:Agent', color: '#9b59ff' })
+    types.register({ id: 'struct:Unit', color: '#3bd6c6', compatibleWith: ['struct:Agent'] })
+
+    it('rejects mismatched custom types without a registry', () => {
+      expect(canConnect(
+        pin({ id: 'a' as any, direction: 'out', type: 'struct:Unit'  }),
+        pin({ id: 'b' as any, direction: 'in',  type: 'struct:Agent' }),
+        false,
+      )).toBe(false)
+    })
+
+    it('accepts when the registry says the two custom types are compatible (symmetric)', () => {
+      const unit  = pin({ id: 'a' as any, direction: 'out', type: 'struct:Unit'  })
+      const agent = pin({ id: 'b' as any, direction: 'in',  type: 'struct:Agent' })
+      expect(canConnect(unit, agent, false, { types })).toBe(true)
+      expect(canConnect(agent, unit, false, { types })).toBe(true)
+    })
+
+    it('still rejects unrelated custom types even with a registry', () => {
+      expect(canConnect(
+        pin({ id: 'a' as any, direction: 'out', type: 'struct:Agent' }),
+        pin({ id: 'b' as any, direction: 'in',  type: 'scalar'       }),
+        false,
+        { types },
+      )).toBe(false)
+    })
+
+    it('exact-type match still wins regardless of the registry', () => {
+      expect(canConnect(
+        pin({ id: 'a' as any, direction: 'out', type: 'struct:Agent' }),
+        pin({ id: 'b' as any, direction: 'in',  type: 'struct:Agent' }),
+        false,
+        { types },
+      )).toBe(true)
+    })
   })
 
   describe('capacity enforcement (multiple flag)', () => {

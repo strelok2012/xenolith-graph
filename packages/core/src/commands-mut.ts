@@ -1,5 +1,5 @@
 import type { Command, CommandContext } from './command-bus.js'
-import type { Vec2 } from './graph.js'
+import type { Edge, Pin, Vec2 } from './graph.js'
 import type { NodeId } from './ids.js'
 
 export class MoveNode implements Command<Vec2> {
@@ -65,5 +65,45 @@ export class SetNodeState implements Command<Record<string, unknown>> {
 
   undo(ctx: CommandContext, old: Record<string, unknown>): void {
     ctx.graph._patchNode(this.nodeId, { state: old })
+  }
+}
+
+export interface SetNodePinsUndo {
+  pins: Pin[]
+  prunedEdges: Edge[]
+}
+
+/** Replace a node's pin list wholesale (variadic pins: Sequence/MakeArray "+", Branch true/false).
+ *  Edges incident to a pin that no longer exists are pruned and restored on undo. */
+export class SetNodePins implements Command<SetNodePinsUndo> {
+  readonly type = 'SetNodePins'
+  readonly #pins: Pin[]
+  constructor(
+    private readonly nodeId: NodeId,
+    pins: Pin[],
+  ) {
+    this.#pins = pins.map((p) => ({ ...p }))
+  }
+
+  apply(ctx: CommandContext): SetNodePinsUndo {
+    const node = ctx.graph.getNode(this.nodeId)
+    if (!node) throw new Error(`SetNodePins: node not found: ${this.nodeId}`)
+    const oldPins = node.pins.map((p) => ({ ...p }))
+    const survivors = new Set(this.#pins.map((p) => p.id))
+    const pruned: Edge[] = []
+    for (const edge of ctx.graph.edges()) {
+      const touchesDropped =
+        (edge.from.node === this.nodeId && !survivors.has(edge.from.pin)) ||
+        (edge.to.node === this.nodeId && !survivors.has(edge.to.pin))
+      if (touchesDropped) pruned.push(edge as Edge)
+    }
+    for (const edge of pruned) ctx.graph._removeEdge(edge.id)
+    ctx.graph._setNodePins(this.nodeId, this.#pins.map((p) => ({ ...p })))
+    return { pins: oldPins, prunedEdges: pruned }
+  }
+
+  undo(ctx: CommandContext, applied: SetNodePinsUndo): void {
+    ctx.graph._setNodePins(this.nodeId, applied.pins.map((p) => ({ ...p })))
+    for (const edge of applied.prunedEdges) ctx.graph._addEdge(edge)
   }
 }

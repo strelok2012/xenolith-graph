@@ -142,6 +142,9 @@ importers:
       '@xenolith/editor':
         specifier: workspace:*
         version: link:../../packages/editor
+      '@xenolith/plugin-runtime':
+        specifier: workspace:*
+        version: link:../../packages/plugin-runtime
       '@xenolith/react':
         specifier: workspace:*
         version: link:../../packages/react
@@ -151,6 +154,9 @@ importers:
       '@xenolith/theme-xen':
         specifier: workspace:*
         version: link:../../packages/theme-xen
+      gifenc:
+        specifier: ^1.0.3
+        version: 1.0.3
       pixi.js:
         specifier: ^8.6.0
         version: 8.18.1
@@ -358,6 +364,22 @@ importers:
       pixi.js:
         specifier: ^8.6.0
         version: 8.18.1
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@24.12.4)(jsdom@25.0.1)
+
+  packages/plugin-runtime:
+    dependencies:
+      '@xenolith/core':
+        specifier: workspace:*
+        version: link:../core
+      '@xenolith/editor':
+        specifier: workspace:*
+        version: link:../editor
+    devDependencies:
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -2779,6 +2801,9 @@ packages:
   get-proto@1.0.1:
     resolution: {integrity: sha512-sTSfBjoXBp89JvIKIefqw7U2CCebsc74kiY6awiGogKtoSGbgjYE/G/+l9sF3MWFPNc9IcoOC4ODfKHfxFmp0g==}
     engines: {node: '>= 0.4'}
+
+  gifenc@1.0.3:
+    resolution: {integrity: sha512-xdr6AdrfGBcfzncONUOlXMBuc5wJDtOueE3c5rdG0oNgtINLD+f2iFZltrBRZYzACRbKr+mSVU/x98zv2u3jmw==}
 
   gifuct-js@2.1.2:
     resolution: {integrity: sha512-rI2asw77u0mGgwhV3qA+OEgYqaDn5UNqgs+Bx0FGwSpuqfYn+Ir6RQY5ENNQ8SbIiG/m5gVa7CD5RriO4f4Lsg==}
@@ -6852,6 +6877,8 @@ snapshots:
     dependencies:
       dunder-proto: 1.0.1
       es-object-atoms: 1.1.2
+
+  gifenc@1.0.3: {}
 
   gifuct-js@2.1.2:
     dependencies:

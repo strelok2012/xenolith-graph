@@ -1,11 +1,71 @@
 ---
-title: Кастомизация темы
-description: Переопределение токенов темы Xen.
+title: Темы
+description: Переключайтесь между Xen и Liquid Glass, переопределяйте токены или собирайте свою тему с кастомным шейдером.
 ---
 
-Дизайн-система Xen живёт в `@xenolith/theme-xen`. В `XenolithEditor.init` можно передать частичный объект с любыми токенами — он будет глубоко смержен с дефолтными.
+`XenolithTheme` объединяет три вещи:
 
-## Быстрый override
+```ts
+interface XenolithTheme {
+  id:                 string
+  tokens:             XenTokens                          // дизайн-токены
+  paletteStyle?:      PaletteStyle                       // DOM-стилизация палитры / меню / оверлея
+  needsBackdrop?:     boolean                            // включает per-frame backdrop RT
+  renderNode?:        (node, opts, ctx) => NodeView      // кастомный рендер ноды
+  renderReroute?:     (node, opts, ctx) => NodeView      // кастомный рендер инлайн reroute-точки
+  renderRerouteNode?: (node, opts, ctx) => NodeView      // кастомный рендер pullable Reroute-ноды
+  drawEdge?:          (g, from, to, opts) => Graphics    // кастомный рендер проводов
+  createGrid?:        () => Container                    // кастомный фон канваса
+}
+```
+
+Каждый хук опционален. Если не задан — редактор использует встроенный рендер Xen для этого элемента, так что «тема» может быть и пятистрочной правкой палитры, и полностью кастомным Mesh + GLSL материалом.
+
+`renderReroute` стилизует инлайн `$reroute` точку (провод проходит через точку); `renderRerouteNode` стилизует pullable прямоугольную `Reroute`-ноду. Liquid Glass переопределяет обе через стеклянные диски/боксы с тинтом по типу пина. `paletteStyle` управляет DOM-хромом — палитрой вставки, контекстным меню ребра **и** оверлеем «Rendering…» — чтобы все они перестилизовались с активной темой.
+
+## Встроенные темы
+
+В коробке две темы.
+
+### Xen — дефолт
+
+```ts
+import { XenolithEditor } from '@xenolith/editor'
+
+const editor = await XenolithEditor.init('#app')
+// Xen — дефолт, опция `theme` не нужна.
+```
+
+Оригинальная dark/gold дизайн-система: тела нод `#0F110E`, золотые акценты, тонированные по категориям шапки, типизированные провода, анимированный коллапс в pill. Живёт в `@xenolith/theme-xen`.
+
+### Liquid Glass — матовое стекло, вдохновлённое новым Apple-дизайном
+
+```ts
+import { XenolithEditor } from '@xenolith/editor'
+import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
+
+const editor = await XenolithEditor.init('#app', { theme: liquidGlassTheme })
+```
+
+Кастомный PIXI v8 Mesh + GLSL-материал. Каждый кадр редактор рендерит мир (без слоя нод) в backdrop `RenderTexture`; каждое стеклянное тело сэмплит эту текстуру через свой шейдер с краевой рефракцией, гауссовым блюром и вертикальным тинтом. Поверх — радиальный navy-градиент с мягкой dot-сеткой.
+
+Backdrop-пасс **опциональный**: Liquid Glass ставит `needsBackdrop: true`, Xen — нет, так что переключение обратно на Xen полностью выключает лишний рендер-пасс.
+
+## Переключение темы в рантайме
+
+```ts
+import { xenTheme } from '@xenolith/render-pixi'
+import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
+
+editor.setTheme(liquidGlassTheme)   // каждая нода перерисовывается через новую тему
+editor.setTheme(xenTheme)           // выделение, hover, свёрнутость, позиции сохраняются
+```
+
+`setTheme` принимает либо полный `XenolithTheme`, **либо** `DeepPartial<XenTokens>` — override токенов, который глубоко мержится в токены активной темы.
+
+## Override токенов
+
+Если хотите просто поправить палитру Xen, передайте override в `init`:
 
 ```ts
 const editor = await XenolithEditor.init('#app', {
@@ -25,20 +85,78 @@ const editor = await XenolithEditor.init('#app', {
 })
 ```
 
-Все токены, которых вы не коснулись (геометрия, типографика, эффекты), остаются дефолтными Xen.
+Все остальные токены (геометрия, типографика, эффекты, поверхности) остаются дефолтными Xen.
 
-## Группы токенов
+## Цвета категорий в данных графа (data-first)
 
-| Группа          | Содержит                                                              |
-|-----------------|-----------------------------------------------------------------------|
-| `color.brand`   | Бренд / hover жёлтые и их альфы.                                      |
-| `color.surface` | Canvas, body ноды, panel, divider, конец градиента header.            |
-| `color.text`    | Primary, secondary, muted, disabled.                                  |
-| `pinType`       | Один токен на тип пина: `color`, `edgeColor`, `shape`, `edgeWidth`.   |
-| `category`      | Header accent + Figma-градиент на категорию.                          |
-| `pill`          | Pill-форма accent градиентов.                                         |
-| `state`         | hover, selected, active, disabled — border + glow.                    |
-| `geometry`      | Размеры ноды, пина, header, edge, comment.                            |
-| `typography`    | Inter + heading / label / comment.                                    |
-| `effect`        | Inner shadow, backdrop blur, rim highlight, drop shadow.              |
-| `background`    | Цвет canvas и конфиг dot-grid.                                        |
+Override токенов меняет цвет категории **в коде** — это нельзя сохранить внутри графа. Чтобы покрасить свои категории (`agent`, `warehouse`…) — или отдельную ноду — прямо из данных `xenolith.v1`, используйте необязательную палитру `categories` и per-node `render.color`. Оба поля сохраняются через `editor.toJSON()` / `loadJSON()`.
+
+```ts
+editor.loadJSON({
+  version: 'xenolith.v1',
+  // палитра, принадлежащая графу: сплошной accent или явный градиент шапки
+  categories: {
+    agent:     { color: '#7C5CFF' },
+    warehouse: { gradient: { start: '#1FB6A8', end: '#0E5C55' } },
+  },
+  nodes: [
+    { id: 'a1', type: 'Planner', position: { x: 0, y: 0 }, pins: [],
+      render: { category: 'agent', title: 'Planner' } },
+    // per-node цвет перебивает категорию
+    { id: 'a2', type: 'Boss', position: { x: 240, y: 0 }, pins: [],
+      render: { category: 'agent', title: 'Boss', color: '#FF3366' } },
+  ],
+  edges: [],
+})
+```
+
+Приоритет цвета шапки ноды: **`render.color` → `categories[category]` → токен темы `category` → fallback `utility`**. Оба поля необязательны — графы без них рисуются как раньше, через встроенные категории темы. Типы `CategoryColorSpec` / `GraphCategoryPalette` экспортируются из `@xenolith/render-pixi`.
+
+Используйте **override токенов** для смены всего визуального языка; используйте палитру **`categories`** для доменных категорий, живущих в данных.
+
+## Полная форма токенов
+
+Полный тип лежит в `@xenolith/theme-xen` и называется `XenTokens`. Верхнеуровневые группы:
+
+| Группа          | Назначение                                                              |
+|-----------------|-------------------------------------------------------------------------|
+| `color.brand`   | Бренд / hover / accent жёлтые и их альфы.                               |
+| `color.surface` | Canvas, тело ноды, panel, divider, конец градиента header.              |
+| `color.text`    | Primary, secondary, muted, disabled текст.                              |
+| `pinType`       | Один токен на тип пина: `color`, `edgeColor`, `shape`, `edgeWidth`.     |
+| `category`      | Header accent + Figma-градиент на категорию (`logic`, `data`, `macro`, `utility`). |
+| `pill`          | CSS-градиенты pill-формы (`green`, `orange`, …).                        |
+| `state`         | `hover`, `selected`, `active`, `disabled` — border + glow.              |
+| `geometry`      | Размеры ноды, пина, header, edge, comment, **reroute** (`radius`, `ringWidth`) и `midpointRadius` ребра. |
+| `typography`    | Inter + heading / label / comment.                                      |
+| `effect`        | Inner shadow header, backdrop blur, rim highlight, drop shadow.         |
+| `background`    | Цвет canvas и конфиг dot-grid.                                          |
+
+## Сборка своей темы
+
+Для палитровой темы достаточно объекта:
+
+```ts
+import type { XenolithTheme } from '@xenolith/render-pixi'
+import { xenTokens } from '@xenolith/theme-xen'
+import { mergeTheme } from '@xenolith/theme-xen'
+
+export const pastelTheme: XenolithTheme = {
+  id: 'pastel',
+  tokens: mergeTheme(xenTokens, {
+    color: {
+      surface: { canvas: '#FAF7F2', node: '#FFFFFF' },
+      text:    { primary: '#1A1A1A', secondary: '#666666' },
+    },
+    background: { color: '#FAF7F2', grid: { color: 'rgba(0,0,0,0.06)' } },
+    category: {
+      logic:   { accent: '#7FB8A1' },
+      data:    { accent: '#7FA8C7' },
+      macro:   { accent: '#C77F9F' },
+      utility: { accent: '#444444' },
+    },
+  }),
+}
+```
+
+Для кастомного материала (свой шейдер, свой backdrop) — реализуйте `renderNode` и опционально `createGrid`. Полный пример см. в исходниках `@xenolith/theme-liquid-glass` — PIXI Mesh + GLSL с SDF-рефракцией и сэмплингом backdrop.

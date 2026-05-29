@@ -158,3 +158,206 @@ Canvas-draw is the perf-friendly default; the editor keeps DOM-mounted widgets g
 ### ComfyUI import
 
 `importComfyWorkflow` maps each node's positional `widgets_values` to typed widgets by value (number→number, boolean→toggle, string→text). Names/combos/ranges require the server's `object_info` and are a later upgrade.
+
+## Plugins
+
+`editor.use(plugin)` installs a plugin. A plugin is `{ name, install(ctx) }`; `install` runs once and may return a disposer that fires on `editor.destroy()`. Plugins are how the editor stays extensible without baking features in — node packs, runtimes, type systems, custom widgets, and validators all enter through this surface.
+
+```ts
+editor.use({
+  name: 'my-plugin',
+  install(ctx) {
+    ctx.registry.register({ type: 'Custom', title: 'Custom', pins: [/* ... */] })
+    ctx.types.register({ id: 'vec3', color: '#a0f', shape: 'diamond', compatibleWith: ['vec2'] })
+    ctx.icons.register('star', '<svg>...</svg>')
+    ctx.setIsValidConnection((from, to) => from.node.type !== 'Frozen')
+    ctx.registerWidget('myKnob', { draw(/* ... */) {}, onPointer(/* ... */) {} })
+    const off = ctx.on('node:added', e => console.log('added', e.id))
+    return () => off()
+  },
+})
+```
+
+`PluginContext` exposes:
+
+| Field | Purpose |
+|-------|---------|
+| `registry`           | Node schema registry (`ctx.registry.register(schema)`) |
+| `types`              | `TypeRegistry` for custom pin types (id/color/shape/compatibleWith) |
+| `icons`              | Glyph registry — built-in Feather set + `register(name, svg)` |
+| `commandBus`         | Batch mutations as one transaction (use sparingly) |
+| `graph`              | Read-only view of the graph |
+| `app`                | The PIXI `Application` — escape hatch for custom rendering only; touching the scene graph here is unsupported |
+| `registerWidget`     | Register canvas-draw or DOM-mount custom widget controllers |
+| `setIsValidConnection` | Install a global connection validator (runs after built-in type-compat) |
+| `on`                 | Full event-bus access (see [Events](#events)) |
+
+Runtime delegation (for execution plugins — none ship in the editor itself):
+
+| Method | Purpose |
+|--------|---------|
+| `onTick(cb)`                     | Subscribe to per-frame ticks |
+| `startLoop()` / `stopLoop()` / `step()` | Drive the tick loop or step one frame |
+| `setWidgetValue(nodeId, key, value, { ephemeral: true })` | Non-undoable widget write for sims |
+| `setNodePins(nodeId, pins)`       | Variadic pins (Sequence / MakeArray) |
+| `setEdgeAnimated(edgeId, on)`     | Toggle the marching-ants pulse |
+| `expandTemplateInstance(nodeId)`  | Read-only flatten of a template instance |
+| `graphSnapshot({ expandMacros, flattenReroutes })` | Snapshot for execution traversal |
+
+## Custom types
+
+`TypeRegistry` defines pin types — colour, shape, and which other types they auto-cast from. Type drives wire colour, pin fill, and connection validity.
+
+```ts
+editor.types.register({ id: 'float', color: '#36f', shape: 'circle', compatibleWith: ['int'] })
+editor.types.register({ id: 'exec',  color: '#fff', shape: 'arrow' })
+editor.types.register({ id: 'struct:Vec3', color: '#a0f', shape: 'diamond' })
+```
+
+Pin shapes: `circle` (data), `arrow` (exec), `diamond` (struct/object). `compatibleWith` enables auto-cast between related types (e.g. `int` → `float`).
+
+## Custom validation
+
+`setIsValidConnection` installs a predicate that runs **after** built-in type-compat. Return `false` to refuse the connection.
+
+```ts
+editor.setIsValidConnection((from, to) => {
+  return !(from.node.type === 'A' && to.node.type === 'B')
+})
+```
+
+## Header glyphs
+
+A glyph is a small SVG icon rendered on the node header beside the title. The built-in Feather set is preloaded; register more by name.
+
+```ts
+editor.icons.register('zap', '<svg viewBox="0 0 24 24"><path d="..."/></svg>')
+
+editor.registry.register({
+  type: 'Trigger',
+  title: 'Trigger',
+  glyph: { icon: 'zap', side: 'left' },
+  pins: [{ kind: 'exec', direction: 'out' }],
+})
+
+// Per-node override (without mutating the schema):
+editor.setNodeGlyph(nodeId, { icon: 'star', side: 'right' })
+editor.setNodeGlyph(nodeId, null)   // clear override
+```
+
+A per-node glyph override round-trips through `xenolith.v1`.
+
+## Events
+
+`editor.on(event, handler)` returns an `Unsubscribe`. Events are bridged off the command bus, so they fire on undo/redo too — a UI bound to them stays in sync without extra wiring around mutation calls.
+
+```ts
+const off = editor.on('node:added',     ({ id, node }) => {})
+editor.on('node:removed',   ({ id }) => {})
+editor.on('node:moved',     ({ id, position }) => {})
+editor.on('edge:added',     ({ id, edge }) => {})
+editor.on('edge:removed',   ({ id }) => {})
+editor.on('selection:changed', ({ ids }) => {})
+editor.on('widget:changed', ({ nodeId, key, value }) => {})
+editor.on('viewport:changed', ({ x, y, scale }) => {})
+editor.on('dive:changed',   ({ defId, depth, path }) => {})  // template dive in/out
+off()
+```
+
+## Animated edges
+
+Toggles a flowing marching-ants pulse along an edge. Round-trips through `xenolith.v1`.
+
+```ts
+editor.setEdgeAnimated(edgeId, true)
+editor.setEdgeAnimated(edgeId, false)
+```
+
+Use sparingly — animated edges break render-on-demand for as long as they're on-screen.
+
+## Variadic pins
+
+`setNodePins` replaces a node's pin list. Use this for nodes whose pin count depends on state — Sequence (exec out 1..N), MakeArray (data in 1..N), and similar. Plugins typically call this from a `widget:changed` handler.
+
+```ts
+editor.setNodePins(nodeId, [
+  { kind: 'exec', direction: 'in',  label: 'in' },
+  { kind: 'exec', direction: 'out', label: 'Then 1' },
+  { kind: 'exec', direction: 'out', label: 'Then 2' },
+])
+```
+
+Edges connected to removed pins are pruned automatically.
+
+## Comments
+
+A Comment is a labelled rectangle behind nodes — a spatial group, not data containment. Move it, resize it from the corner, double-click the header to rename.
+
+```ts
+const id = editor.createComment({ x: 100, y: 100, width: 400, height: 300, title: 'IO', color: '#36c' })
+editor.setCommentTitle(id, 'Inputs')
+editor.setCommentColor(id, '#f93')
+editor.editComment(id)        // start inline edit (overlay text input)
+editor.removeComment(id)
+```
+
+Shortcuts: `Tab` → **Comment**, or double-click an empty area and pick **Comment** from the palette.
+
+## Macros (Groups)
+
+A Macro packs N selected nodes into one collapsible wrapper with proxy pins on its border. Inline — there's no shared definition, no propagation.
+
+```ts
+const macroId = editor.createMacroFromSelection()
+const macroId = editor.createMacroFromSelection([id1, id2, id3], 'Backup')
+editor.collapseMacro(macroId)
+editor.expandMacro(macroId)
+editor.ungroupMacro(macroId)    // dissolve; members go back to the root graph
+```
+
+Shortcut: `Cmd+G` groups the current selection.
+
+## Live templates
+
+A Template is a sub-graph with a stored definition. You can spawn many instances of one definition; editing the definition (via *dive-in*) propagates to every instance. Boundary nodes `$templateInput` / `$templateOutput` inside the definition form the pin interface — each holds one pin, rename it to set the pin label.
+
+```ts
+const instanceId = editor.createTemplateFromSelection()
+const instanceId = editor.createTemplateFromSelection([id1, id2], 'My Template')
+
+editor.diveInto(instanceId)         // enter the definition (breadcrumb tracks the path)
+editor.diveOut()                    // back to the parent graph
+editor.renameTemplate(defId, 'New name')
+
+// Drop the shared link, get an editable Macro:
+editor.unpackTemplateInstance(instanceId)
+
+// Conversion both ways:
+editor.convertTemplateInstanceToMacro(instanceId)
+editor.convertMacroToTemplate(macroId)     // nested macros carry into the def
+```
+
+The palette lists every definition as an insertable node. A definition can't insert itself or any ancestor on the dive stack (recursion guard).
+
+Shortcuts: `Cmd+Shift+G` makes a template from the selection; double-click an instance dives in.
+
+## Virtualization & LOD
+
+The editor virtualizes nodes outside the viewport and downgrades distant nodes to lower-fidelity representations automatically. Defaults are tuned for ~30k+ nodes; override only for unusually small graphs or custom renderers.
+
+```ts
+editor.setVirtualization({ enabled: true, threshold: 300, overscan: 200 })
+```
+
+LOD switches as zoom decreases: full → sprite-baked → flat-batch.
+
+## Headless runtime
+
+Execution is delegated to plugins — the editor itself ships **no execution**. A runtime (e.g. `@xenolith/plugin-runtime`, a Blueprint VM, in progress) installs as a plugin and uses the [runtime delegation API](#plugins) above.
+
+```ts
+import { runtime } from '@xenolith/plugin-runtime'   // future package
+editor.use(runtime({ /* options */ }))
+editor.startLoop()    // begins ticking — the runtime decides what executes
+editor.step()         // single frame
+```

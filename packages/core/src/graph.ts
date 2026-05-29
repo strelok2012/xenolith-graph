@@ -9,6 +9,14 @@ export interface Vec2 {
 export type PinKind = 'exec' | 'data'
 export type PinDirection = 'in' | 'out'
 
+/** A header glyph marker for a node — a small icon drawn in the node header. `icon` names an entry in
+ *  the renderer's icon registry (a built-in like 'cpu'/'layers', or a host/plugin-registered name).
+ *  `side` picks which side of the title it sits on (default 'left'). Positioning is automatic. */
+export interface NodeGlyph {
+  icon: string
+  side?: 'left' | 'right'
+}
+
 export interface Pin {
   id: PinId
   kind: PinKind
@@ -28,6 +36,13 @@ export interface Node {
   pins: Pin[]
   /** In-node UI controls. Values live in `state` (keyed by each widget's `key`). */
   widgets?: WidgetSpec[]
+  /** Blueprint "pure" node — no exec flow, lazily pulled. The editor doesn't interpret this; it's a
+   *  hint for a host evaluator (and a render cue: pure nodes carry no exec pins). */
+  pure?: boolean
+  /** Arbitrary host/plugin metadata, passed through serialization untouched. The core never reads it. */
+  meta?: Record<string, unknown>
+  /** A header glyph icon for this node (auto-positioned in the header by the renderer). */
+  glyph?: NodeGlyph
 }
 
 export interface Edge {
@@ -158,6 +173,16 @@ export class Graph {
     if (patch.size     !== undefined) node.size     = patch.size
     if (patch.state    !== undefined) node.state    = patch.state
     if (patch.type     !== undefined) node.type     = patch.type
+    this.#version++
+    return node
+  }
+
+  /** @internal — replace a node's pin list wholesale. Pruning edges incident to dropped pins is the
+   *  caller's job (the SetNodePins command does it so the change is undoable). */
+  _setNodePins(id: NodeId, pins: Pin[]): Readonly<Node> | undefined {
+    const node = this.#nodes.get(id)
+    if (!node) return undefined
+    node.pins = pins
     this.#version++
     return node
   }

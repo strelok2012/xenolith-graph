@@ -15,20 +15,36 @@ import {
   nodesInsideComment,
   createCommentId,
   NodeRegistry,
+  TypeRegistry,
   RemoveNode,
   Selection,
   SetNodeState,
   isReroute,
   createReroute,
+  SetNodePins,
   rerouteNodeSchema,
   REROUTE_NODE_TYPE,
   isMacro,
   createMacro,
   macroMembers,
+  flattenMacroProxies,
   planMacroCollapse,
-  planMacroExpand,
   MACRO_TYPE,
   type MacroProxyRecord,
+  planTemplateExtraction,
+  planTemplateUnpack,
+  templateInterface,
+  materializeInterface,
+  templateDefContains,
+  flattenTemplateInstance,
+  type FlattenedTemplate,
+  isTemplateInstance,
+  isTemplateBoundary,
+  TEMPLATE_INSTANCE_TYPE,
+  TEMPLATE_INPUT_TYPE,
+  TEMPLATE_OUTPUT_TYPE,
+  type TemplateDefId,
+  type TemplateDefinition,
   createEdgeId,
   createNodeId,
   createPinId,
@@ -45,8 +61,11 @@ import {
   type CommentId,
   type Pin,
   type PinId,
+  type PinKind,
+  type PinDirection,
   type WidgetSpec,
   type NodeSchema,
+  type NodeGlyph,
 } from '@xenolith/core'
 import {
   bezierMidpoint,
@@ -64,6 +83,7 @@ import {
   rectFromPoints,
   rectIntersects,
   renderNode,
+  IconRegistry,
   renderComment,
   type CommentView,
   renderMacroFrame,
@@ -104,6 +124,7 @@ import {
   type PinLayout,
   type RenderEdgeOptions,
   type RenderNodeOptions,
+  type GraphCategoryPalette,
   type NodeSizeTokens,
   type TextMeasurer,
   type ThemeRenderContext,
@@ -118,11 +139,12 @@ import { computeRerouteBridges } from './reroute-bridge.js'
 import { spliceCompatible, danglingRerouteRemovalPlan } from './edge-insert.js'
 import { InsertPalette } from './palette.js'
 import { pruneOrphanInlineReroutes } from './clipboard-prune.js'
-import { EdgeContextMenu } from './edge-menu.js'
+import { EdgeContextMenu, type EdgeMenuItem } from './edge-menu.js'
 import { WidgetOverlay, type OverlayRect } from './widget-overlay.js'
 import { Minimap, type MinimapPosition } from './minimap.js'
 import { EditorControls, type ControlsOptions, type ControlsPosition } from './controls.js'
 import { createGraphEventBridge, type EditorEvents } from './events.js'
+import { PluginHost, type PluginContext, type XenolithPlugin } from './plugin.js'
 import {
   parseXenolithGraph,
   serializeXenolithGraph,
@@ -140,6 +162,7 @@ export type {
   XenolithPinV1,
   XenolithEdgeV1,
   XenolithCommentV1,
+  XenolithTemplateV1,
   XenolithGraphVersion,
 } from './serialize.js'
 
@@ -149,6 +172,9 @@ export type { CustomWidgetController, CanvasWidgetController, DomWidgetControlle
 export type { MinimapPosition } from './minimap.js'
 export type { ControlsOptions, ControlsPosition } from './controls.js'
 export type { EditorEvents } from './events.js'
+export { PluginHost } from './plugin.js'
+export type { XenolithPlugin, PluginContext } from './plugin.js'
+export type { FlattenedTemplate, PinRef } from '@xenolith/core'
 
 export const VERSION = '0.0.0'
 
@@ -193,6 +219,23 @@ export interface ConnectionRequest {
  *  Lets a host show graph-execution progress (LLM/audio/pipeline showcases) without a runtime. */
 export type NodeStatus = 'idle' | 'running' | 'ok' | 'error'
 
+/** Plain structural snapshot of a node for a host interpreter (no PIXI/view data). */
+export interface SnapshotNode {
+  id: string
+  type: string
+  state: Record<string, unknown>
+  pins: { id: string; kind: PinKind; direction: PinDirection; type: string; default?: unknown }[]
+}
+export interface SnapshotEdge {
+  from: { node: string; pin: string }
+  to: { node: string; pin: string }
+}
+/** A flat, structural view of the graph for execution — see {@link XenolithEditor.graphSnapshot}. */
+export interface GraphSnapshot {
+  nodes: SnapshotNode[]
+  edges: SnapshotEdge[]
+}
+
 function resolveTheme(input: XenolithTheme | DeepPartial<XenTokens> | undefined): XenolithTheme {
   if (!input) return xenTheme
   if (typeof input === 'object' && 'id' in input && 'tokens' in input) return input as XenolithTheme
@@ -224,6 +267,28 @@ const commentPaletteSchema: NodeSchema = {
   description: 'Group nodes in a labelled frame',
   keywords: ['comment', 'group', 'frame', 'note', 'section'],
   pins: [],
+}
+
+/** Boundary nodes that declare a template definition's interface — insert one while dived into a
+ *  template (Tab → "Input"/"Output"), wire it to a member, and on dive-out it becomes an instance
+ *  pin (Blender Group Input/Output style). Rename it (node menu) to label the interface pin. */
+const templateInputSchema: NodeSchema = {
+  type: TEMPLATE_INPUT_TYPE,
+  title: 'Input',
+  category: 'utility',
+  description: 'Template interface input',
+  keywords: ['input', 'port', 'arg', 'parameter', 'template'],
+  // The pin's label IS the interface-pin label (rename relabels it); default so a fresh Input/Output
+  // gives the instance a labelled pin instead of a blank one.
+  pins: [{ kind: 'data', direction: 'out', type: 'any', multiple: true, label: 'In' }],
+}
+const templateOutputSchema: NodeSchema = {
+  type: TEMPLATE_OUTPUT_TYPE,
+  title: 'Output',
+  category: 'utility',
+  description: 'Template interface output',
+  keywords: ['output', 'port', 'return', 'result', 'template'],
+  pins: [{ kind: 'data', direction: 'in', type: 'any', multiple: false, label: 'Out' }],
 }
 
 interface ClipboardSnapshot {
@@ -273,9 +338,19 @@ function darkenColor(c: ColorSource, f: number): number {
 }
 
 export class XenolithEditor {
-  readonly graph: Graph
+  readonly #rootGraph: Graph
+  readonly #rootBus: CommandBus
+  /** The graph + bus currently being displayed and edited. Equal to the root document at dive
+   *  depth 0; a template definition's own graph + bus while dived into a `$templateInstance`. All
+   *  render, interaction, selection, and undo route through these (via the `graph`/`commandBus`
+   *  getters). `toJSON`/`loadJSON` stay bound to the root document. */
+  #displayGraph: Graph
+  #displayBus: CommandBus
   readonly selection: Selection
-  readonly commandBus: CommandBus
+  /** The active (displayed) graph — the root document at depth 0, a definition while dived. */
+  get graph(): Graph { return this.#displayGraph }
+  /** The active (displayed) command bus — the root document's bus at depth 0. */
+  get commandBus(): CommandBus { return this.#displayBus }
   readonly #app: Application
   readonly #host: HTMLElement
   /** Toggleable stats overlay (FPS, nodes, edges, selection, zoom). Hidden by default; press
@@ -325,6 +400,9 @@ export class XenolithEditor {
    *  whole group paints over everything else. Nested macros stack by depth within it. */
   #macroOverlayLayer!: Container
   readonly #macroFrames = new Map<NodeId, MacroFrameView>()
+  /** Macros mid expand-animation. Their members + frame are primed invisible by the next sync (before
+   *  paint) so the grow-in starts from nothing — without this one full-opacity frame paints first (jitter). */
+  readonly #expandingMacros = new Set<NodeId>()
   readonly #commentViews = new Map<CommentId, CommentView>()
   readonly #viewport: Viewport
   readonly #interaction: InteractionManager | null
@@ -334,6 +412,20 @@ export class XenolithEditor {
   /** Per-node render options (category, title, collapsed). Captured at addNode so setTheme can
    *  re-issue the render with identical args after swapping the active theme. */
   readonly #renderOpts = new Map<NodeId, RenderNodeOptions>()
+  /** Graph-owned category palette (from `categories` in xenolith.v1) — overrides theme category tokens. */
+  #categoryPalette: GraphCategoryPalette | undefined
+  /** Reusable live-template definitions, keyed by id. A `$templateInstance` node references one by
+   *  `state.definitionId`; its pins mirror the definition's `$templateInput`/`$templateOutput`
+   *  boundary nodes. Definitions are document-level — they live on the root, not per dive level. */
+  readonly #definitions = new Map<TemplateDefId, TemplateDefinition>()
+  /** Palette schemas for the registered template definitions (one per definition), so each shows up
+   *  in Tab search and can be inserted as a fresh instance. Kept in sync with #definitions. */
+  readonly #templateRegistry = new NodeRegistry()
+  /** Saved parent levels while dived into template definitions. Each frame is the state to restore on
+   *  dive-out. `#currentDefId` is the definition currently displayed (null at the root document). */
+  #diveStack: { graph: Graph; bus: CommandBus; selectionIds: NodeId[]; viewport: ViewportState; defId: TemplateDefId | null }[] = []
+  #currentDefId: TemplateDefId | null = null
+  #breadcrumbEl: HTMLDivElement | null = null
   /** Measures label/title text so `addNode` can backfill a missing `node.size` from content.
    *  Bound to PIXI's CanvasTextMetrics; falls back to a char-width estimate if that throws (e.g.
    *  a headless environment without a 2D canvas). */
@@ -357,6 +449,12 @@ export class XenolithEditor {
   #lastPointerScreen: { x: number; y: number } | null = null
   /** Registry of node schemas the insert palette searches. Hosts populate it via `editor.registry`. */
   readonly #registry = new NodeRegistry()
+  /** Custom pin-type descriptors (colour/shape/compatibility). Read by connection validation and the
+   *  node renderer. Hosts/plugins populate it via `editor.types`. */
+  readonly #types = new TypeRegistry()
+  /** Header glyph icons by name (built-in Feather set + host/plugin-registered). A node's
+   *  `glyph.icon` resolves through this. Populated via `editor.icons`. */
+  readonly #icons = new IconRegistry()
   /** Built-in schemas always available in the palette, independent of (and unaffected by clearing)
    *  the host registry — currently just the Reroute node. */
   readonly #builtins = new NodeRegistry()
@@ -375,6 +473,9 @@ export class XenolithEditor {
   readonly #widgetControllers = new Map<string, CustomWidgetController>()
   readonly #coreEvents = new EventEmitter<CoreEvents>()
   readonly #events = new EventEmitter<EditorEvents>()
+  /** Installed plugins + their disposers. The context factory is lazy so plugins always see the
+   *  current display graph/bus. Disposed in `destroy()`. */
+  readonly #pluginHost = new PluginHost(() => this.#pluginContext())
   #hoveredId: NodeId | null = null
   readonly #marqueeHovered = new Set<NodeId>()
   #dragState: DragState = { kind: 'idle' }
@@ -387,6 +488,10 @@ export class XenolithEditor {
   /** Members of every currently-collapsed macro — their node views + internal edges are hidden. */
   #hiddenMembers = new Set<NodeId>()
   #interactive = true
+  /** Per-frame tick subscribers (for a host evaluator/simulation). Invoked every frame while the loop
+   *  runs, or once per `step()`. The editor itself never reads them — it's not a runtime. */
+  readonly #tickListeners = new Set<(dtMs: number) => void>()
+  #looping = false
   #isValidConnection: ((c: ConnectionRequest) => boolean) | undefined
   #statusGfx: Graphics | null = null
   readonly #nodeStatus = new Map<NodeId, NodeStatus>()
@@ -398,12 +503,16 @@ export class XenolithEditor {
     this.#textMeasure = this.#makeTextMeasure(theme)
     this.#builtins.register(rerouteNodeSchema)
     this.#builtins.register(commentPaletteSchema)
+    this.#builtins.register(templateInputSchema)
+    this.#builtins.register(templateOutputSchema)
     if (theme.needsBackdrop) {
       this.#backdropRT = this.#createBackdropRT()
     }
-    this.graph = new Graph()
+    this.#rootGraph = new Graph()
+    this.#displayGraph = this.#rootGraph
     this.selection = new Selection()
-    this.commandBus = new CommandBus({ graph: this.graph, events: this.#coreEvents })
+    this.#rootBus = new CommandBus({ graph: this.#rootGraph, events: this.#coreEvents })
+    this.#displayBus = this.#rootBus
     this.#zoomBounds = opts.zoomBounds ?? [0.25, 2]
     this.#snapSize = opts.snap ?? 8
 
@@ -485,7 +594,7 @@ export class XenolithEditor {
     // paste, drag-commit, and undo/redo through one choke point).
     createGraphEventBridge({
       coreEvents: this.#coreEvents,
-      graph: this.graph,
+      graph: () => this.#displayGraph,
       bus: this.#events,
       canUndo: () => this.commandBus.canUndo(),
       canRedo: () => this.commandBus.canRedo(),
@@ -505,6 +614,9 @@ export class XenolithEditor {
     // and returns — no edge redraw, no backdrop RT pass, no shader work, no GPU submit.
     app.ticker.remove(app.render, app)
     app.ticker.add(() => {
+      // Drive the host loop first: a sim tick may mutate the graph (via the command bus), which sets
+      // #needsRender below, so the frame it produces paints in the same pass. Cheap no-op when idle.
+      if (this.#looping && this.#tickListeners.size > 0) this.#emitTick(this.#app.ticker.deltaMS)
       if (this.#statsVisible) this.#tickStats()
       // Keep animated edges flowing: bump the dash phase and mark dirty each frame, but only while
       // at least one animated edge exists — otherwise the graph stays render-on-demand idle.
@@ -775,10 +887,23 @@ export class XenolithEditor {
     return shouldVirtualize(this.graph.nodeCount, this.#theme.virtualizeThreshold ?? 300)
   }
 
+  /** True while `id` is being live-dragged (node drag or comment-group move) — its view sits at the
+   *  cursor offset, ahead of the not-yet-committed `node.position`. */
+  #isLiveDraggingNode(id: NodeId): boolean {
+    if (this.#dragState.kind === 'active' && this.#dragState.initialPositions.has(id)) return true
+    if (this.#commentDrag?.kind === 'move' && this.#commentDrag.nodeStarts.has(id)) return true
+    return false
+  }
+
   /** Materialise a node's view if it has none; otherwise just refresh its position. */
   #ensureView(node: Node): NodeView {
     const existing = this.#views.get(node.id)
-    if (existing) { existing.container.position.set(node.position.x, node.position.y); return existing }
+    if (existing) {
+      // Don't yank a node that's mid-drag back to its committed position — a sync firing during the
+      // drag (e.g. a per-tick widget write while animating) would otherwise make it jitter/teleport.
+      if (!this.#isLiveDraggingNode(node.id)) existing.container.position.set(node.position.x, node.position.y)
+      return existing
+    }
     const opts = this.#renderOpts.get(node.id) ?? {}
     this.#ensureSize(node, opts)
     const view = this.#renderNode(node, opts)
@@ -977,7 +1102,8 @@ export class XenolithEditor {
     for (const n of this.graph.nodes()) {
       const w = n.size?.x ?? tokens.geometry.node.minWidth
       const h = n.size?.y ?? tokens.geometry.node.headerHeight
-      const cat = resolveCategoryGradient(this.#renderOpts.get(n.id)?.category, tokens)
+      const ro = this.#renderOpts.get(n.id)
+      const cat = resolveCategoryGradient(ro?.category, tokens, this.#categoryPalette, ro?.color)
       nodes.roundRect(n.position.x, n.position.y, w, h, radius).fill({ color: darkenColor(cat.start, 0.55) })
     }
     return nodes
@@ -991,11 +1117,15 @@ export class XenolithEditor {
     const tokens = this.#theme.tokens
     const w = Math.max(1, Math.ceil(node.size?.x ?? tokens.geometry.node.minWidth))
     const h = Math.max(1, Math.ceil(node.size?.y ?? tokens.geometry.node.headerHeight))
-    const sig = `${node.type}|${opts.collapsed ? 'c' : 'e'}|${opts.category ?? ''}|${w}x${h}`
+    // Colour-affecting fields go in the cache key: a per-node colour or a palette entry for the
+    // category changes the baked pixels, so two same-type nodes can't share a sprite blindly.
+    const palette = this.#categoryPalette
+    const catColour = opts.color ?? (opts.category && palette ? JSON.stringify(palette[opts.category]) : '')
+    const sig = `${node.type}|${opts.collapsed ? 'c' : 'e'}|${opts.category ?? ''}|${catColour}|${w}x${h}`
     const cached = this.#bakeCache.get(sig)
     if (cached) return cached
     const blank: Node = { ...node, state: {} }
-    const view = renderNode(blank, tokens, { ...opts, renderer: this.#app.renderer as never, customWidgets: this.#widgetControllers })
+    const view = renderNode(blank, tokens, { ...opts, ...(palette ? { categoryPalette: palette } : {}), renderer: this.#app.renderer as never, customWidgets: this.#widgetControllers })
     // generateTexture() bakes the container correctly even when called repeatedly mid-frame — a raw
     // renderer.render(target) loop only filled the first texture and left the rest blank.
     const tex = this.#app.renderer.generateTexture({ target: view.container, frame: new Rectangle(0, 0, w, h) })
@@ -1024,9 +1154,11 @@ export class XenolithEditor {
    *  cursor is over a node (so double-clicking a node body never spawns a palette on top of it). */
   readonly #onDoubleClick = (e: MouseEvent): void => {
     if (this.#hoveredId !== null) {
-      // Double-clicking a macro node toggles it (collapsed ⇄ expanded).
       const n = this.graph.getNode(this.#hoveredId)
+      // Double-clicking a macro toggles it (collapsed ⇄ expanded); a template instance dives into
+      // its shared definition.
       if (n && isMacro(n)) this.toggleMacro(this.#hoveredId)
+      else if (n && isTemplateInstance(n)) this.diveInto(this.#hoveredId)
       return
     }
     this.openPalette({ x: e.offsetX, y: e.offsetY })
@@ -1038,12 +1170,64 @@ export class XenolithEditor {
   readonly #onContextMenu = (e: MouseEvent): void => {
     const screen = { x: e.offsetX, y: e.offsetY }
     const world = screenToWorld(screen, this.#viewport.state)
+    // A node under the cursor takes priority — open the node menu (Delete / Group / Convert to Template).
+    const nodeId = (this.#hoveredId !== null && this.graph.getNode(this.#hoveredId)) ? this.#hoveredId : this.#pickNodeAt(world)
+    if (nodeId !== null) {
+      e.preventDefault()
+      this.#openNodeMenu(nodeId, screen)
+      return
+    }
     // Grab radius around the midpoint dot — the dot radius plus a small forgiving pad (world units).
     const tolerance = this.#theme.tokens.geometry.edge.midpointRadius + 5
     const edgeId = this.#pickEdgeAt(world, tolerance)
     if (!edgeId) return
     e.preventDefault()
     this.#openEdgeMenu(edgeId, screen)
+  }
+
+  /** Topmost visible node whose box contains a world point (iteration order ≈ paint order, so the
+   *  last match wins). Skips hidden macro members. Used by the right-click node menu. */
+  #pickNodeAt(world: { x: number; y: number }): NodeId | null {
+    let hit: NodeId | null = null
+    for (const n of this.graph.nodes()) {
+      if (this.#hiddenMembers.has(n.id)) continue
+      const size = n.size ?? { x: 0, y: 0 }
+      if (world.x >= n.position.x && world.x <= n.position.x + size.x &&
+          world.y >= n.position.y && world.y <= n.position.y + size.y) hit = n.id as NodeId
+    }
+    return hit
+  }
+
+  /** Open the node context menu. Right-clicking a node that isn't part of the current selection
+   *  selects just it first. Items depend on how many nodes are selected: one → Delete; many → Group
+   *  (in-place collapse macro) or Convert to Template (reusable subgraph). */
+  #openNodeMenu(nodeId: NodeId, screen: { x: number; y: number }): void {
+    if (!this.selection.ids().some((id) => id === nodeId)) this.selection.replaceWith([nodeId])
+    const count = this.selection.ids().length
+    const menu = this.#ensureEdgeMenu()
+    if (count <= 1) {
+      // Rename is offered only for "our" nodes — template instances, macro groups, and a template's
+      // I/O boundary nodes — not arbitrary nodes, to avoid confusing per-node title editing. Unpack /
+      // Ungroup are the inverse of Convert to Template / Group.
+      const node = this.graph.getNode(nodeId)
+      const renamable = !!node && (isTemplateInstance(node) || isMacro(node) || isTemplateBoundary(node))
+      const items: EdgeMenuItem[] = []
+      if (renamable) items.push({ label: 'Rename', hint: 'F2', onSelect: () => this.#editNodeTitle(nodeId) })
+      if (node && isTemplateInstance(node)) {
+        items.push({ label: 'Convert to Group', hint: 'editable', onSelect: () => { this.convertTemplateInstanceToMacro(nodeId); this.#requestRender() } })
+        items.push({ label: 'Unpack', hint: 'inline', onSelect: () => this.unpackTemplateInstance(nodeId) })
+      } else if (node && isMacro(node)) {
+        items.push({ label: 'Convert to Template', hint: 'reusable', onSelect: () => { this.convertMacroToTemplate(nodeId); this.#requestRender() } })
+        items.push({ label: 'Ungroup', hint: 'dissolve', onSelect: () => this.ungroupMacro(nodeId) })
+      }
+      items.push({ label: 'Delete', hint: 'Del', onSelect: () => { this.deleteSelected(); this.#requestRender() } })
+      menu.open(screen, items)
+    } else {
+      menu.open(screen, [
+        { label: 'Group', hint: '⌘G', onSelect: () => { this.createMacroFromSelection(); this.#requestRender() } },
+        { label: 'Convert to Template', hint: '⌘⇧G', onSelect: () => { this.createTemplateFromSelection(); this.#requestRender() } },
+      ])
+    }
   }
 
   /** Open the edge context menu at `screen` for `edgeId`. */
@@ -1282,9 +1466,14 @@ export class XenolithEditor {
   #renderNode(node: Node, opts: RenderNodeOptions): NodeView {
     const enriched: RenderNodeOptions = {
       ...opts,
+      ...(this.#categoryPalette ? { categoryPalette: this.#categoryPalette } : {}),
       renderer: this.#app.renderer as never,
       requestRender: this.#requestRender,
       customWidgets: this.#widgetControllers,
+      types: this.#types,
+      // Mark a node with a header glyph (explicit node.glyph, or the built-in template/group markers)
+      // so kinds read apart without relying on colour.
+      ...(() => { const g = this.#resolveGlyph(node); return g ? { glyph: g } : {} })(),
     }
     if (isReroute(node)) {
       return this.#theme.renderReroute?.(node, enriched, this.#themeContext())
@@ -1829,8 +2018,10 @@ export class XenolithEditor {
   createMacroFromSelection(memberIds?: NodeId[], title = 'Macro'): NodeId | null {
     const ids = (memberIds ?? this.selection.ids()) as NodeId[]
     // Members may themselves be macros — macro-in-macro nesting is allowed (a nested macro is just a
-    // collapsed node with proxy pins by the time it's a member).
-    const members = ids.filter((id) => !!this.graph.getNode(id))
+    // collapsed node with proxy pins by the time it's a member). Template interface boundary nodes
+    // ($templateInput/$templateOutput) are NEVER groupable — they ARE the template's in/out pins, and
+    // collapsing them away would silently destroy the interface.
+    const members = ids.filter((id) => { const n = this.graph.getNode(id); return !!n && !isTemplateBoundary(n) })
     if (members.length === 0) return null
     let minX = Infinity, minY = Infinity
     for (const id of members) { const n = this.graph.getNode(id)!; minX = Math.min(minX, n.position.x); minY = Math.min(minY, n.position.y) }
@@ -1854,6 +2045,404 @@ export class XenolithEditor {
     return macro.id
   }
 
+  /** Ungroup a collapsed/expanded macro: dissolve the `Macro` wrapper and leave its members in the
+   *  graph with their original edges restored. Undoable as one transaction. */
+  ungroupMacro(id: NodeId): boolean {
+    const macro = this.graph.getNode(id)
+    if (!macro || !isMacro(macro)) return false
+    const members = macroMembers(macro as Node)
+    this.commandBus.transaction(() => {
+      // If collapsed, move every edge currently on a macro proxy pin back onto the member pin it
+      // proxies. We reconnect by the edge's CURRENT endpoints (not the stored proxyMap edgeId), so it
+      // survives a neighbour macro having re-pointed the edge (macro→macro proxy↔proxy) — that
+      // staleness is what made the old planMacroExpand path throw "edge not found".
+      if (macro.state['collapsed']) {
+        const proxyMap = (macro.state['proxyMap'] ?? []) as MacroProxyRecord[]
+        const pinToMember = new Map<string, { node: NodeId; pin: PinId; dir: 'in' | 'out' }>()
+        for (const r of proxyMap) pinToMember.set(String(r.macroPin), { node: r.memberNode, pin: r.memberPin, dir: r.direction })
+        for (const e of [...this.graph.edges()] as Edge[]) {
+          if (e.to.node === id && pinToMember.has(String(e.to.pin))) {
+            const m = pinToMember.get(String(e.to.pin))!
+            this.commandBus.apply(new DisconnectEdge(e.id))
+            this.commandBus.apply(new ConnectPins({ id: createEdgeId(), from: { ...e.from }, to: { node: m.node, pin: m.pin } }))
+          } else if (e.from.node === id && pinToMember.has(String(e.from.pin))) {
+            const m = pinToMember.get(String(e.from.pin))!
+            this.commandBus.apply(new DisconnectEdge(e.id))
+            this.commandBus.apply(new ConnectPins({ id: createEdgeId(), from: { node: m.node, pin: m.pin }, to: { ...e.to } }))
+          }
+        }
+      }
+      this.commandBus.apply(new RemoveNode(id))
+    })
+    this.#applyMacroVisibility()
+    this.selection.replaceWith(members.filter((m) => !!this.graph.getNode(m)))
+    this.#requestRender()
+    return true
+  }
+
+  // ----- live-template (public API) — reusable subgraph: one definition, many instances -----
+
+  /** The reusable template definitions registered in this document, keyed by id. */
+  get definitions(): ReadonlyMap<TemplateDefId, TemplateDefinition> { return this.#definitions }
+
+  /** Convert a selection into a reusable template: the members move into a fresh definition (with
+   *  auto-derived `$templateInput`/`$templateOutput` boundary nodes), the outer graph keeps a single
+   *  `$templateInstance` node wired in their place. Returns the instance node id, or null if there's
+   *  nothing to extract. Undoable as one transaction. */
+  createTemplateFromSelection(memberIds?: NodeId[], title = 'Template'): NodeId | null {
+    const ids = (memberIds ?? this.selection.ids()) as NodeId[]
+    // Templates operate on FREE nodes only. Skip macro nodes and any node that is a member of a macro
+    // (e.g. an expanded Gather/Pack's inlets/Merge/Sub), so converting a selection that overlaps a
+    // macro can't drag the macro's guts into the template or orphan the macro by moving its members.
+    // Also skip template interface boundaries ($templateInput/$templateOutput): they ARE the parent
+    // template's in/out pins — pulling them into a nested template would destroy the interface.
+    const members = ids
+      .map((id) => this.graph.getNode(id))
+      .filter((n): n is Node => !!n && !isMacro(n) && !isTemplateBoundary(n) && this.#macroParentOf(n.id) === undefined) as Node[]
+    return this.#extractTemplateFromMembers(members, title)
+  }
+
+  /** Core template-extraction step shared by the public Cmd+Shift+G path and the macro-conversion
+   *  path. Trusts the caller's member list (no filtering) — the public entry filters first. */
+  #extractTemplateFromMembers(members: Node[], title: string): NodeId | null {
+    if (members.length === 0) return null
+    let minX = Infinity, minY = Infinity
+    for (const m of members) { minX = Math.min(minX, m.position.x); minY = Math.min(minY, m.position.y) }
+    const instanceId = createNodeId()
+    const plan = planTemplateExtraction(
+      instanceId, members, [...this.graph.edges()] as Edge[],
+      (n, p) => this.#pinInfo(n, p),
+      { node: createNodeId, pin: createPinId, edge: createEdgeId, def: () => createNodeId() as unknown as TemplateDefId },
+      title,
+    )
+    this.#definitions.set(plan.definition.id, plan.definition)
+    this.#registerTemplateSchema(plan.definition.id)
+    // Boundary nodes get minimal render opts so the dived-in view (and serialization) name them.
+    for (const bn of plan.definition.nodes) {
+      if (!this.#renderOpts.has(bn.id) && (bn.type === '$templateInput' || bn.type === '$templateOutput')) {
+        this.#renderOpts.set(bn.id, { category: 'utility', title: bn.type === '$templateInput' ? 'In' : 'Out' })
+      }
+    }
+    const instance: Node = {
+      id: instanceId, type: TEMPLATE_INSTANCE_TYPE, position: { x: minX, y: minY },
+      state: { definitionId: plan.definition.id, pinBoundary: plan.pinBoundary }, pins: plan.instancePins,
+    }
+    this.#renderOpts.set(instanceId, { category: 'macro', title })
+    this.commandBus.transaction(() => {
+      this.commandBus.apply(new AddNode(instance))
+      for (const eid of plan.outerDisconnect) this.commandBus.apply(new DisconnectEdge(eid))
+      for (const id of plan.removeFromOuter) this.commandBus.apply(new RemoveNode(id))
+      for (const e of plan.outerConnect) this.commandBus.apply(new ConnectPins(e))
+    })
+    this.selection.replaceWith([instanceId])
+    return instanceId
+  }
+
+  /** (Re)register a definition as a palette schema so it shows in Tab search and can be inserted as a
+   *  fresh instance. Pins mirror the current interface; call after create / rename / interface edit. */
+  #registerTemplateSchema(defId: TemplateDefId): void {
+    const def = this.#definitions.get(defId)
+    if (!def) return
+    const iface = templateInterface(def)
+    this.#templateRegistry.register({
+      type: String(defId),
+      title: def.title,
+      category: 'macro',
+      description: 'Reusable template instance',
+      keywords: ['template', 'subgraph', def.title.toLowerCase()],
+      pins: iface.map((s) => ({ kind: 'data', direction: s.direction, type: s.type, multiple: s.direction === 'out', ...(s.label !== undefined ? { label: s.label } : {}) })),
+    })
+  }
+
+  /** Rename a template definition — updates its title, every live instance's displayed title, the
+   *  palette entry, and the breadcrumb. */
+  renameTemplate(defId: TemplateDefId, title: string): void {
+    const def = this.#definitions.get(defId)
+    if (!def || title.trim() === '') return
+    def.title = title
+    for (const g of new Set([this.#rootGraph, this.#displayGraph])) {
+      for (const n of g.nodes()) {
+        if (!isTemplateInstance(n) || n.state['definitionId'] !== defId) continue
+        const r = this.#renderOpts.get(n.id) ?? {}; r.title = title; this.#renderOpts.set(n.id, r)
+        if (this.#views.has(n.id)) this.#resizeNodeView(n.id)
+      }
+    }
+    this.#registerTemplateSchema(defId)
+    this.#updateBreadcrumb()
+    this.#requestRender()
+  }
+
+  /** Unpack a `$templateInstance`: inline a fresh copy of its definition's members into the current
+   *  graph (boundary nodes dissolve, outer edges reconnect to the member pins), then remove the
+   *  instance. The definition and other instances are untouched. Undoable as one transaction. */
+  unpackTemplateInstance(id: NodeId): boolean {
+    const inst = this.graph.getNode(id)
+    if (!inst || !isTemplateInstance(inst)) return false
+    const defId = inst.state['definitionId'] as TemplateDefId | undefined
+    const def = defId !== undefined ? this.#definitions.get(defId) : undefined
+    if (!def) return false
+    const plan = planTemplateUnpack(inst as Node, def, [...this.graph.edges()] as Edge[], { node: createNodeId, pin: createPinId, edge: createEdgeId })
+    // Carry render opts (title/category/colour) from each definition member onto its inlined copy.
+    for (const [oldId, newId] of Object.entries(plan.nodeRemap)) {
+      const ro = this.#renderOpts.get(oldId as NodeId)
+      if (ro) this.#renderOpts.set(newId as NodeId, { ...ro })
+    }
+    this.commandBus.transaction(() => {
+      for (const n of plan.addNodes) this.commandBus.apply(new AddNode(n))
+      for (const eid of plan.removeEdges) this.commandBus.apply(new DisconnectEdge(eid))
+      this.commandBus.apply(new RemoveNode(id))
+      for (const e of plan.addEdges) this.commandBus.apply(new ConnectPins(e))
+    })
+    this.selection.replaceWith(plan.addNodes.map((n) => n.id))
+    this.#requestRender()
+    return true
+  }
+
+  /** Convert a `$templateInstance` into an editable collapsed **Group** (Macro): inline a fresh copy of
+   *  the definition's members, then wrap them in a macro. Now you can expand/edit it inline instead of
+   *  diving — the link to the shared definition is dropped (it becomes a one-off group). Returns the
+   *  new macro id, or null. */
+  convertTemplateInstanceToMacro(id: NodeId): NodeId | null {
+    const node = this.graph.getNode(id)
+    if (!node || !isTemplateInstance(node)) return null
+    const title = this.#renderOpts.get(id)?.title
+    if (!this.unpackTemplateInstance(id)) return null // inlines members + selects them
+    return this.createMacroFromSelection(undefined, title ?? 'Group') // wraps the selection in a macro
+  }
+
+  /** Convert a **Group** (Macro) into a reusable **Template**: dissolve the macro, then extract a
+   *  template definition + instance from the FULL subgraph (its direct members + transitively any
+   *  nested macros' members). Nested collapsed macros become collapsed Macro nodes inside the
+   *  definition — diving into the template, you still see them as groups. Returns the instance id. */
+  convertMacroToTemplate(id: NodeId): NodeId | null {
+    const node = this.graph.getNode(id)
+    if (!node || !isMacro(node)) return null
+    const title = this.#renderOpts.get(id)?.title
+    if (!this.ungroupMacro(id)) return null // dissolves outer macro + selects its direct members
+    // Recursively pull in nested macros' hidden members so the WHOLE group goes into the template
+    // (otherwise a nested collapsed macro would pop out as a top-level loose node).
+    const direct = this.selection.ids() as NodeId[]
+    const all: Node[] = []
+    const seen = new Set<string>()
+    const stack: NodeId[] = [...direct]
+    while (stack.length) {
+      const nid = stack.pop()!
+      if (seen.has(String(nid))) continue
+      seen.add(String(nid))
+      const n = this.graph.getNode(nid)
+      if (!n || isTemplateBoundary(n)) continue
+      all.push(n as Node)
+      if (isMacro(n)) for (const m of macroMembers(n as Node)) stack.push(m)
+    }
+    return this.#extractTemplateFromMembers(all, title ?? 'Template')
+  }
+
+  /** Mint a fresh `$templateInstance` node for a definition (pins materialised from its interface). */
+  #instantiateTemplateInstance(defId: TemplateDefId, worldPos: { x: number; y: number }): Node | null {
+    const def = this.#definitions.get(defId)
+    if (!def) return null
+    const { pins, pinBoundary } = materializeInterface(templateInterface(def), createPinId)
+    return { id: createNodeId(), type: TEMPLATE_INSTANCE_TYPE, position: { ...worldPos }, state: { definitionId: defId, pinBoundary }, pins }
+  }
+
+  /** Insert a fresh instance of a template definition (the palette/insertNode path for a `$template…`
+   *  type). Refused if it would create a cycle (instancing the definition we're currently inside, or
+   *  one that transitively contains it). */
+  #insertTemplateInstance(defId: TemplateDefId, worldPos: { x: number; y: number }, opts: { center?: boolean }): Node | null {
+    if (this.#wouldRecurse(defId)) return null
+    const node = this.#instantiateTemplateInstance(defId, worldPos)
+    if (!node) return null
+    const render: RenderNodeOptions = { category: 'macro', title: this.#definitions.get(defId)!.title }
+    if (opts.center) {
+      this.#ensureSize(node, render)
+      node.position = { x: worldPos.x - node.size!.x / 2, y: worldPos.y - node.size!.y / 2 }
+    }
+    this.#renderOpts.set(node.id, render)
+    this.commandBus.apply(new AddNode(node))
+    this.selection.replaceWith([node.id])
+    return node
+  }
+
+  /** Dive depth — 0 at the root document, 1+ while editing nested template definitions. */
+  get diveDepth(): number { return this.#diveStack.length }
+
+  /** The definitions on the current dive branch — the one being edited plus every ancestor. Inserting
+   *  (or diving into) any of these would create a recursive cycle, so they're refused and hidden from
+   *  the palette. Read straight from the dive stack so it's correct even before the active definition
+   *  is flushed back into #definitions. */
+  #diveChainDefs(): ReadonlySet<TemplateDefId> {
+    const chain = new Set<TemplateDefId>()
+    if (this.#currentDefId !== null) chain.add(this.#currentDefId)
+    for (const f of this.#diveStack) if (f.defId !== null) chain.add(f.defId)
+    return chain
+  }
+
+  /** Would inserting an instance of `defId` here create a cycle? True for any definition on the
+   *  current dive branch, or one that (already) transitively contains the definition we're inside. */
+  #wouldRecurse(defId: TemplateDefId): boolean {
+    if (this.#currentDefId === null) return false
+    return this.#diveChainDefs().has(defId) || templateDefContains(this.#definitions, defId, this.#currentDefId)
+  }
+
+  /** Enter a `$templateInstance`'s shared definition: the canvas swaps to render the definition's
+   *  own graph (members + boundary nodes) on a per-level command bus, so edits land in the definition
+   *  and the root is untouched until `diveOut`. Returns false if the node isn't an instance, its
+   *  definition is missing, or entering would re-open a definition already in the dive chain. */
+  diveInto(instanceId: NodeId): boolean {
+    const inst = this.#displayGraph.getNode(instanceId)
+    if (!inst || !isTemplateInstance(inst)) return false
+    const defId = inst.state['definitionId'] as TemplateDefId | undefined
+    if (defId === undefined) return false
+    const def = this.#definitions.get(defId)
+    if (!def) return false
+    // No re-entry: refuse a definition already open in the chain, or one that transitively contains
+    // the definition we're currently inside (defensive — construction already prevents cycles).
+    if (defId === this.#currentDefId || this.#diveStack.some((f) => f.defId === defId)) return false
+    if (this.#currentDefId !== null && templateDefContains(this.#definitions, defId, this.#currentDefId)) return false
+
+    this.#diveStack.push({
+      graph: this.#displayGraph, bus: this.#displayBus,
+      selectionIds: this.selection.ids().slice() as NodeId[],
+      viewport: this.#viewport.state, defId: this.#currentDefId,
+    })
+
+    // A live graph + per-level bus for the definition. Sharing #coreEvents keeps the command→sync
+    // bridge firing against the now-displayed definition graph.
+    const g = new Graph()
+    for (const n of def.nodes) g._addNode(n)
+    for (const e of def.edges) g._addEdge(e)
+    const bus = new CommandBus({ graph: g, events: this.#coreEvents })
+
+    this.#teardownDisplay()
+    this.selection.clear()
+    this.#displayGraph = g
+    this.#displayBus = bus
+    this.#currentDefId = defId
+    this.#rebuildDisplay()
+    this.fitView()
+    this.#updateBreadcrumb()
+    this.#events.emit('dive:changed', { depth: this.diveDepth, definitionId: String(defId) })
+    return true
+  }
+
+  /** Pop out of one or more template definitions. `toDepth` is the dive depth to return to (default:
+   *  one level up; 0 returns all the way to the root document). Flushes each edited definition back
+   *  into its stored data and re-syncs the affected instances' pins on the parent. */
+  diveOut(toDepth = this.diveDepth - 1): void {
+    if (this.#diveStack.length === 0) return
+    const target = Math.max(0, Math.min(toDepth, this.#diveStack.length - 1))
+    while (this.#diveStack.length > target) {
+      // Resolve wildcard/boundary types on the definition NOW (the per-edit sync is deferred to a
+      // microtask that may not have run yet), so the flush captures concrete boundary pin types and
+      // the instance pins below pick them up.
+      this.#propagateRerouteTypes()
+      this.#flushActiveDefinition()
+      const leftDefId = this.#currentDefId
+      const frame = this.#diveStack.pop()!
+      this.#teardownDisplay()
+      this.selection.clear()
+      this.#displayGraph = frame.graph
+      this.#displayBus = frame.bus
+      this.#currentDefId = frame.defId
+      if (leftDefId !== null) this.#resyncInstancePins(leftDefId)
+      this.#rebuildDisplay()
+      this.selection.replaceWith(frame.selectionIds)
+      this.#viewport.setState(frame.viewport)
+    }
+    this.#updateBreadcrumb()
+    this.#events.emit('dive:changed', { depth: this.diveDepth, definitionId: this.#currentDefId !== null ? String(this.#currentDefId) : null })
+    this.#requestRender()
+  }
+
+  /** Write the currently displayed definition's live graph back into its stored `TemplateDefinition`
+   *  (so serialization + a later dive see the edits). No-op at the root. */
+  #flushActiveDefinition(): void {
+    if (this.#currentDefId === null) return
+    const def = this.#definitions.get(this.#currentDefId)
+    if (!def) return
+    def.nodes = Array.from(this.#displayGraph.nodes()) as Node[]
+    def.edges = Array.from(this.#displayGraph.edges()) as Edge[]
+  }
+
+  /** Re-derive a definition's interface and update every live instance of it (on the displayed graph)
+   *  to match — preserving pin ids for boundary slots that still exist, and pruning edges that
+   *  referenced a now-removed instance pin. Run on dive-out, after the parent graph is restored. */
+  #resyncInstancePins(defId: TemplateDefId): void {
+    const def = this.#definitions.get(defId)
+    if (!def) return
+    // The interface may have changed (added/renamed boundary nodes) — keep the palette schema current.
+    this.#registerTemplateSchema(defId)
+    const iface = templateInterface(def)
+    for (const node of Array.from(this.#displayGraph.nodes()) as Node[]) {
+      if (!isTemplateInstance(node) || node.state['definitionId'] !== defId) continue
+      const prevMap = (node.state['pinBoundary'] ?? {}) as Record<string, string>
+      const boundaryToPin = new Map<string, string>()
+      for (const [pinId, b] of Object.entries(prevMap)) boundaryToPin.set(b, pinId)
+      const pins: Pin[] = []
+      const pinBoundary: Record<string, string> = {}
+      const keptPinIds = new Set<string>()
+      for (const slot of iface) {
+        const id = (boundaryToPin.get(String(slot.boundary)) ?? String(createPinId())) as PinId
+        keptPinIds.add(String(id))
+        pins.push({ id, kind: 'data', direction: slot.direction, type: slot.type, multiple: slot.direction === 'out', ...(slot.label !== undefined ? { label: slot.label } : {}) })
+        pinBoundary[String(id)] = String(slot.boundary)
+      }
+      // Drop parent-graph edges that referenced an instance pin the interface no longer has.
+      for (const e of Array.from(this.#displayGraph.edges())) {
+        const stale = (e.from.node === node.id && !keptPinIds.has(String(e.from.pin))) || (e.to.node === node.id && !keptPinIds.has(String(e.to.pin)))
+        if (stale) this.#displayGraph._removeEdge(e.id)
+      }
+      node.pins = pins
+      node.state['pinBoundary'] = pinBoundary
+      // Pins changed (added/renamed/removed) → drop the stale size so the next view build refits the
+      // box to the new labels. diveOut's #rebuildDisplay re-ensures the view + size right after.
+      delete (node as { size?: unknown }).size
+    }
+  }
+
+  /** Render (or remove) the dive breadcrumb in the overlay root: Root / DefTitle / … — each segment
+   *  pops to that depth. Hidden at the root document. */
+  #updateBreadcrumb(): void {
+    if (this.diveDepth === 0) {
+      this.#breadcrumbEl?.remove()
+      this.#breadcrumbEl = null
+      return
+    }
+    if (!this.#breadcrumbEl) {
+      const el = document.createElement('div')
+      el.setAttribute('data-xeno-breadcrumb', '')
+      Object.assign(el.style, {
+        position: 'absolute', top: '12px', left: '12px', display: 'flex', gap: '4px', alignItems: 'center',
+        pointerEvents: 'auto', font: '500 12px var(--xeno-font, system-ui, sans-serif)',
+        color: 'var(--xeno-text, #e8e8e8)', background: 'var(--xeno-panel, rgba(20,22,18,0.82))',
+        border: '1px solid var(--xeno-border, rgba(255,255,255,0.12))', borderRadius: 'var(--xeno-radius, 8px)',
+        padding: '4px 8px', backdropFilter: 'blur(8px)', zIndex: '20',
+      })
+      this.overlayRoot.appendChild(el)
+      this.#breadcrumbEl = el
+    }
+    // Trail of displayed definitions from root to current = saved frames' defIds + the current one.
+    const trail = [...this.#diveStack.map((f) => f.defId), this.#currentDefId]
+    this.#breadcrumbEl.replaceChildren()
+    trail.forEach((defId, i) => {
+      if (i > 0) {
+        const sep = document.createElement('span')
+        sep.textContent = '›'; sep.style.opacity = '0.5'
+        this.#breadcrumbEl!.appendChild(sep)
+      }
+      const label = defId === null ? 'Root' : (this.#definitions.get(defId)?.title ?? 'Template')
+      const isCurrent = i === trail.length - 1
+      const seg = document.createElement('button')
+      seg.textContent = label
+      Object.assign(seg.style, {
+        all: 'unset', cursor: isCurrent ? 'default' : 'pointer', padding: '0 2px',
+        opacity: isCurrent ? '1' : '0.75', fontWeight: isCurrent ? '700' : '500',
+      })
+      if (!isCurrent) seg.addEventListener('click', () => this.diveOut(i))
+      this.#breadcrumbEl!.appendChild(seg)
+    })
+  }
+
   /** Expand a collapsed macro: re-point each proxy edge from the macro pin back to the member pin and
    *  reveal members, with a brief grow-in animation. Idempotent. */
   expandMacro(id: NodeId): void {
@@ -1866,6 +2455,9 @@ export class XenolithEditor {
       .filter((n) => isMacro(n) && !n.state['collapsed'] && n.id !== id && !this.#macroIsAncestor(n.id, id))
       .sort((a, b) => this.#macroDepthOf(b.id) - this.#macroDepthOf(a.id))
     for (const n of stale) this.#setMacroCollapsed(n.id, true)
+    // Flag BEFORE the model flip so the resulting sync (which materialises the member + frame views)
+    // primes them invisible — otherwise they paint one full frame before the grow-in resets them.
+    this.#expandingMacros.add(id)
     this.#setMacroCollapsed(id, false)
     this.#animateMacroExpand(id)
   }
@@ -1913,8 +2505,9 @@ export class XenolithEditor {
     if (!macro) return
     const cx = macro.position.x + (macro.size?.x ?? 0) / 2
     const cy = macro.position.y + (macro.size?.y ?? 0) / 2
-    // Defer one frame so #syncFromGraph has materialised the member views + the frame.
+    // Defer one frame so #syncFromGraph has materialised the member views + the frame (primed invisible).
     requestAnimationFrame(() => {
+      this.#expandingMacros.delete(id) // priming done its job; from here the animation owns alpha
       const members = macroMembers(macro as Node).map((mid) => this.#views.get(mid)).filter((v): v is NodeView => !!v)
       const frame = this.#macroFrames.get(id)
       const targets: Container[] = [...members.map((v) => v.container), ...(frame ? [frame.container] : [])]
@@ -2035,6 +2628,14 @@ export class XenolithEditor {
     }
     this.#syncMacroFrames(expandedMacros)
     this.#reparentMacros()
+    // Prime freshly-expanding macros invisible (members + frame) so #animateMacroExpand fades them in
+    // from nothing — runs in the sync microtask, i.e. before the first paint, so there's no flash.
+    for (const eid of this.#expandingMacros) {
+      const macro = this.graph.getNode(eid)
+      if (!macro) continue
+      for (const mid of macroMembers(macro as Node)) { const v = this.#views.get(mid); if (v) v.container.alpha = 0 }
+      const f = this.#macroFrames.get(eid); if (f) f.container.alpha = 0
+    }
   }
 
   /** Keep macro z-order correct: an EXPANDED macro's frame + members reparent into #macroOverlayLayer
@@ -2160,6 +2761,16 @@ export class XenolithEditor {
 
   #macroFrameLastTap = 0
   #wireMacroFrame(id: NodeId, frame: MacroFrameView): void {
+    // Click in THIS frame's body, outside a deeper open child macro → collapse the child (one level
+    // per click). So clicking the parent group's empty body closes the sub-group nested inside it.
+    frame.body.on('pointerdown', (e: FederatedPointerEvent) => {
+      if (e.button !== 0 || !this.#interactive) return
+      const deepest = this.#deepestExpandedMacro()
+      if (deepest && deepest !== id && this.#macroIsAncestor(id, deepest)) {
+        this.collapseMacro(deepest)
+        e.stopPropagation()
+      }
+    })
     frame.header.on('pointerover', () => { frame.setState('hover'); this.#requestRender() })
     frame.header.on('pointerout', () => { frame.setState('default'); this.#requestRender() })
     frame.header.on('pointerdown', (e: FederatedPointerEvent) => {
@@ -2203,6 +2814,88 @@ export class XenolithEditor {
         this.#requestRender()
       },
     })
+  }
+
+  /** Inline-rename a node's title (header). For a `$templateInstance` this renames its definition
+   *  (propagates to all instances + palette); for a `$templateInput`/`$templateOutput` boundary it
+   *  also relabels the single interface pin so the rename flows to instance pins on dive-out; for any
+   *  other node it just sets the displayed title. */
+  #editNodeTitle(id: NodeId): void {
+    const node = this.graph.getNode(id)
+    const view = this.#views.get(id)
+    if (!node || !view || !node.size) return
+    const vp = this.#viewport.state
+    const t = this.#theme.tokens
+    const headerH = t.geometry.node.headerHeight
+    const heading = t.typography.heading
+    // Exact title-glyph inset (mirrors node-renderer) so the DOM caret lands on the WebGL title — no
+    // jump on enter.
+    const chevron = t.geometry.header.chevronSize
+    const titleStartX = t.geometry.node.headerPadding + 8 + chevron / 2 - 4 + chevron / 2 + t.geometry.header.titleGap
+    const original = this.#renderOpts.get(id)?.title ?? node.type
+    let committed = false
+    // Comment-rename mechanic: the DOM field's TEXT is transparent — the visible glyphs are the LIVE
+    // WebGL title (updated per keystroke, un-ellipsised via fullTitle), so zero font/position jump;
+    // only the caret shows. autoGrow lets the field + caret run past the node.
+    this.#renderNodeTitleLive(id, original, true)
+    this.#ensureWidgetOverlay().editText({
+      rect: {
+        x: node.position.x * vp.zoom + vp.x + titleStartX * vp.zoom,
+        y: node.position.y * vp.zoom + vp.y + 2 * vp.zoom,
+        width: Math.max(40, node.size.x - titleStartX - 8) * vp.zoom,
+        height: (headerH - 4) * vp.zoom,
+      },
+      value: original,
+      style: {
+        background: 'transparent', text: 'transparent', border: 'transparent', borderWidth: 0, radius: 0,
+        paddingX: 0, paddingY: 0, fontSize: heading.size * vp.zoom,
+        fontFamily: t.typography.fontFamily, fontWeight: '700', placeholder: '', selection: 'transparent',
+      },
+      caretColor: heading.color, selectAll: false, autoGrow: true,
+      onInput: (text) => this.#renderNodeTitleLive(id, text, true),
+      onCommit: (text) => { committed = true; const v = text.trim(); if (v !== '') this.#commitNodeRename(id, v); else { this.#renderNodeTitleLive(id, original, false); this.#resizeNodeView(id) } },
+      onClose: () => { if (!committed) { this.#renderNodeTitleLive(id, original, false); this.#resizeNodeView(id) } },
+    })
+  }
+
+  /** Set a node's displayed title (optionally un-ellipsised) and rebuild its view, no size recompute —
+   *  drives the live preview during inline rename. */
+  #renderNodeTitleLive(id: NodeId, title: string, full: boolean): void {
+    const r = this.#renderOpts.get(id) ?? {}; r.title = title
+    if (full) r.fullTitle = true; else delete r.fullTitle
+    this.#renderOpts.set(id, r)
+    const node = this.graph.getNode(id), v = this.#views.get(id)
+    if (node && v) { v.container.destroy({ children: true }); this.#views.delete(id); this.#ensureView(node as Node) }
+    this.#requestRender()
+  }
+
+  /** Recompute a node's natural size from its current title/pins/widgets and rebuild its view —
+   *  call after a rename or an interface change so the box grows/shrinks to fit. */
+  #resizeNodeView(id: NodeId): void {
+    const node = this.graph.getNode(id)
+    if (!node) return
+    delete (node as { size?: unknown }).size
+    this.#ensureSize(node as Node, this.#renderOpts.get(id) ?? {})
+    const v = this.#views.get(id)
+    if (v) { v.container.destroy({ children: true }); this.#views.delete(id) }
+    this.#ensureView(node as Node)
+    this.#requestRender()
+  }
+
+  #commitNodeRename(id: NodeId, text: string): void {
+    const node = this.graph.getNode(id)
+    if (!node) return
+    // Drop the edit-only fullTitle flag so the committed title ellipsises normally again.
+    const ro = this.#renderOpts.get(id); if (ro) delete ro.fullTitle
+    if (isTemplateInstance(node)) {
+      const defId = node.state['definitionId'] as TemplateDefId | undefined
+      if (defId !== undefined) this.renameTemplate(defId, text)
+      return
+    }
+    const r = this.#renderOpts.get(id) ?? {}; r.title = text; this.#renderOpts.set(id, r)
+    // A boundary node's title doubles as its interface pin's label.
+    if (isTemplateBoundary(node) && node.pins[0]) node.pins[0].label = text
+    this.#resizeNodeView(id)
   }
 
   #nodeIntersects(node: Node, rect: GeomRect): boolean {
@@ -2477,13 +3170,23 @@ export class XenolithEditor {
     return found ? widgetValue(found.node, found.spec) : undefined
   }
 
-  /** Set a widget's value through the command bus (undoable). Clamps to the widget's constraints
-   *  and re-renders the node. No-op for valueless widgets (button). */
-  setWidgetValue(nodeId: NodeId, widgetId: string, value: unknown): void {
+  /** Set a widget's value. Clamps to the widget's constraints, refreshes the widget, and emits
+   *  `widget:changed`. No-op for valueless widgets (button).
+   *
+   *  By default the write is undoable (a `SetNodeState` command). Pass `{ ephemeral: true }` for a
+   *  transient write (e.g. a simulation updating readouts every tick): the state is mutated in place,
+   *  the widget repaints and `widget:changed` fires, but NO command is pushed onto the undo stack —
+   *  so a per-frame writer doesn't bloat undo history. */
+  setWidgetValue(nodeId: NodeId, widgetId: string, value: unknown, opts?: { ephemeral?: boolean }): void {
     const found = this.#widgetSpec(nodeId, widgetId)
     if (!found || found.spec.key === undefined) return
     const clamped = clampWidgetValue(found.spec, value)
-    this.commandBus.apply(new SetNodeState(nodeId, { [found.spec.key]: clamped }))
+    if (opts?.ephemeral) {
+      const node = this.graph.getNode(nodeId)
+      if (node) (node.state as Record<string, unknown>)[found.spec.key] = clamped
+    } else {
+      this.commandBus.apply(new SetNodeState(nodeId, { [found.spec.key]: clamped }))
+    }
     // A state-only change doesn't trigger a node re-render in #syncFromGraph, so refresh the
     // widget's visual directly (combo/number/text would otherwise show the stale value).
     this.#views.get(nodeId)?.updateWidget?.(widgetId, clamped)
@@ -2495,15 +3198,78 @@ export class XenolithEditor {
    *  it. e.g. `editor.registry.register({ type: 'Transform', title: 'Transform', pins: [...] })`. */
   get registry(): NodeRegistry { return this.#registry }
 
+  /** Registry of custom pin-type descriptors (colour/shape/compatibility). Drives connection
+   *  validation and pin colours. e.g. `editor.types.register({ id: 'struct:Agent', color: '#9b59ff' })`. */
+  get types(): TypeRegistry { return this.#types }
+
+  /** Registry of header glyph icons. Has a built-in Feather set (`layers`, `box`, `cpu`, `database`,
+   *  `branch`, `code`, `play`, …); add your own via `editor.icons.register('name', '<path …/>')`.
+   *  Set a node's glyph through `NodeSchema.glyph` or `editor.setNodeGlyph(id, { icon, side })`. */
+  get icons(): IconRegistry { return this.#icons }
+
+  /** Set (or clear with `null`) a node's header glyph at runtime — overrides any schema glyph. The
+   *  icon must be registered in `editor.icons`. Re-renders the node (it refits to the glyph). */
+  setNodeGlyph(nodeId: NodeId, glyph: NodeGlyph | null): void {
+    const node = this.graph.getNode(nodeId)
+    if (!node) return
+    if (glyph) (node as { glyph?: NodeGlyph }).glyph = { ...glyph }
+    else delete (node as { glyph?: NodeGlyph }).glyph
+    delete (node as { size?: unknown }).size // the glyph reserves header width → refit
+    this.#rerenderNode(nodeId)
+    this.#requestRender()
+  }
+
+  /** Resolve a node's effective header glyph to drawable svg + side: an explicit `node.glyph` wins,
+   *  else the built-in template/group markers. Returns undefined for a plain node. */
+  #resolveGlyph(node: Node): { svg: string; side: 'left' | 'right' } | undefined {
+    if (node.glyph) {
+      const svg = this.#icons.get(node.glyph.icon)
+      if (svg) return { svg, side: node.glyph.side ?? 'left' }
+    }
+    if (isTemplateInstance(node)) return { svg: this.#icons.get('layers')!, side: 'left' }
+    if (isMacro(node)) return { svg: this.#icons.get('box')!, side: 'left' }
+    return undefined
+  }
+
+  /** Install a plugin. `install` runs immediately with a {@link PluginContext}; any returned
+   *  disposer runs on `destroy()`. Throws if a plugin with the same `name` is already installed. */
+  use(plugin: XenolithPlugin): void { this.#pluginHost.use(plugin) }
+
+  /** Build the stable facade handed to a plugin's `install`. `graph`/`commandBus` are getters so a
+   *  plugin always reads the currently displayed graph (root, or a dived template definition). */
+  #pluginContext(): PluginContext {
+    const self = this
+    return {
+      registry: self.#registry,
+      types: self.#types,
+      icons: self.#icons,
+      app: self.#app,
+      get graph(): Graph { return self.#displayGraph },
+      get commandBus(): CommandBus { return self.#displayBus },
+      registerWidget: (name, controller) => self.registerWidget(name, controller),
+      setIsValidConnection: (fn) => self.setIsValidConnection(fn),
+      on: (event, handler) => self.on(event, handler),
+      onTick: (cb) => self.onTick(cb),
+      startLoop: () => self.startLoop(),
+      stopLoop: () => self.stopLoop(),
+      step: (dtMs) => self.step(dtMs),
+      setWidgetValue: (nodeId, widgetId, value, opts) => self.setWidgetValue(nodeId, widgetId, value, opts),
+      setNodePins: (nodeId, pins) => self.setNodePins(nodeId, pins),
+      setEdgeAnimated: (edgeId, animated) => self.setEdgeAnimated(edgeId, animated),
+      expandTemplateInstance: (nodeId) => self.expandTemplateInstance(nodeId),
+      graphSnapshot: (opts) => self.graphSnapshot(opts),
+    }
+  }
+
   /** Open the insert palette. `screen` is a canvas-relative point (defaults to last pointer
    *  position, then canvas centre). No-op if the registry is empty. */
   openPalette(screen?: { x: number; y: number }): void {
-    if (this.#registry.size === 0 && this.#builtins.size === 0) return
+    if (this.#registry.size === 0 && this.#builtins.size === 0 && this.#templateRegistry.size === 0) return
     if (!this.#palette) {
       this.#palette = new InsertPalette(this.#host, this.#theme.paletteStyle, {
         search: (q) => this.#searchSchemas(q),
         insert: (type, at) => this.#insertFromPalette(type, at),
-        pinColor: (type) => resolvePinFill(type, this.#theme.tokens),
+        pinColor: (type) => resolvePinFill(type, this.#theme.tokens, this.#types),
       })
     }
     const at = screen
@@ -2519,11 +3285,23 @@ export class XenolithEditor {
   #searchSchemas(query: string): ReturnType<NodeRegistry['search']> {
     const host = this.#registry.search(query).sort((a, b) => b.score - a.score)
     const seen = new Set(host.map((r) => r.schema.type))
-    // Built-in core nodes (Reroute) rank ABOVE host matches so they're easy to find.
+    // Built-in core nodes (Reroute) rank ABOVE host matches so they're easy to find. Template
+    // interface boundaries ($templateInput/$templateOutput) only make sense while editing a template
+    // definition — hide them at the root document (dive depth 0).
+    const insideTemplate = this.diveDepth > 0
     const builtins = this.#builtins.search(query)
       .filter((r) => !seen.has(r.schema.type))
+      .filter((r) => insideTemplate || (r.schema.type !== TEMPLATE_INPUT_TYPE && r.schema.type !== TEMPLATE_OUTPUT_TYPE))
       .sort((a, b) => b.score - a.score)
-    let merged = [...builtins, ...host]
+    // Registered template definitions — reusable subgraphs the user has created; rank with host types.
+    // While dived, HIDE any definition that would recurse if inserted here: the current definition
+    // itself and every ancestor up the branch (each transitively contains the current one). This both
+    // prevents recursion and declutters — you simply can't pick a template that would loop.
+    const templates = this.#templateRegistry.search(query)
+      .filter((r) => !seen.has(r.schema.type))
+      .filter((r) => !this.#wouldRecurse(r.schema.type as TemplateDefId))
+      .sort((a, b) => b.score - a.score)
+    let merged = [...builtins, ...templates, ...host]
     // When opened from an edge's "Add Node", show only nodes that can be spliced into that wire.
     const splice = this.#pendingEdgeSplice
     if (splice) merged = merged.filter((r) => spliceCompatible(r.schema, splice.srcType, splice.dstType))
@@ -2540,6 +3318,8 @@ export class XenolithEditor {
   /** Instantiate a registered schema at a world position and add it through the command bus
    *  (undoable). Selects the new node. Returns it, or null if the type isn't registered. */
   insertNode(type: string, worldPos: { x: number; y: number }, opts: { center?: boolean } = {}): Node | null {
+    // A registered template definition inserts as a fresh instance (not a registry schema).
+    if (this.#definitions.has(type as TemplateDefId)) return this.#insertTemplateInstance(type as TemplateDefId, worldPos, opts)
     const reg = this.#registryFor(type)
     if (!reg) return null
     const schema = reg.get(type)!
@@ -2711,13 +3491,23 @@ export class XenolithEditor {
   /** Serialize the current graph (nodes + edges + render opts + viewport) into the canonical
    *  `xenolith.v1` envelope. The returned object is JSON-safe. */
   toJSON(): XenolithGraphV1 {
+    // If we're dived into a definition, flush its live edits back into stored data first so they're
+    // serialized too.
+    this.#flushActiveDefinition()
+    // Always serialize the ROOT document (not whatever's displayed while dived into a template), and
+    // include the template definitions. Edge opts merge the persistent map (covers template edges no
+    // longer live in the display) with the live records (authoritative for displayed edges).
+    const edgeOpts = new Map<EdgeId, RenderEdgeOptions>(this.#edgeOpts)
+    for (const [id, r] of this.#edgeRecords) edgeOpts.set(id, r.opts)
     return serializeXenolithGraph({
-      nodes:      Array.from(this.graph.nodes()),
-      edges:      Array.from(this.graph.edges()),
-      comments:   Array.from(this.graph.comments()),
+      nodes:      Array.from(this.#rootGraph.nodes()),
+      edges:      Array.from(this.#rootGraph.edges()),
+      comments:   Array.from(this.#rootGraph.comments()),
       renderOpts: this.#renderOpts as ReadonlyMap<NodeId, RenderNodeOptions>,
-      edgeOpts:   new Map(Array.from(this.#edgeRecords).map(([id, r]) => [id, r.opts])),
+      edgeOpts,
       viewport:   this.#viewport.state,
+      ...(this.#categoryPalette ? { categories: this.#categoryPalette } : {}),
+      ...(this.#definitions.size > 0 ? { templates: [...this.#definitions.values()] } : {}),
     })
   }
 
@@ -2780,6 +3570,13 @@ export class XenolithEditor {
   loadJSON(data: unknown): void {
     const parsed = parseXenolithGraph(data)
     this.#clearAll()
+    this.#categoryPalette = parsed.categories // graph-owned category colours (undefined for old graphs)
+    // Restore template definitions + their members'/boundary nodes' render+edge opts (parseTemplates
+    // merged those into parsed.renderOpts/edgeOpts). Definition nodes aren't added to the live graph —
+    // they materialise only when diving into an instance — so seed the opts maps here directly.
+    if (parsed.templates) for (const def of parsed.templates) { this.#definitions.set(def.id, def); this.#registerTemplateSchema(def.id) }
+    for (const [id, ro] of parsed.renderOpts) this.#renderOpts.set(id as NodeId, ro)
+    for (const [id, eo] of parsed.edgeOpts) this.#edgeOpts.set(id as EdgeId, eo)
     // Past the virtualization threshold, materialising a view per node here is exactly what blows
     // up GPU memory on huge graphs. So add nodes as DATA only and let one #cullToViewport() pass
     // materialise just the visible ones. Below the threshold, take the normal 1:1 path (addNode).
@@ -2822,25 +3619,23 @@ export class XenolithEditor {
     if (!this.#materializeEdge(edge, opts)) this.graph._removeEdge(edge.id)
   }
 
-  #clearAll(): void {
+  /** Tear down everything DISPLAY-scoped — views, edge graphics, spatial index, comment/macro views,
+   *  GPU caches, LOD, hover state. Leaves the graph MODEL and document-level maps (#renderOpts,
+   *  #edgeOpts, #definitions, #categoryPalette) intact. Used both by #clearAll (document wipe) and by
+   *  dive in/out (swap which graph is shown without touching the model). Does NOT touch selection. */
+  #teardownDisplay(): void {
     this.#nodeStatus.clear()
     this.#statusGfx?.clear()
     for (const { graphics } of this.#edgeRecords.values()) graphics.destroy()
     this.#edgeRecords.clear()
-    this.#edgeOpts.clear()
     for (const view of this.#views.values()) view.container.destroy({ children: true })
     this.#views.clear()
-    this.#renderOpts.clear()
-    for (const id of Array.from(this.graph.nodes()).map((n) => n.id)) this.graph._removeNode(id)
-    for (const id of Array.from(this.graph.edges()).map((e) => e.id)) this.graph._removeEdge(id)
-    this.selection.clear()
     this.#hoveredId = null
     this.#marqueeHovered.clear()
     for (const rt of this.#perNodeBackdropRT.values()) rt.destroy(true)
     this.#perNodeBackdropRT.clear()
     this.#lastOverlapPlan = new Map()
-    this.#clipboard = null
-    // Reset LOD: a fresh graph starts at full detail with the live layers visible. Drop the LOD
+    // Reset LOD: a fresh display starts at full detail with the live layers visible. Drop the LOD
     // batch and the baked textures (the new graph may have a different type-set).
     this.#lodLevel = 'full'
     this.#lodLayer.removeChildren().forEach((c) => c.destroy())
@@ -2858,7 +3653,39 @@ export class XenolithEditor {
     for (const f of this.#macroFrames.values()) f.destroy()
     this.#macroFrames.clear()
     this.#hiddenMembers.clear()
-    for (const id of [...this.graph.comments()].map((c) => c.id)) this.graph._removeComment(id)
+  }
+
+  /** Build views/edges/comments for whatever graph is currently displayed (#displayGraph). Mirrors
+   *  the non-virtualized tail of loadJSON, but reads the display graph so it serves dive in/out too. */
+  #rebuildDisplay(): void {
+    this.#rebuildSpatialGrid()
+    for (const n of this.graph.nodes()) this.#ensureView(n as Node)
+    for (const e of this.graph.edges()) if (!this.#edgeRecords.has(e.id)) this.#materializeEdge(e as Edge, this.#edgeOpts.get(e.id) ?? {})
+    this.#syncComments()
+    this.#applyMacroVisibility()
+    this.#propagateRerouteTypes()
+    this.#scheduleMinimapSync()
+    this.#requestRender()
+  }
+
+  #clearAll(): void {
+    this.#categoryPalette = undefined
+    this.#definitions.clear()
+    this.#templateRegistry.clear()
+    this.#diveStack = []
+    this.#currentDefId = null
+    this.#expandingMacros.clear()
+    this.#updateBreadcrumb()
+    this.#teardownDisplay()
+    this.#edgeOpts.clear()
+    this.#renderOpts.clear()
+    for (const id of Array.from(this.#rootGraph.nodes()).map((n) => n.id)) this.#rootGraph._removeNode(id)
+    for (const id of Array.from(this.#rootGraph.edges()).map((e) => e.id)) this.#rootGraph._removeEdge(id)
+    this.#displayGraph = this.#rootGraph
+    this.#displayBus = this.#rootBus
+    this.selection.clear()
+    this.#clipboard = null
+    for (const id of [...this.#rootGraph.comments()].map((c) => c.id)) this.#rootGraph._removeComment(id)
   }
 
   /** Undo the most recent committed command (drag-drop MoveNode, ConnectPins from pin-drag, etc).
@@ -2874,7 +3701,9 @@ export class XenolithEditor {
 
   /** Select every node AND every comment in the graph. */
   selectAll(): void {
-    this.selection.replaceWith(Array.from(this.graph.nodes()).map((n) => n.id))
+    // Top-level only: a collapsed macro is selected as the single wrapper node, NOT its hidden members
+    // (otherwise copy/paste would clone the guts as loose nodes and the group falls apart).
+    this.selection.replaceWith(Array.from(this.graph.nodes()).filter((n) => !this.#hiddenMembers.has(n.id)).map((n) => n.id))
     this.#clearCommentSelection()
     for (const c of this.graph.comments()) {
       this.#selectedComments.add(c.id)
@@ -2955,6 +3784,21 @@ export class XenolithEditor {
       if (!c) continue
       comments.push(c as Comment)
       for (const id of nodesInsideComment(c, allNodes)) ids.add(id)
+    }
+    // A selected macro copies WITH its members (and nested macros' members) so the group can be
+    // recreated — otherwise the clone would be an empty wrapper referencing missing nodes.
+    for (const id of [...ids]) {
+      const n = this.graph.getNode(id)
+      if (n && isMacro(n)) {
+        const stack = [...macroMembers(n as Node)]
+        while (stack.length) {
+          const m = stack.pop()!
+          if (ids.has(m)) continue
+          ids.add(m)
+          const mn = this.graph.getNode(m)
+          if (mn && isMacro(mn)) stack.push(...macroMembers(mn as Node))
+        }
+      }
     }
     if (ids.size === 0 && comments.length === 0) return null
     const nodes: Node[] = []
@@ -3042,6 +3886,31 @@ export class XenolithEditor {
       const opts = snap.edgeOpts.get(oldEdge.id)
       if (opts) this.#edgeOpts.set(newEdgeId, { ...opts })
     }
+    // Remap macro internals to the cloned ids so a pasted/duplicated macro stays a valid collapsed
+    // group (members hidden) instead of dissolving into loose nodes referencing the originals.
+    //
+    // proxyMap entries are also DROPPED when the externalNode wasn't copied — otherwise, expanding
+    // the pasted macro later would read those entries and wire the cloned members to the ORIGINAL
+    // external nodes (the boundary edge to the external wasn't part of the clipboard, so `findEdge`
+    // returns null and `#setMacroCollapsed` just creates a fresh edge from the stale externalNode).
+    for (const clone of newNodes) {
+      if (!isMacro(clone)) continue
+      const members = (clone.state['members'] as NodeId[] | undefined) ?? []
+      clone.state['members'] = members.map((m) => nodeIdMap.get(m) ?? m)
+      const pm = clone.state['proxyMap'] as MacroProxyRecord[] | undefined
+      if (pm) {
+        clone.state['proxyMap'] = pm
+          .filter((r) => nodeIdMap.has(r.externalNode))
+          .map((r) => ({
+            ...r,
+            macroPin: pinIdMap.get(r.macroPin) ?? r.macroPin,
+            memberNode: nodeIdMap.get(r.memberNode) ?? r.memberNode,
+            memberPin: pinIdMap.get(r.memberPin) ?? r.memberPin,
+            externalNode: nodeIdMap.get(r.externalNode) ?? r.externalNode,
+            externalPin: pinIdMap.get(r.externalPin) ?? r.externalPin,
+          }))
+      }
+    }
     const newComments: Comment[] = snap.comments.map((c) => {
       const clone: Comment = {
         ...c,
@@ -3068,6 +3937,93 @@ export class XenolithEditor {
    *  anywhere to pan without grabbing nodes. Drives the Controls lock toggle. */
   /** Replace the custom connection guard at runtime (or clear with `null`). */
   setIsValidConnection(fn: ((c: ConnectionRequest) => boolean) | null): void { this.#isValidConnection = fn ?? undefined }
+
+  /** Subscribe to a per-frame tick (for a host evaluator/simulation). `cb` gets the frame delta in ms.
+   *  Fires every frame between `startLoop()`/`stopLoop()`, and once per `step()`. Returns an
+   *  unsubscribe fn. The editor isn't a runtime — this is just a clock the host can drive logic from. */
+  onTick(cb: (dtMs: number) => void): () => void {
+    this.#tickListeners.add(cb)
+    return () => { this.#tickListeners.delete(cb) }
+  }
+
+  /** Start the per-frame loop: `onTick` subscribers fire on every animation frame with the real frame
+   *  delta. No-op visual cost on its own — rendering still happens on demand when a tick mutates the graph. */
+  startLoop(): void { this.#looping = true }
+  /** Stop the per-frame loop. `step()` still works while stopped. */
+  stopLoop(): void { this.#looping = false }
+  get looping(): boolean { return this.#looping }
+
+  /** Fire one tick manually with a fixed delta (default 1/60 s) — deterministic stepping, independent
+   *  of the loop. For a host that wants reproducible single-step execution. */
+  step(dtMs = 1000 / 60): void { this.#emitTick(dtMs) }
+
+  #emitTick(dtMs: number): void {
+    for (const cb of this.#tickListeners) cb(dtMs)
+  }
+
+  /** Read-only flatten of a `$templateInstance` into its plain primitive subgraph (fresh ids) for a
+   *  host evaluator: `{ nodes, edges, boundary }` where boundary maps each instance pin to the
+   *  internal pin(s) it bridges. Recurses through nested instances; returns null if the node isn't an
+   *  instance, its definition is unknown, or the template is recursive. The document is NOT mutated. */
+  expandTemplateInstance(nodeId: NodeId): FlattenedTemplate | null {
+    const node = this.graph.getNode(nodeId)
+    if (!node || !isTemplateInstance(node)) return null
+    return flattenTemplateInstance(
+      node as Node,
+      (id) => this.#definitions.get(id),
+      { node: createNodeId, pin: createPinId, edge: createEdgeId },
+    )
+  }
+
+  /** A plain structural snapshot of the displayed graph for a host interpreter — `{ nodes, edges }`
+   *  with no PIXI/view data. With `{ expandMacros: true }` collapsed macros are flattened to their
+   *  primitives (proxy-pin edges remapped to member pins) so the executor sees one flat graph and the
+   *  grouping stays purely visual. Read-only; does not mutate the document. */
+  graphSnapshot(opts?: { expandMacros?: boolean }): GraphSnapshot {
+    const rawNodes = [...this.graph.nodes()] as Node[]
+    const rawEdges = [...this.graph.edges()] as Edge[]
+    const { nodes, edges } = opts?.expandMacros
+      ? flattenMacroProxies(rawNodes, rawEdges)
+      : { nodes: rawNodes, edges: rawEdges }
+    return {
+      nodes: nodes.map((n) => ({
+        id: String(n.id),
+        type: n.type,
+        state: { ...n.state },
+        pins: n.pins.map((p) => ({
+          id: String(p.id), kind: p.kind, direction: p.direction, type: String(p.type),
+          ...(p.default !== undefined ? { default: p.default } : {}),
+        })),
+      })),
+      edges: edges.map((e) => ({
+        from: { node: String(e.from.node), pin: String(e.from.pin) },
+        to: { node: String(e.to.node), pin: String(e.to.pin) },
+      })),
+    }
+  }
+
+  /** Toggle an edge's animated wire flow. Public, non-undoable tweak (animation is a transient view
+   *  state). Works for virtualized edges with no live record too. */
+  setEdgeAnimated(edgeId: EdgeId, animated: boolean): void {
+    if (!this.graph.hasEdge(edgeId)) return
+    const opts = { ...(this.#edgeOpts.get(edgeId) ?? {}), animated }
+    this.#edgeOpts.set(edgeId, opts)
+    if (animated) this.#animatedEdges.add(edgeId); else this.#animatedEdges.delete(edgeId)
+    const rec = this.#edgeRecords.get(edgeId)
+    if (rec) { rec.opts = opts; rec.lastFromX = rec.lastFromY = rec.lastToX = rec.lastToY = undefined; this.#redrawEdge(edgeId) }
+    this.#requestRender()
+  }
+
+  /** Replace a node's pins at runtime (variadic pins — Sequence/MakeArray "+", Branch true/false).
+   *  Undoable; edges to dropped pins are pruned; the node view refits to the new pin list. */
+  setNodePins(nodeId: NodeId, pins: Pin[]): void {
+    if (!this.graph.getNode(nodeId)) return
+    this.commandBus.apply(new SetNodePins(nodeId, pins))
+    // Pins changed (count/labels) → drop the stale size so the rebuilt view refits to the new pins.
+    delete (this.graph.getNode(nodeId) as { size?: unknown }).size
+    this.#rerenderNode(nodeId)
+    this.#requestRender()
+  }
 
   /** Show a coloured status ring on a node (`running` pulses, `ok`/`error` are solid, `idle` clears).
    *  For surfacing graph-execution progress from the host — the editor isn't a runtime. */
@@ -3128,6 +4084,7 @@ export class XenolithEditor {
     if (!canConnect(sourcePin, targetPin, sourceNode.id === targetNode.id, {
       sourceEdges: this.#countEdgesAtPin(sourceNode.id, String(sourcePin.id)),
       targetEdges: this.#countEdgesAtPin(targetNode.id, String(targetPin.id)),
+      types: this.#types,
     })) return false
     if (this.#isValidConnection) {
       const out = sourcePin.direction === 'out'
@@ -3279,6 +4236,9 @@ export class XenolithEditor {
   }
 
   destroy(): void {
+    this.#looping = false
+    this.#tickListeners.clear()
+    this.#pluginHost.dispose()
     window.removeEventListener('keydown', this.#onKeyDown)
     window.removeEventListener('resize', this.#onResize)
     this.#hostResizeObserver?.disconnect()
@@ -3357,10 +4317,12 @@ export class XenolithEditor {
       return
     }
     if (mod && (e.key === 'g' || e.key === 'G')) {
-      // Cmd/Ctrl+G — group the current selection into a collapsed macro.
+      // Cmd/Ctrl+G — Collapse the selection into an in-place macro. With Shift — convert it into a
+      // reusable Template instance instead (one shared definition, dive-in to edit).
       if (this.selection.size === 0) return
       e.preventDefault()
-      this.createMacroFromSelection()
+      if (e.shiftKey) this.createTemplateFromSelection()
+      else this.createMacroFromSelection()
       return
     }
     if (mod && (e.key === 'c' || e.key === 'C')) {
@@ -3396,6 +4358,13 @@ export class XenolithEditor {
     if (view) return { x: view.container.position.x, y: view.container.position.y }
     const node = this.graph.getNode(nodeId)
     return node ? { ...node.position } : null
+  }
+
+  /** The node's CURRENT rendered (view) position — equals `node.position` at rest, but during a drag
+   *  it's the live cursor-follow position (ahead of the not-yet-committed `node.position`). Null if the
+   *  node has no live view (virtualized off-screen). Handy for anchoring DOM overlays to a node. */
+  renderedNodePosition(nodeId: NodeId): { x: number; y: number } | null {
+    return this.#livePosition(nodeId)
   }
 
   #pinLayoutFor(node: Node, pinIndex: number): PinLayout {
@@ -3683,15 +4652,58 @@ export class XenolithEditor {
       const arr = outgoing.get(e.from.node); if (arr) arr.push(e as Edge); else outgoing.set(e.from.node, [e as Edge])
     }
     const reroutes: Node[] = []
+    const boundaries: Node[] = []
     for (const n of this.graph.nodes()) {
       if (isReroute(n) || n.type === REROUTE_NODE_TYPE) reroutes.push(n as Node)
+      else if (isTemplateBoundary(n)) boundaries.push(n as Node)
     }
-    if (reroutes.length === 0) return
+    if (reroutes.length === 0 && boundaries.length === 0) return
 
     let changed = true
     let guard = 0
     while (changed && guard++ < 16) {
       changed = false
+      // Template boundary nodes are wildcard relays too: a `$templateInput` adopts the type of the
+      // member IN-pin it feeds (downstream), a `$templateOutput` the type of the member OUT-pin that
+      // feeds it (upstream). So the interface type is driven by the definition's own wiring; the
+      // instance picks it up via templateInterface on dive-out. (See [generic-templates] for the
+      // deferred per-instance variant.)
+      for (const node of boundaries) {
+        if (node.type === TEMPLATE_INPUT_TYPE) {
+          const outPin = node.pins.find((p) => p.direction === 'out')
+          if (!outPin) continue
+          let type = 'any'
+          for (const e of outgoing.get(node.id) ?? []) {
+            const tn = this.graph.getNode(e.to.node)
+            const tp = tn?.pins.find((p) => String(p.id) === String(e.to.pin))
+            if (tp && String(tp.type) !== 'any') { type = String(tp.type); break }
+          }
+          if (String(outPin.type) === type) continue
+          outPin.type = type
+          changed = true
+          this.#rerenderNode(node.id)
+          for (const e of outgoing.get(node.id) ?? []) {
+            const opts = { ...(this.#edgeOpts.get(e.id) ?? {}), sourceType: type }
+            this.#edgeOpts.set(e.id, opts)
+            const rec = this.#edgeRecords.get(e.id); if (rec) rec.opts = opts
+            this.#redrawEdge(e.id)
+          }
+        } else {
+          const inPin = node.pins.find((p) => p.direction === 'in')
+          if (!inPin) continue
+          let type = 'any'
+          const feed = incoming.get(node.id)
+          if (feed) {
+            const sn = this.graph.getNode(feed.from.node)
+            const sp = sn?.pins.find((p) => String(p.id) === String(feed.from.pin))
+            if (sp) type = String(sp.type)
+          }
+          if (String(inPin.type) === type) continue
+          inPin.type = type
+          changed = true
+          this.#rerenderNode(node.id)
+        }
+      }
       for (const node of reroutes) {
         const inPin = node.pins.find((p) => p.direction === 'in')
         const outPin = node.pins.find((p) => p.direction === 'out')
@@ -3858,6 +4870,7 @@ export class XenolithEditor {
           .stroke({ color: '#FCB400', width: 1 / this.#viewport.state.zoom, alpha: 0.8 })
         this.#marqueeHovered.clear()
         for (const node of this.graph.nodes()) {
+          if (this.#hiddenMembers.has(node.id)) continue // hidden members of a collapsed macro aren't selectable
           if (rectIntersects(rect, nodeBounds(node, this.#theme.tokens))) {
             this.#marqueeHovered.add(node.id)
           }
@@ -3891,6 +4904,7 @@ export class XenolithEditor {
       const rect = rectFromPoints(marquee.startWorld, currentWorld)
       const ids: NodeId[] = []
       for (const node of this.graph.nodes()) {
+        if (this.#hiddenMembers.has(node.id)) continue // hidden members of a collapsed macro aren't selectable
         if (rectIntersects(rect, nodeBounds(node, this.#theme.tokens))) ids.push(node.id)
       }
       this.#marqueeHovered.clear()

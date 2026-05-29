@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { xenTokens } from '@xenolith/theme-xen'
+import { TypeRegistry } from '@xenolith/core'
 import {
   resolveCategoryAccent,
   resolvePinFill,
   resolvePinStroke,
+  resolvePinShape,
   resolveEdgeColor,
   resolveCategoryGradient,
   hexToRgba,
@@ -24,6 +26,43 @@ describe('resolveCategoryAccent', () => {
   it('falls back to utility accent when category is undefined', () => {
     expect(resolveCategoryAccent(undefined, xenTokens)).toBe(xenTokens.category.utility.accent)
   })
+
+  it('prefers a graph palette colour over the theme token', () => {
+    expect(resolveCategoryAccent('agent', xenTokens, { agent: { color: '#FF0000' } })).toBe('#FF0000')
+    // A palette colour for a category the theme also knows still wins.
+    expect(resolveCategoryAccent('logic', xenTokens, { logic: { color: '#00FF00' } })).toBe('#00FF00')
+  })
+
+  it('uses the gradient start as the accent when the palette entry is a gradient', () => {
+    expect(resolveCategoryAccent('agent', xenTokens, { agent: { gradient: { start: '#112233', end: '#000000' } } })).toBe('#112233')
+  })
+
+  it('still falls back to theme/utility when the palette has no entry', () => {
+    expect(resolveCategoryAccent('agent', xenTokens, { other: { color: '#FF0000' } })).toBe(xenTokens.category.utility.accent)
+  })
+})
+
+describe('resolveCategoryGradient (palette + per-node override)', () => {
+  it('uses a palette gradient entry verbatim', () => {
+    const g = resolveCategoryGradient('agent', xenTokens, { agent: { gradient: { start: '#112233', end: '#445566' } } })
+    expect(g).toEqual({ start: '#112233', end: '#445566' })
+  })
+
+  it('derives a fade gradient from a palette colour entry', () => {
+    const g = resolveCategoryGradient('agent', xenTokens, { agent: { color: '#ff0000' } })
+    expect(g).toEqual({ start: hexToRgba('#ff0000', 0.6), end: hexToRgba('#ff0000', 0) })
+  })
+
+  it('per-node override colour beats both palette and theme', () => {
+    const g = resolveCategoryGradient('logic', xenTokens, { logic: { color: '#00ff00' } }, '#abcdef')
+    expect(g).toEqual({ start: hexToRgba('#abcdef', 0.6), end: hexToRgba('#abcdef', 0) })
+  })
+
+  it('without palette or override, matches the theme accent fade (back-compat)', () => {
+    const g = resolveCategoryGradient('logic', xenTokens)
+    const accent = xenTokens.category.logic.accent
+    expect(g).toEqual({ start: hexToRgba(accent, 0.6), end: hexToRgba(accent, 0) })
+  })
 })
 
 describe('resolvePinFill', () => {
@@ -42,6 +81,23 @@ describe('resolvePinFill', () => {
   it('falls back to the any colour for unknown types', () => {
     expect(resolvePinFill('totally-made-up', xenTokens)).toBe(xenTokens.pinType.any.color)
   })
+
+  describe('with a custom TypeRegistry', () => {
+    const types = new TypeRegistry()
+    types.register({ id: 'struct:Agent', color: '#9b59ff' })
+
+    it('uses a registered descriptor colour for a type the theme does not know', () => {
+      expect(resolvePinFill('struct:Agent', xenTokens, types)).toBe('#9b59ff')
+    })
+
+    it('theme-known types still win over the registry', () => {
+      expect(resolvePinFill('float', xenTokens, types)).toBe(xenTokens.pinType.float.color)
+    })
+
+    it('still falls back to any for a type in neither theme nor registry', () => {
+      expect(resolvePinFill('totally-made-up', xenTokens, types)).toBe(xenTokens.pinType.any.color)
+    })
+  })
 })
 
 describe('resolvePinStroke', () => {
@@ -56,6 +112,26 @@ describe('resolvePinStroke', () => {
 
   it('falls back to canvas stroke for unknown types', () => {
     expect(resolvePinStroke('made-up', xenTokens)).toBe(xenTokens.geometry.pin.strokeColor)
+  })
+})
+
+describe('resolvePinShape', () => {
+  it('defaults: data pins are circles, exec pins are arrows', () => {
+    expect(resolvePinShape('float', 'data')).toBe('circle')
+    expect(resolvePinShape('exec', 'exec')).toBe('arrow')
+  })
+
+  it('a registered descriptor shape wins over the kind default', () => {
+    const types = new TypeRegistry()
+    types.register({ id: 'struct:Agent', color: '#9b59ff', shape: 'diamond' })
+    expect(resolvePinShape('struct:Agent', 'data', types)).toBe('diamond')
+  })
+
+  it('falls back to the kind default when the type has no shape', () => {
+    const types = new TypeRegistry()
+    types.register({ id: 'scalar', color: '#ffcc00' }) // no shape
+    expect(resolvePinShape('scalar', 'data', types)).toBe('circle')
+    expect(resolvePinShape('unknown', 'data', types)).toBe('circle')
   })
 })
 

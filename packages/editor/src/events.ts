@@ -27,11 +27,17 @@ export type EditorEvents = {
   'widget:action': { nodeId: NodeId; widgetId: string; action: string }
   'graph:loaded': { nodeCount: number; edgeCount: number }
   'history:changed': { canUndo: boolean; canRedo: boolean }
+  /** Fired when diving into / out of a template definition. `depth` 0 is the root document;
+   *  `definitionId` is the definition currently displayed (null at the root). */
+  'dive:changed': { depth: number; definitionId: string | null }
 }
 
 interface BridgeOptions {
   coreEvents: EventEmitter<CoreEvents>
-  graph: Graph
+  /** The graph the bridge reads when reconstructing a node/edge on undo. A getter is accepted so the
+   *  editor can point it at whichever graph is currently displayed (root, or a template definition
+   *  while dived). A plain `Graph` is still accepted for headless callers. */
+  graph: Graph | (() => Graph)
   bus: EventEmitter<EditorEvents>
   canUndo: () => boolean
   canRedo: () => boolean
@@ -41,7 +47,8 @@ interface BridgeOptions {
  *  renderer-free so it can be unit-tested headlessly. `forward` is the apply/redo direction;
  *  undo emits the inverse event. */
 export function createGraphEventBridge(opts: BridgeOptions): Unsubscribe {
-  const { coreEvents, graph, bus, canUndo, canRedo } = opts
+  const { coreEvents, bus, canUndo, canRedo } = opts
+  const graphOf = typeof opts.graph === 'function' ? opts.graph : () => opts.graph as Graph
 
   const translate = (command: Command<unknown>, forward: boolean): void => {
     switch (command.type) {
@@ -54,7 +61,7 @@ export function createGraphEventBridge(opts: BridgeOptions): Unsubscribe {
       case 'RemoveNode': {
         const nodeId = (command as unknown as { nodeId: NodeId }).nodeId
         if (forward) bus.emit('node:removed', { nodeId })
-        else { const node = graph.getNode(nodeId); if (node) bus.emit('node:added', { node }) }
+        else { const node = graphOf().getNode(nodeId); if (node) bus.emit('node:added', { node }) }
         break
       }
       case 'ConnectPins': {
@@ -66,12 +73,12 @@ export function createGraphEventBridge(opts: BridgeOptions): Unsubscribe {
       case 'DisconnectEdge': {
         const edgeId = (command as unknown as { edgeId: EdgeId }).edgeId
         if (forward) bus.emit('edge:disconnected', { edgeId })
-        else { const edge = graph.getEdge(edgeId); if (edge) bus.emit('edge:connected', { edge }) }
+        else { const edge = graphOf().getEdge(edgeId); if (edge) bus.emit('edge:connected', { edge }) }
         break
       }
       case 'MoveNode': {
         const nodeId = (command as unknown as { nodeId: NodeId }).nodeId
-        const node = graph.getNode(nodeId)
+        const node = graphOf().getNode(nodeId)
         if (node) bus.emit('node:moved', { nodeId, position: { x: node.position.x, y: node.position.y } })
         break
       }

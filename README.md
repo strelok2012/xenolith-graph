@@ -1,12 +1,12 @@
 # XenolithGraph
 
-An embeddable, drop-in node-graph editor for the web with a polished design system inside the package — and a swappable theme architecture that lets you replace the renderer's material entirely, not just its palette.
+An embeddable, drop-in node-graph editor for the web with a polished design system inside the package — typed Blueprint pins, live templates, macros, in-node widgets, a plugin host — and a swappable theme architecture that replaces the renderer's material entirely, not just its palette.
 
-> **Status:** pre-v0.1. Public API is stabilising. v0.1 release follows the Liquid Glass shader landing + mobile support.
+> **Status:** approaching v1.0. Public API stable; touch/mobile, Vue/Svelte/Solid adapters, and the Blueprint VM runtime (`@xenolith/plugin-runtime`) land before the freeze.
 
 <p>
   <img src="docs/screenshots/xen.png" alt="Xen — default dark/gold theme" width="49%" />
-  <img src="docs/screenshots/liquid-glass.png" alt="Liquid Glass — frosted glass material inspired by new Apple design" width="49%" />
+  <img src="docs/screenshots/liquid-glass.png" alt="Liquid Glass — shader-based frosted theme" width="49%" />
 </p>
 
 ## What it does
@@ -15,27 +15,27 @@ An embeddable, drop-in node-graph editor for the web with a polished design syst
 import { XenolithEditor } from '@xenolith/editor'
 
 const editor = await XenolithEditor.init('#app')
-editor.addNode(myNode, { category: 'logic', title: 'Source' })
-editor.connect(a, 0, b, 1, { sourceType: 'float' })
+editor.loadJSON(graphDoc)
+editor.fitView()
 ```
 
-One call boots: fonts, PIXI v8 renderer (WebGL/WebGPU auto-selected), viewport, grid, pan/zoom, marquee selection, multi-drag with snap-to-grid, connect-pins-by-drag, Alt+drag rewire, collapsible nodes with animated pill form. Headless core (graph + commands + undo/redo) is zero-dependency.
+One async call boots: fonts, PIXI v8 renderer, viewport, grid, pan/zoom, marquee, multi-drag with snap, connect-pins-by-drag, `Alt`+drag rewire, two reroute kinds, comments, collapsed macros, live templates with dive-in editing, in-node widgets, K2-style Tab palette, undo/redo, JSON serialize, minimap. Headless `@xenolith/core` is zero-dependency.
 
-## Themes are first-class
+## Highlights
 
-A `XenolithTheme` bundles three things — `tokens` (the design-token tree), an optional custom `renderNode`, and an optional `createGrid` for the canvas backdrop. Themes swap at runtime through `editor.setTheme(theme)` and re-render every node in place; selection, hover, collapse state, and positions are preserved.
+- **Blueprint-first.** Typed pins (`exec` vs `data`), per-type color and shape (`circle` / `arrow` / `diamond`), `compatibleWith` for auto-cast. Exec pins hoist onto the node header line (UE-Blueprint layout) when a node has one. Header glyphs from a Feather icon set or your own SVG.
+- **Live templates.** Reusable sub-graphs with a stored definition + many instances. Edit the definition (`Cmd+Shift+G` to create, double-click to dive in) and every instance updates. Convert back-and-forth: template → group, group → template (carries nested macros). Unpack inlines a copy.
+- **Collapsed macros.** `Cmd+G` packs the selection into one wrapper with proxy pins on its border. Inline, no shared definition — for one-off grouping. Round-trips through the file format.
+- **Comments.** Drag a coloured rectangle behind nodes; spatial group-drag — anything inside moves with it. Tab → "Comment" or context menu.
+- **In-node widgets.** Declarative `number` / `slider` / `combo` / `text` / `toggle` / `color` / `button`, plus custom canvas-draw or DOM-mount widgets. React/Vue/Svelte components mount inline through `registerWidget(name, controller)`.
+- **Plugin host.** `editor.use(plugin)` with a `PluginContext` that exposes schema/types/icons/widgets, an event bus, and a runtime-delegation surface (`onTick`, `setNodePins`, `setWidgetValue({ephemeral})`, `expandTemplateInstance`, `graphSnapshot`, `setEdgeAnimated`) for execution plugins. The in-progress `@xenolith/plugin-runtime` is the canonical consumer — a Blueprint VM.
+- **Two themes shipped.** Xen (dark/gold, original design system) and Liquid Glass (shader-based refraction + rim lighting via PIXI Mesh+Shader). Swap at runtime with `editor.setTheme(theme)`.
+- **Perf for real graphs.** Viewport virtualization + 3-tier LOD (full → sprite-baked → flat-batch). Render-on-demand (static graphs idle at 0 fps cost). Shared GPU texture caches. Tested at 58k nodes; ~4–7 ms/frame at 40k+ on M1.
+- **React adapter.** `<XenolithPanel>`, `<XenolithControls>`, `<XenolithMiniMap>`, `<XenolithButton>`, reactive selector hooks, editor context. Other frameworks via `@xenolith/wc` until dedicated adapters land.
 
-Two themes ship in the box:
+## Theming
 
-### Xen — the default dark/gold material
-
-Original Blueprint-influenced look: dark `#0F110E` node bodies, gold accents, category-tinted headers (`logic`/`data`/`macro`/`utility`), typed pins (`exec`/`data`, with type-color wires), counter-glow on hover/selected, animated collapse-to-pill. Lives in `@xenolith/theme-xen`.
-
-### Liquid Glass — Apple WWDC25-style frosted shader
-
-Custom PIXI v8 Mesh + GLSL material that *actually sees through* the canvas: per-frame backdrop snapshot, SDF rounded-rect with edge-localised refraction along the outward normal, 13×13 gaussian blur on the sampled backdrop, vertical gradient tint, bright luminous rim. Sits over a radial-gradient navy canvas with the same dot grid. Lives in `@xenolith/theme-liquid-glass`.
-
-Switching is one line:
+A `XenolithTheme` bundles design tokens, an optional custom `renderNode`, and an optional `createGrid` for the canvas backdrop. Themes swap at runtime through `editor.setTheme(theme)` and re-render every node in place; selection, hover, collapse state, positions are preserved.
 
 ```ts
 import { xenTheme } from '@xenolith/render-pixi'
@@ -47,42 +47,40 @@ editor.setTheme(xenTheme)
 
 The shader-heavy backdrop pass is **opt-in per theme** (`theme.needsBackdrop`) — Xen pays zero extra render cost; Liquid Glass turns it on automatically.
 
-## What's wired up in v0.1
+## Roadmap
 
-- **Editor lifecycle:** `XenolithEditor.init('#app')` — single async call.
-- **Theming:** runtime `setTheme()`, per-theme `renderNode` / `drawEdge` / `createGrid` hooks, deep-merge token overrides.
-- **Interaction:** pan, zoom (mouse wheel, focal), marquee, multi-select, group-drag with snap (anchor-based — relative offsets preserved), Alt to disable snap.
-- **Pins & edges:** connect by drag (with live ghost edge + type-compat validation), Alt+drag a connected pin to detach and reroute, Esc / drop-in-void to snap the original back, fan-in capacity enforced per `pin.multiple`.
-- **Nodes:** collapse/expand with animated pill form, pin labels reposition along the rounded end-caps.
-- **Headless core:** mutable Graph + readonly views, CommandBus with `apply/undo`, cascading edge removal on node removal.
-
-## What's coming
-
-| When | What |
+| Milestone | What |
 |---|---|
-| v0.2 | Keyboard shortcuts (Delete / Cmd+Z / Cmd+D), JSON serialise/load (`xenolith.v1.json`), NodeSchema + Tab palette, real ComfyUI workflow importer |
-| v0.3 | **Full mobile / touch support** — two-finger pan + pinch-zoom, finger-sized pin hit-areas (already in the renderer), tap-to-tap pin connect mode, long-press multi-select. No competitor handles tablet well today. |
-| v0.4 | Framework adapters (`@xenolith/react`, `…/vue`, `…/svelte`), minimap, comments, reroute nodes |
-| Later | Pixel-art shader theme (third built-in material), collaborative editing |
+| **shipped** | Core + renderer + editor, Xen + Liquid Glass themes, typed pins, K2 palette, undo, `xenolith.v1` JSON, comments, two reroute kinds, edge-midpoint context menu, copy/paste, minimap, widgets, macros, live templates with dive-in editing, plugin host, header glyphs, UE-Blueprint exec-on-header, viewport virtualization + LOD, React adapter + hooks, Liquid Glass theme. |
+| **v0.6 → v1.0** | `@xenolith/plugin-runtime` (Blueprint VM), Vue/Svelte/Solid adapters, touch/mobile (pinch-zoom + long-press), accessibility (ARIA + keyboard nav), auto-layout plugin (ELK/Dagre), public API + format freeze. |
+| **opt-in / on-demand** | Yjs collab adapter, orthogonal edge routing, custom WebGL renderer (PIXI replacement). |
 
 ## Packages
 
 | Package | Role |
 |---|---|
-| `@xenolith/core` | Headless graph model, commands, selection, event emitter — zero runtime deps |
-| `@xenolith/render-pixi` | PIXI v8 renderer, the `XenolithTheme` interface, `xenTheme`, geometry math |
-| `@xenolith/editor` | Wires core + renderer + interaction. The public entry point |
-| `@xenolith/theme-xen` | Default Xen design tokens, bundled Inter fonts, font loader |
-| `@xenolith/theme-liquid-glass` | Liquid Glass theme — radial backdrop + GLSL mesh material |
+| `@xenolith/core` | Headless graph model, types, command bus, events, plan-* helpers for macros/templates/reroutes. Zero deps. |
+| `@xenolith/render-pixi` | PIXI v8 renderer (nodes, edges, comments, macros, widgets, glyphs, LOD). PIXI is a peer dependency. |
+| `@xenolith/editor` | Composes renderer + interaction + commands + plugin host. The public entry point. |
+| `@xenolith/theme-xen` | Default Xen design tokens, bundled Inter fonts. |
+| `@xenolith/theme-liquid-glass` | Liquid Glass theme — radial backdrop + GLSL Mesh material. |
+| `@xenolith/demo` | One `xenolith.v1` data graph + ComfyUI importer + topology-reactive runners. Consumed by every demo host. |
+| `@xenolith/adapter-core`, `@xenolith/wc` | Framework-agnostic editor wrapper + universal web component. |
+| `@xenolith/react` | React adapter (`<XenolithPanel>` / `<XenolithControls>` / `<XenolithMiniMap>` / `<XenolithButton>`, reactive selector hooks). |
+| `@xenolith/plugin-runtime` *(in progress)* | Blueprint VM (exec-push + pure-pull, `Allocate` verb). Installs via `editor.use()`. |
 
 ## Develop
 
 ```sh
 pnpm install
-pnpm --filter @xenolith/playground dev     # localhost:5173, includes a theme switcher
-pnpm test                                   # vitest across all packages
-pnpm build                                  # tsc -b across all packages
+pnpm --filter @xenolith/playground dev      # localhost:5173, includes a theme switcher
+pnpm --filter @xenolith/site dev            # the docs + landing site (Astro Starlight)
+pnpm test                                    # vitest across all packages
+pnpm -w test:e2e                             # playwright (chromium + firefox)
+pnpm build                                   # tsc -b across all packages
 ```
+
+Architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). ADRs: [`docs/adr/`](docs/adr/). Public API guide: [docs site](apps/site).
 
 ## License
 

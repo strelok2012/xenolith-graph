@@ -1,11 +1,71 @@
 ---
-title: 主题自定义
-description: 覆盖 Xen 主题令牌。
+title: 主题
+description: 在 Xen 与 Liquid Glass 间切换，覆盖 token，或用自定义着色器构建自己的主题。
 ---
 
-Xen 设计系统位于 `@xenolith/theme-xen`。可向 `XenolithEditor.init` 传入部分 token，深合并到默认值。
+`XenolithTheme` 打包了三类内容：
 
-## 快速覆盖
+```ts
+interface XenolithTheme {
+  id:                 string
+  tokens:             XenTokens                          // 设计令牌
+  paletteStyle?:      PaletteStyle                       // 面板 / 菜单 / 遮罩的 DOM 样式
+  needsBackdrop?:     boolean                            // 选用每帧 backdrop RT
+  renderNode?:        (node, opts, ctx) => NodeView      // 自定义节点渲染
+  renderReroute?:     (node, opts, ctx) => NodeView      // 自定义内联 reroute 圆点渲染
+  renderRerouteNode?: (node, opts, ctx) => NodeView      // 自定义可拉拽 Reroute 节点渲染
+  drawEdge?:          (g, from, to, opts) => Graphics    // 自定义连线渲染
+  createGrid?:        () => Container                    // 自定义画布背景
+}
+```
+
+每个 hook 都是可选的。省略时，编辑器会回退到 Xen 内置渲染——因此“主题”可以小到五行的调色板微调，也可以是完全自定义的 Mesh + GLSL 材质。
+
+`renderReroute` 样式化内联 `$reroute` 圆点（连线穿过一个点）；`renderRerouteNode` 样式化可拉拽的矩形 `Reroute` 节点。Liquid Glass 用按引脚类型上色的玻璃圆/盒覆盖两者。`paletteStyle` 驱动 DOM 外观——插入面板、连线右键菜单、**以及** “Rendering…” 加载遮罩——让它们都随当前主题改变样式。
+
+## 内置主题
+
+开箱即用两种主题。
+
+### Xen — 默认
+
+```ts
+import { XenolithEditor } from '@xenolith/editor'
+
+const editor = await XenolithEditor.init('#app')
+// Xen 即默认——无需 `theme` 选项。
+```
+
+原创 dark/gold 设计系统：`#0F110E` 节点主体、金色点缀、按类别染色的表头、按类型上色的连线、折叠到 pill 的动画。位于 `@xenolith/theme-xen`。
+
+### Liquid Glass — 受苹果新设计启发的磨砂玻璃
+
+```ts
+import { XenolithEditor } from '@xenolith/editor'
+import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
+
+const editor = await XenolithEditor.init('#app', { theme: liquidGlassTheme })
+```
+
+自定义 PIXI v8 Mesh + GLSL 材质。每帧编辑器将世界（除节点层外）渲染到 backdrop `RenderTexture`；每个玻璃主体通过自己的着色器对这张纹理进行采样，带边缘折射、高斯模糊和垂直色调。底层是径向 navy 渐变画布与柔和的点阵网格。
+
+backdrop pass 是**可选**的：Liquid Glass 设置 `needsBackdrop: true`，Xen 不设——所以切回 Xen 会彻底关闭这次额外的渲染。
+
+## 运行时主题切换
+
+```ts
+import { xenTheme } from '@xenolith/render-pixi'
+import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
+
+editor.setTheme(liquidGlassTheme)   // 每个节点用新主题重新渲染
+editor.setTheme(xenTheme)           // 选区、悬停、折叠状态、位置都保留
+```
+
+`setTheme` 接受完整的 `XenolithTheme`，**或** `DeepPartial<XenTokens>` 令牌覆盖（会深合并到当前主题的 token）。
+
+## 令牌覆盖
+
+只想微调 Xen 调色板，在 `init` 中传入 override：
 
 ```ts
 const editor = await XenolithEditor.init('#app', {
@@ -25,4 +85,78 @@ const editor = await XenolithEditor.init('#app', {
 })
 ```
 
-未覆盖的 token 保持默认。
+未涉及的其他令牌（几何、排版、效果、表面）保持 Xen 默认值。
+
+## 在图数据中设置类别颜色（data-first）
+
+Token 覆盖在**代码中**改色，无法随图保存。要直接在 `xenolith.v1` 数据里给自定义类别（`agent`、`warehouse`…）或单个节点上色，使用可选的 `categories` 调色板和节点级 `render.color`。两者都能通过 `editor.toJSON()` / `loadJSON()` 往返保存。
+
+```ts
+editor.loadJSON({
+  version: 'xenolith.v1',
+  // 图持有的调色板：单色 accent，或显式表头渐变
+  categories: {
+    agent:     { color: '#7C5CFF' },
+    warehouse: { gradient: { start: '#1FB6A8', end: '#0E5C55' } },
+  },
+  nodes: [
+    { id: 'a1', type: 'Planner', position: { x: 0, y: 0 }, pins: [],
+      render: { category: 'agent', title: 'Planner' } },
+    // 节点级颜色优先于类别
+    { id: 'a2', type: 'Boss', position: { x: 240, y: 0 }, pins: [],
+      render: { category: 'agent', title: 'Boss', color: '#FF3366' } },
+  ],
+  edges: [],
+})
+```
+
+节点表头颜色解析顺序：**`render.color` → `categories[category]` → 主题 `category` token → `utility` 兜底**。两个字段均可选——没有它们的图与之前渲染一致，使用主题内置类别。类型 `CategoryColorSpec` / `GraphCategoryPalette` 从 `@xenolith/render-pixi` 导出。
+
+用**令牌覆盖**重塑整体视觉语言；用 **`categories`** 调色板给数据中的领域类别上色。
+
+## 完整 token 形状
+
+完整类型位于 `@xenolith/theme-xen`，叫 `XenTokens`。顶层分组：
+
+| 分组            | 用途                                                                    |
+|-----------------|-------------------------------------------------------------------------|
+| `color.brand`   | 品牌 / hover / accent 的黄色及其 alpha。                                |
+| `color.surface` | 画布、节点主体、面板、分隔线、表头渐变末端色。                          |
+| `color.text`    | primary、secondary、muted、disabled 文本色。                            |
+| `pinType`       | 每种引脚类型一条：`color`、`edgeColor`、`shape`、`edgeWidth`。          |
+| `category`      | 表头 accent + 各类别（`logic`、`data`、`macro`、`utility`）的 Figma 渐变。 |
+| `pill`          | Pill 形态的 accent 渐变 CSS 字符串（`green`、`orange`…）。              |
+| `state`         | `hover`、`selected`、`active`、`disabled`——border + glow 令牌。        |
+| `geometry`      | 节点、引脚、表头、连线、注释、**reroute**（`radius`、`ringWidth`）以及连线 `midpointRadius` 的尺寸。 |
+| `typography`    | Inter 字体族 + heading / label / comment 样式。                         |
+| `effect`        | 表头 inner shadow、backdrop blur、rim highlight、drop shadow。          |
+| `background`    | 画布颜色与点阵网格配置。                                                |
+
+## 构建自己的主题
+
+只改调色板的话，一个对象字面量就够：
+
+```ts
+import type { XenolithTheme } from '@xenolith/render-pixi'
+import { xenTokens } from '@xenolith/theme-xen'
+import { mergeTheme } from '@xenolith/theme-xen'
+
+export const pastelTheme: XenolithTheme = {
+  id: 'pastel',
+  tokens: mergeTheme(xenTokens, {
+    color: {
+      surface: { canvas: '#FAF7F2', node: '#FFFFFF' },
+      text:    { primary: '#1A1A1A', secondary: '#666666' },
+    },
+    background: { color: '#FAF7F2', grid: { color: 'rgba(0,0,0,0.06)' } },
+    category: {
+      logic:   { accent: '#7FB8A1' },
+      data:    { accent: '#7FA8C7' },
+      macro:   { accent: '#C77F9F' },
+      utility: { accent: '#444444' },
+    },
+  }),
+}
+```
+
+需要自定义材质（自己的着色器、自己的 backdrop）——实现 `renderNode`，可选实现 `createGrid`。完整示例参见 `@xenolith/theme-liquid-glass` 源码——PIXI Mesh + GLSL，SDF 折射 + backdrop 采样。

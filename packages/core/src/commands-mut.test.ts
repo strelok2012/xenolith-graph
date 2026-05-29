@@ -4,9 +4,10 @@ import type { CommandContext, CoreEvents } from './command-bus.js'
 import { EventEmitter } from './event-emitter.js'
 import { Graph } from './graph.js'
 import type { Node } from './graph.js'
-import { createNodeId, createPinId } from './ids.js'
-import { AddNode } from './commands.js'
-import { MoveNode, ResizeNode, SetNodeState } from './commands-mut.js'
+import { createNodeId, createPinId, createEdgeId } from './ids.js'
+import { AddNode, ConnectPins } from './commands.js'
+import type { Pin } from './graph.js'
+import { MoveNode, ResizeNode, SetNodeState, SetNodePins } from './commands-mut.js'
 
 function makeNode(): Node {
   return {
@@ -125,6 +126,69 @@ describe('SetNodeState', () => {
     bus.undo()
     bus.redo()
     expect(ctx.graph.getNode(n.id)?.state).toEqual({ label: 'world', count: 1 })
+  })
+})
+
+describe('SetNodePins', () => {
+  const dataPin = (over: Partial<Pin>): Pin => ({
+    id: createPinId(), kind: 'data', direction: 'in', type: 'float', multiple: false, ...over,
+  })
+
+  function setup() {
+    const events = new EventEmitter<CoreEvents>()
+    const graph = new Graph()
+    const ctx: CommandContext = { graph, events }
+    const bus = new CommandBus(ctx)
+    const outPin = createPinId(), inPin = createPinId()
+    const a: Node = { id: createNodeId(), type: 'A', position: { x: 0, y: 0 }, state: {}, pins: [dataPin({ id: outPin, direction: 'out', multiple: true })] }
+    const b: Node = { id: createNodeId(), type: 'B', position: { x: 200, y: 0 }, state: {}, pins: [dataPin({ id: inPin, direction: 'in', label: 'X' })] }
+    bus.apply(new AddNode(a)); bus.apply(new AddNode(b))
+    const edgeId = createEdgeId()
+    bus.apply(new ConnectPins({ id: edgeId, from: { node: a.id, pin: outPin }, to: { node: b.id, pin: inPin } }))
+    return { bus, ctx, a, b, inPin, outPin, edgeId }
+  }
+
+  it('replaces the node pins', () => {
+    const { bus, ctx, b } = setup()
+    const np = createPinId()
+    bus.apply(new SetNodePins(b.id, [dataPin({ id: np, type: 'string', label: 'Y' })]))
+    expect(ctx.graph.getNode(b.id)!.pins.map((p) => p.id)).toEqual([np])
+    expect(ctx.graph.getNode(b.id)!.pins[0]!.label).toBe('Y')
+  })
+
+  it('prunes edges incident to removed pins; undo restores both pins and edges', () => {
+    const { bus, ctx, b, edgeId } = setup()
+    bus.apply(new SetNodePins(b.id, [dataPin({})])) // replaces the targeted inPin → edge must drop
+    expect(ctx.graph.hasEdge(edgeId)).toBe(false)
+    bus.undo()
+    expect(ctx.graph.hasEdge(edgeId)).toBe(true)
+    expect(ctx.graph.getNode(b.id)!.pins.map((p) => p.label)).toEqual(['X'])
+  })
+
+  it('keeps edges on pins that survive the replacement', () => {
+    const { bus, ctx, b, edgeId } = setup()
+    const kept = ctx.graph.getNode(b.id)!.pins[0]! // same inPin id survives
+    bus.apply(new SetNodePins(b.id, [kept, dataPin({})]))
+    expect(ctx.graph.hasEdge(edgeId)).toBe(true)
+  })
+
+  it('redo re-applies and prunes the edge again', () => {
+    const { bus, ctx, b, edgeId } = setup()
+    bus.apply(new SetNodePins(b.id, [dataPin({})]))
+    bus.undo(); bus.redo()
+    expect(ctx.graph.hasEdge(edgeId)).toBe(false)
+  })
+
+  it('throws if the node does not exist', () => {
+    const { bus } = setup()
+    expect(() => bus.apply(new SetNodePins(createNodeId(), []))).toThrow(/not found/i)
+  })
+
+  it('bumps graph.version', () => {
+    const { bus, ctx, b } = setup()
+    const before = ctx.graph.version
+    bus.apply(new SetNodePins(b.id, [dataPin({})]))
+    expect(ctx.graph.version).toBeGreaterThan(before)
   })
 })
 

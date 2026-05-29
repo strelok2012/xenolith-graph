@@ -1,14 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { geometricMean, gini } from './metrics.js'
-
-describe('geometricMean', () => {
-  it('is the exp of the mean of logs', () => {
-    expect(geometricMean([2, 8])).toBeCloseTo(4) // sqrt(16)
-  })
-  it('defaults to 1 for an empty set', () => {
-    expect(geometricMean([])).toBe(1)
-  })
-})
+import { gini } from './metrics.js'
 
 describe('gini', () => {
   it('is 0 for a perfectly equal distribution', () => {

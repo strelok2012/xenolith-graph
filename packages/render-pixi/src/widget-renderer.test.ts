@@ -33,6 +33,19 @@ describe('computeWidgetRects', () => {
     expect(rects[0]!.height).toBe(66 + 22) // 3 field rows + 1 label row
   })
 
+  it('does not reserve a body row for hoisted exec pins (UE-Blueprint header layout)', () => {
+    // A single label-less exec-in + single label-less exec-out are HOISTED onto the header line and
+    // don't occupy a body row. The widget block must start one row below the header (the data row),
+    // not two — the previous bug counted the exec pins twice and produced a phantom empty band.
+    const execPin = (direction: 'in' | 'out'): Pin =>
+      ({ id: createPinId(), kind: 'exec', direction, type: 'exec', multiple: direction === 'in' })
+    const pins = [execPin('in'), execPin('out'), pin('in')]
+    const n = node([{ id: 'w', type: 'number', label: 'W', key: 'w' }], pins)
+    const rects = computeWidgetRects(n, 200, GEO)
+    // 1 body row (the data-in), so yStart = 21 + 15 + 11 + gap(6) = 53 — same as the basic case.
+    expect(rects[0]!.y).toBe(53)
+  })
+
   it('returns [] when the node has no widgets', () => {
     expect(computeWidgetRects(node([]), 200, GEO)).toEqual([])
     const bare: Node = { id: createNodeId(), type: 'T', position: { x: 0, y: 0 }, state: {}, pins: [] }

@@ -8,6 +8,9 @@ export interface MacroFrameView {
   readonly container: Container
   /** Header strip — interactive (editor wires double-click to collapse). */
   readonly header: Container
+  /** Body rect — interactive; captures clicks inside the frame. The editor wires it so a click in an
+   *  ancestor frame's body (outside a deeper open child) collapses the child. */
+  readonly body: Container
   readonly headerHeight: number
   update(rect: FrameRect, title: string): void
   setState(state: MacroFrameState): void
@@ -116,7 +119,7 @@ export function renderMacroFrame(tokens: XenTokens, headerStyle: 'gradient' | 't
   }
 
   return {
-    container, header, headerHeight,
+    container, header, body, headerHeight,
     update,
     setState: (s) => { if (s !== state) { state = s; drawBorder() } },
     destroy: () => { highlightGrad.destroy(); rimGrad.destroy(); headerFill.destroy(); container.destroy({ children: true }) },

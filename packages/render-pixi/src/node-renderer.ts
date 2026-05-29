@@ -18,11 +18,11 @@ import {
   type LinearGradientOptions,
 } from 'pixi.js'
 import type { StateStyle } from '@xenolith/theme-xen'
-import type { Node, Pin } from '@xenolith/core'
+import type { Node, Pin, TypeRegistry } from '@xenolith/core'
 import type { XenTokens } from '@xenolith/theme-xen'
 import { computeNodeLayout } from './layout.js'
 import { renderWidgets, type WidgetHit, type WidgetLayoutTokens, type CustomWidgetController } from './widget-renderer.js'
-import { hexToRgba, resolveCategoryAccent, resolveCategoryGradient, resolvePinFill, resolvePinStroke } from './style.js'
+import { hexToRgba, resolveCategoryAccent, resolveCategoryGradient, resolvePinFill, resolvePinShape, resolvePinStroke, type GraphCategoryPalette } from './style.js'
 
 export type NodeVisualState = 'default' | 'hover' | 'selected' | 'active'
 
@@ -73,6 +73,13 @@ export interface RenderNodeOptions {
   title?: string
   state?: NodeVisualState
   collapsed?: boolean
+  /** Skip title ellipsis — used during inline rename so the live (possibly overflowing) title shows
+   *  in full while the user types, matching the comment-rename behaviour. */
+  fullTitle?: boolean
+  /** Per-node header colour override (from `render.color` in the graph data). Beats category/theme. */
+  color?: string
+  /** Graph-level category palette (from `categories` in the graph data). Overrides theme tokens. */
+  categoryPalette?: GraphCategoryPalette
   /** Active PIXI Renderer — when provided, selection/hover/active glow strokes are baked into
    *  shared textures keyed by (size × radius × style). Without it, each glow falls back to a
    *  live BlurFilter (acceptable for unit tests, expensive at scale). */
@@ -83,6 +90,13 @@ export interface RenderNodeOptions {
   requestRender?: () => void
   /** Host-registered custom widget controllers, keyed by the `renderer` name on a `custom` widget. */
   customWidgets?: ReadonlyMap<string, CustomWidgetController>
+  /** Custom pin-type descriptors — a pin whose type the theme doesn't know falls back to the
+   *  registered descriptor's colour instead of the generic `any` grey. */
+  types?: TypeRegistry
+  /** A small glyph drawn in the header to mark a node without relying on colour. `svg` is the inner
+   *  markup of a 24×24 icon (the editor resolves a {@link NodeGlyph} name via its icon registry);
+   *  `side` picks which side of the title it sits on. Positioning/centring is automatic. */
+  glyph?: { svg: string; side: 'left' | 'right' }
 }
 
 export interface NodeView {
@@ -136,6 +150,29 @@ function buildChevron(g: Graphics, cx: number, cy: number, size: number) {
     .lineTo(cx + halfW, cy - halfH)
 }
 
+/** Append a pin glyph path to `g`: a right-pointing arrow (exec/control flow), a diamond (e.g. struct
+ *  types), or a circle (data). Shared by both renderers + the expanded/collapsed pin paths. */
+export function buildPinShape(g: Graphics, shape: 'circle' | 'diamond' | 'arrow', x: number, y: number, r: number): Graphics {
+  if (shape === 'arrow') return g.moveTo(x - r, y - r * 1.15).lineTo(x + r * 1.2, y).lineTo(x - r, y + r * 1.15).closePath()
+  if (shape === 'diamond') return g.moveTo(x, y - r * 1.25).lineTo(x + r * 1.25, y).lineTo(x, y + r * 1.25).lineTo(x - r * 1.25, y).closePath()
+  return g.circle(x, y, r)
+}
+
+/** A filled+stroked pin Graphics of the given shape. */
+function drawPin(shape: 'circle' | 'diamond' | 'arrow', x: number, y: number, r: number, fill: string, stroke: string, strokeW: number): Graphics {
+  return buildPinShape(new Graphics(), shape, x, y, r).fill({ color: fill }).stroke({ color: stroke, width: strokeW })
+}
+
+/** A header glyph scaled to a `size`×`size` box. `svgInner` is the inner markup of a 24×24 viewBox
+ *  (resolve a name via {@link IconRegistry}); the art is centred within the box, so place its
+ *  top-left at `(x, centerY - size/2)` to centre it on a line. Shared by Xen + Liquid Glass. */
+export function makeHeaderIcon(svgInner: string, color: string, size: number): Graphics {
+  const g = new Graphics()
+  g.svg(`<svg viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${svgInner}</svg>`)
+  g.scale.set(size / 24)
+  return g
+}
+
 /** Module-level cache of pre-blurred glow textures keyed by signature. The dominant cost in
  *  selection rendering is the BlurFilter running per-node-per-frame — caching means each unique
  *  (size × radius × style) combination is blurred ONCE and shared across every node that uses
@@ -169,7 +206,10 @@ function bakeGlowTexture(
   const glow = new Graphics()
     .roundRect(pad, pad, w, h, radius)
     .stroke({ color: style.glow, width: style.glowWidth ?? 3, alignment: 0.5 })
-  const blur = new BlurFilter({ strength, quality: 4, antialias: 'on' })
+  // BlurFilter with `antialias: 'on'` races the filter pipeline when rendered into a fresh
+  // RenderTexture mid-frame (PIXI v8 — BindGroup.setResource null at index 2 on insertNode).
+  // The blur kernel already eliminates aliasing on the stroke, so 'on' is pure cost + risk.
+  const blur = new BlurFilter({ strength, quality: 4 })
   blur.padding = pad
   glow.filters = [blur]
 
@@ -177,7 +217,6 @@ function bakeGlowTexture(
     width:      w + pad * 2,
     height:     h + pad * 2,
     resolution: renderer.resolution,
-    antialias:  true,
   })
   renderer.render({ container: glow, target: rt })
   glow.destroy()
@@ -192,6 +231,10 @@ function makeGlowLayer(
   const layer = new Container()
   layer.visible = false
   if (style.glow === undefined) return layer
+  // Defensive: a zero-size glow would build a 0×0 RenderTexture and PIXI's filter pipeline
+  // crashes on the resolve step. Just skip the cache lookup and return the empty layer —
+  // selection visuals will reappear once the node has a real size.
+  if (w <= 0 || h <= 0) return layer
 
   // Glow source is a STROKE, not a fill. A blurred filled rectangle leaks brighter halos along
   // the long edges than at the corners. A blurred perimeter stroke traces the contour exactly;
@@ -356,7 +399,7 @@ export function renderNode(
   const headerInnerHeight = geo.node.headerHeight - padding
   const headerRadius = Math.max(geo.node.radius - 2, 0)
 
-  const gradient = resolveCategoryGradient(opts.category, tokens)
+  const gradient = resolveCategoryGradient(opts.category, tokens, opts.categoryPalette, opts.color)
   const headerFill = sharedGradient({
     type: 'linear',
     start: { x: 0, y: 0 },
@@ -421,6 +464,15 @@ export function renderNode(
   chevron.eventMode = 'static'
   expanded.addChild(chevron)
 
+  // Header glyph — a small icon marking the node, drawn left or right of the title. Reserves its
+  // width so the title shifts in; the glyph itself is positioned after the title is laid out so it
+  // can centre on the title's optical middle.
+  const glyph = opts.glyph
+  const iconSize = glyph ? Math.round(tokens.typography.heading.size + 1) : 0
+  const leftGlyph = glyph?.side === 'left'
+  const rightGlyph = glyph?.side === 'right'
+  const baseTitleX = chevronCenterX + geo.header.chevronSize / 2 + geo.header.titleGap
+  const titleStartX = leftGlyph ? baseTitleX + iconSize + geo.header.titleGap : baseTitleX
   const title = new BitmapText({
     text: opts.title ?? node.type,
     style: {
@@ -430,8 +482,26 @@ export function renderNode(
       fill:       tokens.typography.heading.color,
     },
   })
-  title.position.set(chevronCenterX + geo.header.chevronSize / 2 + geo.header.titleGap, 3)
+  // Ellipsise the title to the header's available width (node may be sized by its pin labels, not the
+  // full title — e.g. after a long rename) so it never bleeds past the node's right edge. A right-side
+  // glyph also reserves room at the right edge.
+  const maxTitleW = w - titleStartX - geo.node.headerPadding - 6 - (rightGlyph ? iconSize + geo.header.titleGap : 0)
+  if (!opts.fullTitle && maxTitleW > 0) {
+    const full = opts.title ?? node.type
+    if (title.width > maxTitleW) {
+      let cut = full
+      while (cut.length > 1 && title.width > maxTitleW) { cut = cut.slice(0, -1); title.text = `${cut}…` }
+    }
+  }
+  title.position.set(titleStartX, 3)
   expanded.addChild(title)
+  if (glyph) {
+    // Centre the glyph's box on the title's optical middle so the glyph + text read on one line.
+    const icon = makeHeaderIcon(glyph.svg, tokens.typography.heading.color, iconSize)
+    const iconX = leftGlyph ? baseTitleX : w - geo.node.headerPadding - iconSize
+    icon.position.set(iconX, title.position.y + title.height / 2 - iconSize / 2)
+    expanded.addChild(icon)
+  }
 
   const borderLayers: Record<Exclude<NodeVisualState, 'default'>, Container> = {
     hover:    makeBorderLayer(tokens.state.hover,    w, h, geo.node.radius),
@@ -450,12 +520,9 @@ export function renderNode(
     const localY = layoutPin.y - node.position.y
     expandedPinLocations.set(pin.id, { x: localX, y: localY })
     const radius = geo.pin.diameter / 2
-    const fill = resolvePinFill(String(pin.type), tokens)
+    const fill = resolvePinFill(String(pin.type), tokens, opts.types)
     const stroke = resolvePinStroke(String(pin.type), tokens)
-    const pinGfx = new Graphics()
-      .circle(localX, localY, radius)
-      .fill({ color: fill })
-      .stroke({ color: stroke, width: geo.pin.stroke })
+    const pinGfx = drawPin(resolvePinShape(String(pin.type), pin.kind, opts.types), localX, localY, radius, fill, stroke, geo.pin.stroke)
     markPinInteractive(pinGfx, pin, String(node.id), localX, localY, radius)
     expanded.addChild(pinGfx)
 
@@ -493,12 +560,15 @@ export function renderNode(
   const pillR = geo.node.pillRadius
   // Pill width fits the collapsed title (chevron at x≈16, title just past it) plus a trailing cap,
   // not a fixed minimum — long titles otherwise overflow the capsule.
-  const pillTitleStartX = 16 + geo.header.chevronSize / 2 + geo.header.titleGap
+  const pillIconSize = glyph ? Math.round(tokens.typography.heading.size + 1) : 0
+  const basePillTitleX = 16 + geo.header.chevronSize / 2 + geo.header.titleGap
+  const pillTitleStartX = leftGlyph ? basePillTitleX + pillIconSize + geo.header.titleGap : basePillTitleX
   const pillTitleWidth = CanvasTextMetrics.measureText(
     opts.title ?? node.type,
     new TextStyle({ fontFamily: tokens.typography.fontFamily, fontSize: tokens.typography.heading.size, fontWeight: '700' }),
   ).width
-  const pillW = Math.max(geo.node.pillMinWidth, pillTitleStartX + pillTitleWidth + pillR)
+  const pillTitleEndX = pillTitleStartX + pillTitleWidth + (rightGlyph ? geo.header.titleGap + pillIconSize : 0)
+  const pillW = Math.max(geo.node.pillMinWidth, pillTitleEndX + pillR)
   // Centre the pill vertically within the (taller) expanded body so the node's anchor doesn't shift.
   // Canon: a node collapses UP to its header (pill sits at the top), not to the vertical centre —
   // important now that widget nodes are tall.
@@ -513,7 +583,7 @@ export function renderNode(
   for (const l of Object.values(pillGlowLayers)) l.position.set(0, pillOffsetY)
   collapsed.addChild(pillGlowLayers.hover, pillGlowLayers.selected, pillGlowLayers.active)
 
-  const accent = resolveCategoryAccent(opts.category, tokens)
+  const accent = opts.color ?? resolveCategoryAccent(opts.category, tokens, opts.categoryPalette)
 
   // Two layers: opaque body, then accent gradient on top — matches Figma's
   // `background: linear-gradient(...), #0F110E` (gradient layered over a solid fill).
@@ -607,8 +677,15 @@ export function renderNode(
       fill:       tokens.typography.heading.color,
     },
   })
-  pillTitle.position.set(pillChevronCX + geo.header.chevronSize / 2 + geo.header.titleGap, pillOffsetY + (pillH - tokens.typography.heading.lineHeight) / 2)
+  pillTitle.position.set(pillTitleStartX, pillOffsetY + (pillH - tokens.typography.heading.lineHeight) / 2)
   collapsed.addChild(pillTitle)
+  if (glyph) {
+    // Same glyph as the expanded header, centred on the pill title's optical middle.
+    const pillIcon = makeHeaderIcon(glyph.svg, tokens.typography.heading.color, pillIconSize)
+    const pillIconX = leftGlyph ? basePillTitleX : pillTitleStartX + pillTitleWidth + geo.header.titleGap
+    pillIcon.position.set(pillIconX, pillTitle.position.y + pillTitle.height / 2 - pillIconSize / 2)
+    collapsed.addChild(pillIcon)
+  }
 
   // Border layers — on top of body+title but UNDER pins (so pins overlap the rim).
   const pillBorderLayers: Record<Exclude<NodeVisualState, 'default'>, Container> = {
@@ -628,12 +705,9 @@ export function renderNode(
     const localY = pillOffsetY + pp.y
     pillPinLocations.set(pin.id, { x: localX, y: localY })
     const radius = geo.pin.diameter / 2
-    const fill = resolvePinFill(String(pin.type), tokens)
+    const fill = resolvePinFill(String(pin.type), tokens, opts.types)
     const stroke = resolvePinStroke(String(pin.type), tokens)
-    const pinGfx = new Graphics()
-      .circle(localX, localY, radius)
-      .fill({ color: fill })
-      .stroke({ color: stroke, width: geo.pin.stroke })
+    const pinGfx = drawPin(resolvePinShape(String(pin.type), pin.kind, opts.types), localX, localY, radius, fill, stroke, geo.pin.stroke)
     markPinInteractive(pinGfx, pin, String(node.id), localX, localY, radius)
     collapsed.addChild(pinGfx)
   }

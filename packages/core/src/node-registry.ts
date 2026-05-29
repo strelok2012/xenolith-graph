@@ -1,6 +1,6 @@
 import { fuzzyMatch } from './fuzzy.js'
 import { createNodeId, createPinId } from './ids.js'
-import type { Node, Pin, PinDirection, PinKind, Vec2 } from './graph.js'
+import type { Node, NodeGlyph, Pin, PinDirection, PinKind, Vec2 } from './graph.js'
 import { defaultWidgetValue, type WidgetSpec } from './widget.js'
 
 /** Declarative pin template — instantiated into a concrete {@link Pin} (fresh id) per node. */
@@ -26,6 +26,12 @@ export interface NodeSchema {
   pins: PinSchema[]
   /** In-node UI controls copied onto each instantiated node; defaults seed `node.state`. */
   widgets?: WidgetSpec[]
+  /** Blueprint "pure" node (no exec flow). Copied onto each instance. */
+  pure?: boolean
+  /** Arbitrary host/plugin metadata, copied onto each instance and passed through serialization. */
+  meta?: Record<string, unknown>
+  /** Header glyph icon copied onto each instantiated node (auto-drawn in the header). */
+  glyph?: NodeGlyph
 }
 
 export interface NodeSearchResult {
@@ -66,6 +72,9 @@ export class NodeRegistry {
       return pin
     })
     const node: Node = { id: createNodeId(), type: schema.type, position: { ...position }, state: {}, pins }
+    if (schema.pure !== undefined) node.pure = schema.pure
+    if (schema.meta !== undefined) node.meta = { ...schema.meta }
+    if (schema.glyph !== undefined) node.glyph = { ...schema.glyph }
     if (schema.widgets && schema.widgets.length > 0) {
       node.widgets = schema.widgets.map((w) => ({ ...w }) as WidgetSpec)
       for (const w of node.widgets) {

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import type { Edge, Node, Pin } from '@xenolith/core'
+import type { Edge, Node, Pin, TemplateDefinition } from '@xenolith/core'
+import type { RenderNodeOptions } from '@xenolith/render-pixi'
 import {
   parseXenolithGraph,
   serializeXenolithGraph,
@@ -65,6 +66,70 @@ describe('comments round-trip', () => {
     const out = serializeXenolithGraph(input())
     expect(out.comments).toBeUndefined()
     expect(parseXenolithGraph(JSON.parse(JSON.stringify(out))).comments).toEqual([])
+  })
+})
+
+describe('category palette + per-node colour (data-first theming)', () => {
+  it('round-trips a graph-level categories palette', () => {
+    const categories = {
+      agent: { color: '#FF8800' },
+      warehouse: { gradient: { start: '#112233', end: '#000000' } },
+    }
+    const out = serializeXenolithGraph(input({ categories }))
+    expect(out.categories).toEqual(categories)
+    const parsed = parseXenolithGraph(JSON.parse(JSON.stringify(out)))
+    expect(parsed.categories).toEqual(categories)
+  })
+
+  it('omits categories when none given; parses a graph without the field', () => {
+    expect(serializeXenolithGraph(input()).categories).toBeUndefined()
+    expect(parseXenolithGraph(JSON.parse(JSON.stringify(serializeXenolithGraph(input())))).categories).toBeUndefined()
+  })
+
+  it('round-trips a per-node render.color override', () => {
+    const node = mkNode('n1', 'Agent', { x: 0, y: 0 }, [])
+    const out = serializeXenolithGraph(input({ nodes: [node], renderOpts: new Map([['n1', { category: 'agent', color: '#AB12CD' }]]) }))
+    expect(out.nodes[0]!.render).toEqual({ category: 'agent', color: '#AB12CD' })
+    const parsed = parseXenolithGraph(JSON.parse(JSON.stringify(out)))
+    expect(parsed.renderOpts.get('n1')).toEqual({ category: 'agent', color: '#AB12CD' })
+  })
+})
+
+describe('pure flag + meta passthrough', () => {
+  it('round-trips a node pure flag and arbitrary meta', () => {
+    const node = mkNode('n1', 'Add', { x: 0, y: 0 }, [])
+    node.pure = true
+    node.meta = { evalKind: 'pure', defaults: { a: 1 }, nativeImpl: 'add' }
+    const out = serializeXenolithGraph(input({ nodes: [node] }))
+    expect(out.nodes[0]!.pure).toBe(true)
+    expect(out.nodes[0]!.meta).toEqual({ evalKind: 'pure', defaults: { a: 1 }, nativeImpl: 'add' })
+    const parsed = parseXenolithGraph(JSON.parse(JSON.stringify(out)))
+    expect(parsed.nodes[0]!.pure).toBe(true)
+    expect(parsed.nodes[0]!.meta).toEqual({ evalKind: 'pure', defaults: { a: 1 }, nativeImpl: 'add' })
+  })
+
+  it('omits pure/meta when absent; a graph without them parses unchanged', () => {
+    const out = serializeXenolithGraph(input({ nodes: [mkNode('n1', 'A', { x: 0, y: 0 }, [])] }))
+    expect(out.nodes[0]!.pure).toBeUndefined()
+    expect(out.nodes[0]!.meta).toBeUndefined()
+    const parsed = parseXenolithGraph(JSON.parse(JSON.stringify(out)))
+    expect(parsed.nodes[0]!.pure).toBeUndefined()
+    expect(parsed.nodes[0]!.meta).toBeUndefined()
+  })
+
+  it('round-trips a node header glyph', () => {
+    const node = mkNode('n1', 'Cpu', { x: 0, y: 0 }, [])
+    node.glyph = { icon: 'cpu', side: 'right' }
+    const out = serializeXenolithGraph(input({ nodes: [node] }))
+    expect(out.nodes[0]!.glyph).toEqual({ icon: 'cpu', side: 'right' })
+    const parsed = parseXenolithGraph(JSON.parse(JSON.stringify(out)))
+    expect(parsed.nodes[0]!.glyph).toEqual({ icon: 'cpu', side: 'right' })
+  })
+
+  it('omits glyph when absent', () => {
+    const out = serializeXenolithGraph(input({ nodes: [mkNode('n1', 'A', { x: 0, y: 0 }, [])] }))
+    expect(out.nodes[0]!.glyph).toBeUndefined()
+    expect(parseXenolithGraph(JSON.parse(JSON.stringify(out))).nodes[0]!.glyph).toBeUndefined()
   })
 })
 
@@ -225,5 +290,75 @@ describe('parseXenolithGraph', () => {
         edges: [{ id: 'e1' } as never],
       }),
     ).toThrow(/edge/i)
+  })
+})
+
+describe('templates round-trip (live-template definitions)', () => {
+  function tmplDef(): TemplateDefinition {
+    return {
+      id: 'def1' as TemplateDefinition['id'],
+      title: 'My Template',
+      nodes: [
+        mkNode('A', 'Mid', { x: 0, y: 0 }, [
+          { id: 'a_in', kind: 'data', direction: 'in', type: 'float', multiple: false },
+          { id: 'a_out', kind: 'data', direction: 'out', type: 'float', multiple: true },
+        ]),
+        mkNode('ti', '$templateInput', { x: -200, y: 0 }, [
+          { id: 'ti_out', kind: 'data', direction: 'out', type: 'float', multiple: true },
+        ]),
+        mkNode('to', '$templateOutput', { x: 200, y: 0 }, [
+          { id: 'to_in', kind: 'data', direction: 'in', type: 'float', multiple: false },
+        ]),
+      ],
+      edges: [
+        mkEdge('w1', 'ti', 'ti_out', 'A', 'a_in'),
+        mkEdge('w2', 'A', 'a_out', 'to', 'to_in'),
+      ],
+    }
+  }
+
+  it('serializes templates keyed by definition id and parses them back', () => {
+    const out = serializeXenolithGraph(input({ templates: [tmplDef()] }))
+    expect(out.templates).toBeTruthy()
+    expect(Object.keys(out.templates!)).toEqual(['def1'])
+    expect(out.templates!['def1']!.title).toBe('My Template')
+    expect(out.templates!['def1']!.nodes.map((n) => n.id).sort()).toEqual(['A', 'ti', 'to'])
+
+    const parsed = parseXenolithGraph(JSON.parse(JSON.stringify(out)))
+    expect(parsed.templates).toBeTruthy()
+    expect(parsed.templates!).toHaveLength(1)
+    expect(parsed.templates![0]!.id).toBe('def1')
+    expect(parsed.templates![0]!.title).toBe('My Template')
+    expect(parsed.templates![0]!.nodes.map((n) => n.id).sort()).toEqual(['A', 'ti', 'to'])
+    expect(parsed.templates![0]!.edges.map((e) => e.id).sort()).toEqual(['w1', 'w2'])
+  })
+
+  it('omits templates when there are none, and parses a graph without the field', () => {
+    const out = serializeXenolithGraph(input())
+    expect(out.templates).toBeUndefined()
+    expect(parseXenolithGraph(JSON.parse(JSON.stringify(out))).templates).toBeUndefined()
+  })
+
+  it('carries template node render opts through the shared renderOpts map', () => {
+    const renderOpts = new Map<string, RenderNodeOptions>([['A', { category: 'logic', title: 'Add' }]])
+    const out = serializeXenolithGraph(input({ templates: [tmplDef()], renderOpts }))
+    const aNode = out.templates!['def1']!.nodes.find((n) => n.id === 'A')!
+    expect(aNode.render).toEqual({ category: 'logic', title: 'Add' })
+
+    const parsed = parseXenolithGraph(JSON.parse(JSON.stringify(out)))
+    expect(parsed.renderOpts.get('A')).toEqual({ category: 'logic', title: 'Add' })
+  })
+
+  it('round-trips a $templateInstance node referencing a definition', () => {
+    const instance = mkNode('inst', '$templateInstance', { x: 50, y: 50 }, [
+      { id: 'ip0', kind: 'data', direction: 'in', type: 'float', multiple: false },
+      { id: 'ip1', kind: 'data', direction: 'out', type: 'float', multiple: true },
+    ], { state: { definitionId: 'def1', pinBoundary: { ip0: 'ti', ip1: 'to' } } })
+    const out = serializeXenolithGraph(input({ nodes: [instance], templates: [tmplDef()] }))
+    const parsed = parseXenolithGraph(JSON.parse(JSON.stringify(out)))
+    const back = parsed.nodes.find((n) => n.id === 'inst')!
+    expect(back.type).toBe('$templateInstance')
+    expect(back.state['definitionId']).toBe('def1')
+    expect(back.pins).toHaveLength(2)
   })
 })

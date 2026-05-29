@@ -1,10 +1,13 @@
-import type { Pin } from '@xenolith/core'
+import type { Pin, TypeRegistry } from '@xenolith/core'
 
 export interface ConnectContext {
   /** Existing incident edges on pin `a`. Used to enforce `multiple: false` capacity. Default 0. */
   sourceEdges?: number
   /** Existing incident edges on pin `b`. Used to enforce `multiple: false` capacity. Default 0. */
   targetEdges?: number
+  /** Custom-type registry. When present, data pins also connect if the two types are declared
+   *  `compatibleWith` each other (beyond an exact match or `any`). */
+  types?: TypeRegistry
 }
 
 /**
@@ -31,5 +34,6 @@ export function canConnect(a: Pin, b: Pin, sameNode: boolean, ctx: ConnectContex
   const ta = String(a.type)
   const tb = String(b.type)
   if (ta === 'any' || tb === 'any') return true
-  return ta === tb
+  if (ta === tb) return true
+  return ctx.types?.compatible(ta, tb) ?? false
 }

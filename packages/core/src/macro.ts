@@ -191,3 +191,42 @@ export function boundaryEdges(members: ReadonlySet<NodeId>, edges: ReadonlyArray
   }
   return { inputs, outputs, internal }
 }
+
+/** Flatten collapsed macros into their primitives for a host interpreter: drop every `Macro` node and
+ *  remap any edge endpoint that lands on a macro proxy pin back to the member pin it bridges (via the
+ *  macro's `state.proxyMap`). Recurses through nested macros (a member pin may itself be an inner
+ *  macro's proxy pin). Pure — never mutates the inputs. Internal member↔member edges pass through
+ *  untouched; the macro grouping becomes purely visual. */
+export function flattenMacroProxies(
+  nodes: ReadonlyArray<Node>,
+  edges: ReadonlyArray<Edge>,
+): { nodes: Node[]; edges: Edge[] } {
+  const macroProxy = new Map<string, Map<string, { node: NodeId; pin: PinId }>>()
+  for (const n of nodes) {
+    if (n.type !== MACRO_TYPE) continue
+    const m = new Map<string, { node: NodeId; pin: PinId }>()
+    for (const r of (n.state['proxyMap'] ?? []) as MacroProxyRecord[]) {
+      m.set(String(r.macroPin), { node: r.memberNode, pin: r.memberPin })
+    }
+    macroProxy.set(String(n.id), m)
+  }
+  const flatten = (node: NodeId, pin: PinId): { node: NodeId; pin: PinId } => {
+    let n = node, p = pin, guard = 0
+    while (guard++ < 64) {
+      const next = macroProxy.get(String(n))?.get(String(p))
+      if (!next) break
+      n = next.node; p = next.pin
+    }
+    return { node: n, pin: p }
+  }
+  const outNodes = nodes.filter((n) => n.type !== MACRO_TYPE)
+  const outEdges: Edge[] = []
+  for (const e of edges) {
+    const from = flatten(e.from.node, e.from.pin)
+    const to = flatten(e.to.node, e.to.pin)
+    // An endpoint still on a macro means a missing proxy mapping — drop the dangling edge.
+    if (macroProxy.has(String(from.node)) || macroProxy.has(String(to.node))) continue
+    outEdges.push({ id: e.id, from, to })
+  }
+  return { nodes: outNodes, edges: outEdges }
+}

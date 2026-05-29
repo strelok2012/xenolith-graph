@@ -11,7 +11,7 @@ export const EDITOR_EVENT_NAMES = [
   'edge:connected', 'edge:disconnected',
   'selection:changed', 'viewport:changed',
   'widget:changed', 'widget:action',
-  'graph:loaded', 'history:changed',
+  'graph:loaded', 'history:changed', 'dive:changed',
 ] as const satisfies ReadonlyArray<keyof EditorEvents>
 
 export interface EditorBinding {

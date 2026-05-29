@@ -87,6 +87,33 @@ const editor = await XenolithEditor.init('#app', {
 
 Every other token (geometry, typography, effects, surfaces) stays at the Xen defaults.
 
+## Category colours in the graph data (data-first)
+
+Token overrides change a category colour **in code**, which can't travel inside a saved graph. To colour your own categories (`agent`, `warehouse`, …) — or a single node — straight from the `xenolith.v1` data, use the optional `categories` palette and per-node `render.color`. Both round-trip through `editor.toJSON()` / `loadJSON()`.
+
+```ts
+editor.loadJSON({
+  version: 'xenolith.v1',
+  // graph-owned palette: a solid accent, or an explicit header gradient
+  categories: {
+    agent:     { color: '#7C5CFF' },
+    warehouse: { gradient: { start: '#1FB6A8', end: '#0E5C55' } },
+  },
+  nodes: [
+    { id: 'a1', type: 'Planner', position: { x: 0, y: 0 }, pins: [],
+      render: { category: 'agent', title: 'Planner' } },
+    // per-node colour beats the category
+    { id: 'a2', type: 'Boss', position: { x: 240, y: 0 }, pins: [],
+      render: { category: 'agent', title: 'Boss', color: '#FF3366' } },
+  ],
+  edges: [],
+})
+```
+
+Resolution order for a node's header colour: **`render.color` → `categories[category]` → theme `category` token → `utility` fallback**. Both fields are optional — graphs without them render exactly as before, using the theme's built-in categories. Types `CategoryColorSpec` / `GraphCategoryPalette` are exported from `@xenolith/render-pixi`.
+
+Use **token overrides** to restyle the whole visual language; use the **`categories` palette** to colour domain categories that live in your data.
+
 ## The full token shape
 
 The full type lives in `@xenolith/theme-xen` and is `XenTokens`. Top-level groups:

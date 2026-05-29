@@ -15,9 +15,11 @@
     "@xenolith/adapter-core": "workspace:*",
     "@xenolith/core": "workspace:*",
     "@xenolith/editor": "workspace:*",
+    "@xenolith/plugin-runtime": "workspace:*",
     "@xenolith/react": "workspace:*",
     "@xenolith/render-pixi": "workspace:*",
     "@xenolith/theme-xen": "workspace:*",
+    "gifenc": "^1.0.3",
     "pixi.js": "^8.6.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

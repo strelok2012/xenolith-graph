@@ -18,11 +18,14 @@ import type { Node } from '@xenolith/core'
 import type { XenTokens } from '@xenolith/theme-xen'
 import {
   computeNodeLayout,
+  makeHeaderIcon,
+  buildPinShape,
   markPinInteractive,
   renderWidgets,
   rerouteStateColor,
   resolveCategoryAccent,
   resolvePinFill,
+  resolvePinShape,
   resolvePinStroke,
   type NodeView,
   type NodeVisualState,
@@ -190,7 +193,14 @@ export function renderNodeLiquidGlass(
     titleText,
     new TextStyle({ fontFamily: tokens.typography.fontFamily, fontSize: tokens.typography.heading.size, fontWeight: '700' }),
   ).width
-  const pillW = Math.max(geo.node.pillMinWidth, 34 + titleW + pillR)
+  // A header glyph sits left or right of the title; the pill shifts/widens to fit it.
+  const glyph = opts.glyph
+  const glyphSize = glyph ? Math.round(tokens.typography.heading.size + 1) : 0
+  const leftGlyph = glyph?.side === 'left'
+  const rightGlyph = glyph?.side === 'right'
+  const pillTitleX = leftGlyph ? 34 + glyphSize + geo.header.titleGap : 34
+  const pillTitleEndX = pillTitleX + titleW + (rightGlyph ? geo.header.titleGap + glyphSize : 0)
+  const pillW = Math.max(geo.node.pillMinWidth, pillTitleEndX + pillR)
   // Xen canon: pill is vertically centred within the expanded body's bounds when collapsed.
   // Canon: collapse UP to the header (pill at top), not to the vertical centre.
   const pillOffsetY = 0
@@ -220,7 +230,7 @@ export function renderNodeLiquidGlass(
   const expandedInner = new Container({ label: 'expanded-inner' })
   container.addChild(expandedInner)
 
-  const accent = resolveCategoryAccent(opts.category, tokens)
+  const accent = opts.color ?? resolveCategoryAccent(opts.category, tokens, opts.categoryPalette)
   const headerHeight = geo.node.headerHeight
   const headerRadius = Math.max(0, geo.node.radius - 1)
   const headerTint = new Graphics()
@@ -246,8 +256,19 @@ export function renderNodeLiquidGlass(
       fill:       '#FFFFFF',
     },
   })
-  title.position.set(geo.node.headerPadding + 8 + geo.header.chevronSize / 2 + geo.header.titleGap, 4)
+  // Header glyph left or right of the title — same icons as Xen. Lives in expandedInner so it toggles
+  // away with the title in pill form.
+  const baseTitleX = geo.node.headerPadding + 8 + geo.header.chevronSize / 2 + geo.header.titleGap
+  const titleX = leftGlyph ? baseTitleX + glyphSize + geo.header.titleGap : baseTitleX
+  title.position.set(titleX, 4)
   expandedInner.addChild(title)
+  if (glyph) {
+    // Centre the glyph's box on the title's optical middle so the glyph + text read on one line.
+    const icon = makeHeaderIcon(glyph.svg, '#FFFFFF', glyphSize)
+    const iconX = leftGlyph ? baseTitleX : expandedW - geo.node.headerPadding - glyphSize
+    icon.position.set(iconX, title.position.y + title.height / 2 - glyphSize / 2)
+    expandedInner.addChild(icon)
+  }
 
   // ===== Pill title — separate label only visible in collapsed form =========================
   const pillTitle = new BitmapText({
@@ -259,9 +280,19 @@ export function renderNodeLiquidGlass(
       fill:       '#FFFFFF',
     },
   })
-  pillTitle.position.set(34, pillOffsetY + (pillH - tokens.typography.heading.lineHeight) / 2)
+  pillTitle.position.set(pillTitleX, pillOffsetY + (pillH - tokens.typography.heading.lineHeight) / 2)
   pillTitle.visible = false
   container.addChild(pillTitle)
+
+  // Pill glyph — same icon as the expanded header, centred on the pill title. Toggled with the pill
+  // form in applyForm (only present when this node has a glyph).
+  const pillIcon = glyph ? makeHeaderIcon(glyph.svg, '#FFFFFF', glyphSize) : null
+  if (pillIcon) {
+    const pillIconX = leftGlyph ? 34 : pillTitleX + pillTitle.width + geo.header.titleGap
+    pillIcon.position.set(pillIconX, pillTitle.position.y + pillTitle.height / 2 - glyphSize / 2)
+    pillIcon.visible = false
+    container.addChild(pillIcon)
+  }
 
   // ===== Chevron (toggle button) — drawn at origin, positioned per form. Matches Xen's
   // `buildChevron` proportions (halfW = size*0.22, halfH = size*0.11) for a thin, crisp ‘v’.
@@ -292,9 +323,8 @@ export function renderNodeLiquidGlass(
     expandedPinPositions.set(pin.id, { x: localX, y: localY })
 
     const r = geo.pin.diameter / 2
-    const g = new Graphics()
-      .circle(localX, localY, r)
-      .fill({ color: resolvePinFill(String(pin.type), tokens) })
+    const g = buildPinShape(new Graphics(), resolvePinShape(String(pin.type), pin.kind, opts.types), localX, localY, r)
+      .fill({ color: resolvePinFill(String(pin.type), tokens, opts.types) })
       .stroke({ color: resolvePinStroke(String(pin.type), tokens), width: geo.pin.stroke })
     markPinInteractive(g, pin, String(node.id), localX, localY, r)
     pinGraphics.push(g)
@@ -351,8 +381,8 @@ export function renderNodeLiquidGlass(
       if (!g) continue
       const r = geo.pin.diameter / 2
       g.clear()
-        .circle(pos.x, pos.y, r)
-        .fill({ color: resolvePinFill(String(pin.type), tokens) })
+      buildPinShape(g, resolvePinShape(String(pin.type), pin.kind, opts.types), pos.x, pos.y, r)
+        .fill({ color: resolvePinFill(String(pin.type), tokens, opts.types) })
         .stroke({ color: resolvePinStroke(String(pin.type), tokens), width: geo.pin.stroke })
       markPinInteractive(g, pin, String(node.id), pos.x, pos.y, r)
     }
@@ -364,6 +394,7 @@ export function renderNodeLiquidGlass(
       pillBody.visible = true
       expandedInner.visible = false
       pillTitle.visible = true
+      if (pillIcon) pillIcon.visible = true
       pillTint.visible = true
       selectionRim.clear()
         .roundRect(0, pillOffsetY, pillW, pillH, pillR)
@@ -376,6 +407,7 @@ export function renderNodeLiquidGlass(
       pillBody.visible = false
       expandedInner.visible = true
       pillTitle.visible = false
+      if (pillIcon) pillIcon.visible = false
       pillTint.visible = false
       selectionRim.clear()
         .roundRect(0, 0, expandedW, expandedH, expandedRadius)

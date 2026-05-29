@@ -1,3 +1,4 @@
+import type { TypeRegistry } from '@xenolith/core'
 import type {
   CategoryToken,
   PinTypeToken,
@@ -15,7 +16,20 @@ function lookupPin(name: string, map: XenPinTypeMap): PinTypeToken | undefined {
   return (map as unknown as Record<string, PinTypeToken | undefined>)[name]
 }
 
-export function resolveCategoryAccent(category: string | undefined, tokens: XenTokens): string {
+/** A category colour declared in the graph data (format-first): a single accent colour (header fades
+ *  from it) or an explicit gradient. */
+export type CategoryColorSpec = { color: string } | { gradient: CategoryGradient }
+/** Graph-level category palette, keyed by category name. Overrides the theme's category tokens. */
+export type GraphCategoryPalette = Record<string, CategoryColorSpec>
+
+const paletteEntry = (palette: GraphCategoryPalette | undefined, category: string | undefined): CategoryColorSpec | undefined =>
+  category === undefined ? undefined : palette?.[category]
+
+/** Accent colour for a category: graph palette (its colour, or a gradient's start) wins over the
+ *  theme token, which falls back to the utility accent. */
+export function resolveCategoryAccent(category: string | undefined, tokens: XenTokens, palette?: GraphCategoryPalette): string {
+  const entry = paletteEntry(palette, category)
+  if (entry) return 'gradient' in entry ? entry.gradient.start : entry.color
   return lookupCategory(category, tokens.category)?.accent ?? tokens.category.utility.accent
 }
 
@@ -24,12 +38,28 @@ export function resolveCategoryAccent(category: string | undefined, tokens: XenT
  * colour so the pin reads as a coloured ring around a solid dark center, not an open hole through
  * which the canvas grid shows. The type-distinctive colour stays on the stroke.
  */
-export function resolvePinFill(pinType: string, tokens: XenTokens): string {
+export function resolvePinFill(pinType: string, tokens: XenTokens, types?: TypeRegistry): string {
   const known = lookupPin(pinType, tokens.pinType)
   if (known) {
     return known.shape === 'circle-empty' ? tokens.color.surface.node : known.color
   }
+  const custom = types?.get(pinType)
+  if (custom) return custom.color
   return tokens.pinType.any.color
+}
+
+/**
+ * Shape of a pin glyph. A registered {@link TypeRegistry} descriptor's `shape` wins; otherwise the
+ * Blueprint default — exec pins are arrows (control flow), data pins are circles.
+ */
+export function resolvePinShape(
+  pinType: string,
+  kind: 'exec' | 'data',
+  types?: TypeRegistry,
+): 'circle' | 'diamond' | 'arrow' {
+  const desc = types?.get(pinType)
+  if (desc?.shape) return desc.shape
+  return kind === 'exec' ? 'arrow' : 'circle'
 }
 
 export function resolvePinStroke(pinType: string, tokens: XenTokens): string {
@@ -68,6 +98,11 @@ export interface CategoryGradient {
   end: string
 }
 
+/** Fade gradient derived from a single accent colour (accent@0.6 → transparent). */
+function fadeFrom(accent: string): CategoryGradient {
+  return { start: hexToRgba(accent, 0.6), end: hexToRgba(accent, 0) }
+}
+
 /**
  * Header gradient stops for a category. Starts at the category accent with 0.6 alpha and fades to
  * full transparency on the right, simulating the Figma source's backdrop-blur + dark-grey-end gradient
@@ -77,10 +112,14 @@ export interface CategoryGradient {
 export function resolveCategoryGradient(
   category: string | undefined,
   tokens: XenTokens,
+  palette?: GraphCategoryPalette,
+  overrideColor?: string,
 ): CategoryGradient {
-  const accent = resolveCategoryAccent(category, tokens)
-  return {
-    start: hexToRgba(accent, 0.6),
-    end: hexToRgba(accent, 0),
-  }
+  // Per-node colour wins outright.
+  if (overrideColor !== undefined) return fadeFrom(overrideColor)
+  // A palette entry: explicit gradient verbatim, or a fade from its colour.
+  const entry = paletteEntry(palette, category)
+  if (entry) return 'gradient' in entry ? entry.gradient : fadeFrom(entry.color)
+  // Otherwise the theme category accent fade (back-compat).
+  return fadeFrom(resolveCategoryAccent(category, tokens))
 }

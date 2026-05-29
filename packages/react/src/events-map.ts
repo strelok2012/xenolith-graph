@@ -14,6 +14,7 @@ export const EVENT_PROP = {
   'widget:action': 'onWidgetAction',
   'graph:loaded': 'onGraphLoad',
   'history:changed': 'onHistoryChange',
+  'dive:changed': 'onDiveChange',
 } as const satisfies Record<keyof EditorEvents, string>
 
 /** The React callback props derived from {@link EVENT_PROP} — one optional handler per event. */

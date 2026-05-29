@@ -1,33 +1,33 @@
-// Headless engine for the "priority-queue + goodies + log-tax" model (Рома's spec).
+// Headless engine for Рома's "priority-queue + goodies + tax" model. Per step:
+//   1. each agent gets its own additive salary (in 0..1),
+//   2. arriving goodies fall to the highest-priority subscriber of each type (receiving one
+//      subtracts that goodie's cost),
+//   3. a "tax" multiplies every priority by (1 - taxAlpha), pulling it toward the 0 reference —
+//      and because it is a plain multiply, the absolute pull-back is proportionally stronger the
+//      farther |priority| is from 0 (anti-monopoly above 0, anti-starvation below).
 //
-// Each step: (1) every agent gets `salary` priority, (2) arriving goodies fall to the
-// highest-priority subscriber of each type (receiving one subtracts its cost), (3) a
-// log-space mean-reverting "tax" pulls everyone toward the shared equilibrium — agents
-// above it decay, agents below it are restored (anti-monopoly + anti-starvation).
-//
-// Pure and zero-dep: `step` is a referentially-transparent (state, arrivals) -> result.
-// The four open design choices are parameters, not hard-coded: per-goodie `cost`, salary
-// (uniform here, weights are a future param), single-recipient-per-unit distribution, and
-// the tax shape (log-space OU). Defaults below are the simplest sane choices.
+// Priorities are centred at 0 and may go negative (a recently-served agent dips below 0, then
+// climbs back on salary). Pure and zero-dep: `step` is a referentially-transparent
+// (state, arrivals) -> result. Per-goodie cost/rate and per-agent salary all live on the data.
 
 export type AgentId = string
 export type GoodieType = string
 
 export interface Agent {
   id: AgentId
-  priority: number
+  priority: number // centred at 0; positive = ahead in the queue, negative = recently served
+  salary: number // additive income per step, in 0..1
   subscriptions: GoodieType[]
 }
 
 export interface GoodieSpec {
   type: GoodieType
-  cost: number
+  cost: number // priority subtracted from the recipient
+  rate: number // fractional units spawned per step (0.1 = one every ~10 steps); used by the host
 }
 
 export interface SimParams {
-  salary: number
-  taxAlpha: number // 0..1 — strength of pull toward the geometric mean (0 = no tax)
-  minPriority: number // floor so ln() stays defined after costs are subtracted
+  taxAlpha: number // 0..1 — priority *= (1 - taxAlpha) each step, pulling toward 0
 }
 
 export interface SimState {
@@ -46,13 +46,10 @@ export interface GoodieAward {
 export interface StepResult {
   state: SimState
   awards: GoodieAward[]
+  leftovers: GoodieType[] // units that found no subscriber this step → go to the warehouse
 }
 
-export const DEFAULT_PARAMS: SimParams = {
-  salary: 1,
-  taxAlpha: 0.1,
-  minPriority: 0.01,
-}
+export const DEFAULT_PARAMS: SimParams = { taxAlpha: 0.1 }
 
 export function createSim(
   agents: Agent[],
@@ -67,29 +64,32 @@ export function createSim(
   }
 }
 
-// `arrivals` is the list of goodie units that fall this step (caller decides the rate).
-// Multiple units of the same type spread across distinct recipients, because each award
-// lowers the recipient's priority below the next-highest subscriber within the same step.
+// `arrivals` is the list of goodie units that fall this step (the host derives it from each goodie's
+// fractional `rate`). Multiple units of the same type spread across distinct recipients, because
+// each award lowers the recipient's priority below the next-highest subscriber within the step.
 export function step(state: SimState, arrivals: GoodieType[]): StepResult {
-  const { salary, taxAlpha, minPriority } = state.params
-
   const priority = new Map<AgentId, number>()
-  for (const a of state.agents) priority.set(a.id, a.priority + salary)
+  for (const a of state.agents) priority.set(a.id, a.priority + a.salary) // 1. salary (additive)
 
-  const awards: GoodieAward[] = []
+  const awards: GoodieAward[] = [] // 2. goodies
+  const leftovers: GoodieType[] = []
   for (const type of arrivals) {
     const spec = state.goodies[type]
     if (!spec) continue
     const recipient = topSubscriber(state.agents, type, priority)
-    if (!recipient) continue
+    if (!recipient) {
+      leftovers.push(type) // nobody subscribes → unclaimed, goes to the warehouse
+      continue
+    }
     priority.set(recipient.id, priority.get(recipient.id)! - spec.cost)
     awards.push({ type, to: recipient.id, cost: spec.cost })
   }
 
-  if (taxAlpha > 0) applyLogTax(state.agents, priority, taxAlpha, minPriority)
+  const k = 1 - state.params.taxAlpha // 3. tax: multiply toward the 0 reference
+  if (k !== 1) for (const a of state.agents) priority.set(a.id, priority.get(a.id)! * k)
 
   const agents = state.agents.map((a) => ({ ...a, priority: priority.get(a.id)! }))
-  return { state: { ...state, agents, step: state.step + 1 }, awards }
+  return { state: { ...state, agents, step: state.step + 1 }, awards, leftovers }
 }
 
 function topSubscriber(
@@ -108,20 +108,4 @@ function topSubscriber(
     }
   }
   return best
-}
-
-// Ornstein–Uhlenbeck in log space: x <- x - α(x - x̄). The geometric mean is the attractor;
-// distances from it shrink by (1-α) each step, symmetric for over- and under-shooters.
-function applyLogTax(
-  agents: Agent[],
-  priority: Map<AgentId, number>,
-  alpha: number,
-  floor: number,
-): void {
-  const logs = agents.map((a) => Math.log(Math.max(priority.get(a.id)!, floor)))
-  const mean = logs.reduce((s, x) => s + x, 0) / logs.length
-  agents.forEach((a, i) => {
-    const x = logs[i]! - alpha * (logs[i]! - mean)
-    priority.set(a.id, Math.exp(x))
-  })
 }

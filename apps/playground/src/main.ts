@@ -70,5 +70,7 @@ paint()
 // Comments are inserted through the standard Tab/double-click palette (search "Comment"), not a
 // bespoke button — they're a first-class insert type like any node.
 
-// Expose the editor for e2e introspection (palette insert assertions, etc).
+// Expose the editor for e2e introspection (palette insert assertions, etc). The class is exposed too
+// so e2e can spin up a throwaway editor (e.g. to assert plugin disposers run on destroy).
 ;(window as unknown as { __xenoEditor: XenolithEditor }).__xenoEditor = editor
+;(window as unknown as { __XenolithEditor: typeof XenolithEditor }).__XenolithEditor = XenolithEditor

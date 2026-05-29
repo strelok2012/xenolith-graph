@@ -22,9 +22,9 @@ export default defineConfig({
     stderr: 'pipe',
   },
   projects: [
-    {
-      name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
-    },
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+    // WebKit/Safari runs locally only — GitHub Actions Linux runners have no WebKit deps.
+    ...(process.env.CI ? [] : [{ name: 'webkit', use: { ...devices['Desktop Safari'] } }]),
   ],
 })

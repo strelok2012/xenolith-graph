@@ -1,4 +1,4 @@
-import type { NodeSchema, XenolithGraphV1, XenolithNodeV1, XenolithEdgeV1 } from '@xenolith/editor'
+import type { NodeSchema, XenolithGraphV1, XenolithNodeV1, XenolithEdgeV1, XenolithTemplateV1 } from '@xenolith/editor'
 import { REROUTE_TYPE, REROUTE_NODE_TYPE, defaultWidgetValue, type WidgetSpec } from '@xenolith/core'
 
 export { createCurveWidget } from './curve-widget.js'
@@ -239,10 +239,84 @@ macroInPlace('pack', 'Pack', 300, 420,
 // those are derived at load). This becomes a Gather-macro → Pack-macro boundary edge after collapse.
 me('gather_out', 'gather_out.o', 'pack_in0', 'pack_in0.i')
 
+// ---- live-template demo (declarative) -------------------------------------------------------
+// A reusable Template instance, authored as DATA: a `$templateInstance` node in the main graph whose
+// pins mirror a definition stored under `templates`. The "Backup" definition is a small but real
+// pipeline — two inputs (Payload, Key), two operations (Compress, Encrypt), two outputs (Archive,
+// Size) — so there's something meaningful to dive into and edit. Double-click the instance (or use
+// the node menu → Edit) to dive in. Fed by `archive`'s output so it reads as part of the graph.
+//
+//   Payload ─▶ Compress ─┬─▶ Encrypt ─▶ Archive
+//                        └─▶ Size                 Key ─▶ Encrypt
+const TEMPLATE_DEF_ID = 'backup_def'
+const templateInstance: XenolithNodeV1 = {
+  id: 'backup',
+  type: '$templateInstance',
+  position: { x: 1660, y: 320 },
+  pins: [
+    { id: 'backup.payload', kind: 'data', direction: 'in',  type: 'object', multiple: false, label: 'Payload' },
+    { id: 'backup.key',     kind: 'data', direction: 'in',  type: 'string', multiple: false, label: 'Key' },
+    { id: 'backup.archive', kind: 'data', direction: 'out', type: 'object', multiple: true,  label: 'Archive' },
+    { id: 'backup.size',    kind: 'data', direction: 'out', type: 'float',  multiple: true,  label: 'Size' },
+  ],
+  state: {
+    definitionId: TEMPLATE_DEF_ID,
+    pinBoundary: { 'backup.payload': 'bk_payload', 'backup.key': 'bk_key', 'backup.archive': 'bk_archive', 'backup.size': 'bk_size' },
+  },
+  render: { category: 'macro', title: 'Backup' },
+}
+const templateEdge: XenolithEdgeV1 = {
+  id: 'e-backup', from: { node: 'archive', pin: pinId('archive', 1) }, to: { node: 'backup', pin: 'backup.payload' },
+  opts: { sourceType: 'object' },
+}
+const templateDefs: Record<string, XenolithTemplateV1> = {
+  [TEMPLATE_DEF_ID]: {
+    title: 'Backup',
+    nodes: [
+      // inputs
+      { id: 'bk_payload', type: '$templateInput', position: { x: 0, y: 40 },
+        pins: [{ id: 'bk_payload.o', kind: 'data', direction: 'out', type: 'object', multiple: true, label: 'Payload' }],
+        render: { category: 'utility', title: 'Payload' } },
+      { id: 'bk_key', type: '$templateInput', position: { x: 0, y: 200 },
+        pins: [{ id: 'bk_key.o', kind: 'data', direction: 'out', type: 'string', multiple: true, label: 'Key' }],
+        render: { category: 'utility', title: 'Key' } },
+      // operations
+      { id: 'bk_compress', type: 'Step', position: { x: 240, y: 40 },
+        pins: [
+          { id: 'bk_compress.i', kind: 'data', direction: 'in',  type: 'object', multiple: false, label: 'Data' },
+          { id: 'bk_compress.o', kind: 'data', direction: 'out', type: 'object', multiple: true,  label: 'Packed' },
+        ],
+        render: { category: 'logic', title: 'Compress' } },
+      { id: 'bk_encrypt', type: 'Step', position: { x: 480, y: 120 },
+        pins: [
+          { id: 'bk_encrypt.i', kind: 'data', direction: 'in',  type: 'object', multiple: false, label: 'Data' },
+          { id: 'bk_encrypt.k', kind: 'data', direction: 'in',  type: 'string', multiple: false, label: 'Key' },
+          { id: 'bk_encrypt.o', kind: 'data', direction: 'out', type: 'object', multiple: true,  label: 'Cipher' },
+        ],
+        render: { category: 'data', title: 'Encrypt' } },
+      // outputs
+      { id: 'bk_archive', type: '$templateOutput', position: { x: 740, y: 120 },
+        pins: [{ id: 'bk_archive.i', kind: 'data', direction: 'in', type: 'object', multiple: false, label: 'Archive' }],
+        render: { category: 'utility', title: 'Archive' } },
+      { id: 'bk_size', type: '$templateOutput', position: { x: 740, y: 260 },
+        pins: [{ id: 'bk_size.i', kind: 'data', direction: 'in', type: 'float', multiple: false, label: 'Size' }],
+        render: { category: 'utility', title: 'Size' } },
+    ],
+    edges: [
+      { id: 'bk_e0', from: { node: 'bk_payload',  pin: 'bk_payload.o' }, to: { node: 'bk_compress', pin: 'bk_compress.i' } },
+      { id: 'bk_e1', from: { node: 'bk_compress', pin: 'bk_compress.o' }, to: { node: 'bk_encrypt',  pin: 'bk_encrypt.i' } },
+      { id: 'bk_e2', from: { node: 'bk_key',      pin: 'bk_key.o' },      to: { node: 'bk_encrypt',  pin: 'bk_encrypt.k' } },
+      { id: 'bk_e3', from: { node: 'bk_encrypt',  pin: 'bk_encrypt.o' },  to: { node: 'bk_archive',  pin: 'bk_archive.i' } },
+      { id: 'bk_e4', from: { node: 'bk_compress', pin: 'bk_compress.o' }, to: { node: 'bk_size',     pin: 'bk_size.i' } },
+    ],
+  },
+}
+
 export const demoGraph: XenolithGraphV1 = {
   version: 'xenolith.v1',
-  nodes: [...nodes, ...macroNodes],
-  edges: [...edges, ...macroEdges],
+  nodes: [...nodes, ...macroNodes, templateInstance],
+  edges: [...edges, ...macroEdges, templateEdge],
+  templates: templateDefs,
   // One comment/group frame per pipeline column — drag a header to move the whole group, resize from
   // the corner. Also doubles as a perf/LOD test surface (distinct colours + texts across the graph).
   comments: [

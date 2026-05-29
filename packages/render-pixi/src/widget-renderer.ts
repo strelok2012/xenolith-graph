@@ -1,6 +1,7 @@
 import { BitmapText, Container, Graphics, Sprite, Text, Texture } from 'pixi.js'
 import { comboOptions, widgetValue, type Node, type WidgetSpec, type WidgetStyle } from '@xenolith/core'
 import type { XenTokens } from '@xenolith/theme-xen'
+import { pinRowCount } from './layout.js'
 
 /** Context handed to a custom widget's draw/pointer callbacks. Coords are widget-local CSS px.
  *  Theme colours (`accent`/`text`/`muted`) come from the resolved widget tokens so a canvas widget
@@ -146,9 +147,9 @@ function widgetRowHeight(w: WidgetSpec, rowHeight: number): number {
  *  and hit-testing so they never disagree. */
 export function computeWidgetRects(node: Node, width: number, tokens: WidgetLayoutTokens): WidgetRect[] {
   if (!node.widgets || node.widgets.length === 0) return []
-  let inCount = 0, outCount = 0
-  for (const p of node.pins) (p.direction === 'in' ? inCount++ : outCount++)
-  const rows = Math.max(inCount, outCount)
+  // Hoisted exec pins ride the header line and don't take a body row — use the shared row counter
+  // so naturalHeight and widget placement agree (otherwise hoisted execs add a phantom empty band).
+  const rows = pinRowCount(node.pins)
   const pinRowsHeight = rows > 0 ? rows * tokens.pin.rowHeight + (rows - 1) * tokens.pin.rowSpacing : 0
   const padX = tokens.widget.paddingX
 
@@ -222,7 +223,14 @@ export function renderWidgets(
       const redraw = (value: unknown): void => {
         c2d.setTransform(dpr, 0, 0, dpr, 0, 0)
         c2d.clearRect(0, 0, rect.width, rect.height)
+        // Clip the author's draw to the widget rect so nothing can paint outside the node (the canvas
+        // bitmap already bounds it; this makes the contract explicit + covers shadows/strokes).
+        c2d.save()
+        c2d.beginPath()
+        c2d.rect(0, 0, rect.width, rect.height)
+        c2d.clip()
         controller.draw(c2d, { value, node, width: rect.width, height: rect.height, accent: c.fill, text: c.text, muted: c.label })
+        c2d.restore()
         tex.source.update()
       }
       redraw(widgetValue(node, spec))

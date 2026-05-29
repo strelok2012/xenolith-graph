@@ -1,0 +1,37 @@
+{
+  "name": "@xenolith/plugin-runtime",
+  "version": "0.0.0",
+  "description": "Blueprint-style node runtime for XenolithGraph: typed exec/data primitives + a headless interpreter that runs a graph as a simulation. Installs as an editor plugin.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "dependencies": {
+    "@xenolith/core": "workspace:*",
+    "@xenolith/editor": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc -b --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

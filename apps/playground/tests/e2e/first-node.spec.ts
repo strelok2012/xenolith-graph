@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 
 test.describe('demo graph — visual', () => {
-  test('renders the Liquid Glass demo fixture @visual', async ({ page }) => {
+  test('renders the Xen demo fixture @visual', async ({ page }) => {
     await page.setViewportSize({ width: 800, height: 600 })
     await page.goto('/')
     await page.waitForSelector('canvas')

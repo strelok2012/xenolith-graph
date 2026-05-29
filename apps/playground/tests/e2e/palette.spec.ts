@@ -64,6 +64,15 @@ test.describe('insert palette', () => {
     await expect(page.locator(PALETTE)).toBeVisible()
   })
 
+  test('clicking a row inserts the node and closes the palette', async ({ page }) => {
+    const before = await nodeCount(page)
+    await page.keyboard.press('Tab')
+    await page.locator(INPUT).fill('transform')
+    await page.locator(ROW).first().click()
+    await expect(page.locator(PALETTE)).toBeHidden()
+    expect(await nodeCount(page)).toBe(before + 1)
+  })
+
   test('inserted node is undoable', async ({ page }) => {
     const before = await nodeCount(page)
     await page.keyboard.press('Tab')

@@ -1,28 +1,30 @@
 import { describe, it, expect } from 'vitest'
-import { barFraction, pointerToValue, SCALE_MAX } from './priority-bar.js'
+import { signedFraction, pointerToValue, SCALE } from './priority-bar.js'
 
-describe('barFraction', () => {
-  it('puts the equilibrium (1.0×) at the midpoint', () => {
-    expect(barFraction(1)).toBeCloseTo(0.5)
+describe('signedFraction', () => {
+  it('puts the 0 reference at the centre (fraction 0)', () => {
+    expect(signedFraction(0)).toBe(0)
   })
-  it('clamps at full scale and floors non-positive/NaN at 0', () => {
-    expect(barFraction(SCALE_MAX)).toBe(1)
-    expect(barFraction(SCALE_MAX * 5)).toBe(1)
-    expect(barFraction(0)).toBe(0)
-    expect(barFraction(-3)).toBe(0)
-    expect(barFraction(NaN)).toBe(0)
+  it('maps positive right and negative left, symmetric', () => {
+    expect(signedFraction(SCALE / 2)).toBeCloseTo(0.5)
+    expect(signedFraction(-SCALE / 2)).toBeCloseTo(-0.5)
+  })
+  it('clamps beyond ±scale and floors NaN at 0', () => {
+    expect(signedFraction(SCALE * 5)).toBe(1)
+    expect(signedFraction(-SCALE * 5)).toBe(-1)
+    expect(signedFraction(NaN)).toBe(0)
   })
 })
 
 describe('pointerToValue', () => {
-  it('is the inverse of barFraction across the bar', () => {
+  it('maps the bar centre to 0 and edges to ±scale (inverse of signedFraction)', () => {
     const width = 120
-    expect(pointerToValue(width / 2, width)).toBeCloseTo(1)
-    expect(pointerToValue(0, width)).toBe(0)
-    expect(pointerToValue(width, width)).toBe(SCALE_MAX)
+    expect(pointerToValue(width / 2, width)).toBeCloseTo(0)
+    expect(pointerToValue(width, width)).toBeCloseTo(SCALE)
+    expect(pointerToValue(0, width)).toBeCloseTo(-SCALE)
   })
-  it('clamps out-of-bounds x into [0, SCALE_MAX]', () => {
-    expect(pointerToValue(-50, 120)).toBe(0)
-    expect(pointerToValue(500, 120)).toBe(SCALE_MAX)
+  it('clamps out-of-bounds x into [-scale, scale]', () => {
+    expect(pointerToValue(-50, 120)).toBe(-SCALE)
+    expect(pointerToValue(500, 120)).toBe(SCALE)
   })
 })

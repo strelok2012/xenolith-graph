@@ -21,6 +21,7 @@ export default defineConfig(({ command }) => ({
       { find: '@xenolith/core', replacement: pkgSrc('core') },
       { find: '@xenolith/render-pixi', replacement: pkgSrc('render-pixi') },
       { find: '@xenolith/editor', replacement: pkgSrc('editor') },
+      { find: '@xenolith/plugin-runtime', replacement: pkgSrc('plugin-runtime') },
       { find: '@xenolith/adapter-core', replacement: pkgSrc('adapter-core') },
       { find: '@xenolith/react', replacement: resolve(here, '..', '..', 'packages', 'react', 'src', 'index.tsx') },
       { find: '@xenolith/theme-xen', replacement: pkgSrc('theme-xen') },

@@ -12,13 +12,15 @@ export {
   resolveCategoryAccent,
   resolvePinFill,
   resolvePinStroke,
+  resolvePinShape,
   resolveEdgeColor,
   resolveCategoryGradient,
   hexToRgba,
 } from './style.js'
-export type { CategoryGradient } from './style.js'
+export type { CategoryGradient, CategoryColorSpec, GraphCategoryPalette } from './style.js'
 
-export { renderNode, readPinHandle, markPinInteractive, clearGlowTextureCache, clearGradientCache } from './node-renderer.js'
+export { renderNode, makeHeaderIcon, buildPinShape, readPinHandle, markPinInteractive, clearGlowTextureCache, clearGradientCache } from './node-renderer.js'
+export { IconRegistry, BUILTIN_ICONS } from './icons.js'
 export type { RenderNodeOptions, NodeView, NodeVisualState, PinHandle } from './node-renderer.js'
 
 export { renderRerouteNode, rerouteSize, renderRerouteNodeBox, rerouteBoxSize, rerouteStateColor } from './reroute-renderer.js'

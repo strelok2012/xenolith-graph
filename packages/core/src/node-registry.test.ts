@@ -93,6 +93,31 @@ describe('NodeRegistry', () => {
       expect(a.id).not.toBe(b.id)
       expect(a.pins[0]!.id).not.toBe(b.pins[0]!.id)
     })
+
+    it('copies the schema pure flag and meta onto the node', () => {
+      reg.register({ type: 'Add', title: 'Add', pure: true, meta: { evalKind: 'pure', nativeImpl: 'add' }, pins: [] })
+      const node = reg.instantiate('Add', { x: 0, y: 0 })
+      expect(node.pure).toBe(true)
+      expect(node.meta).toEqual({ evalKind: 'pure', nativeImpl: 'add' })
+    })
+
+    it('leaves pure/meta undefined when the schema omits them', () => {
+      const node = reg.instantiate('Source', { x: 0, y: 0 })
+      expect(node.pure).toBeUndefined()
+      expect(node.meta).toBeUndefined()
+    })
+
+    it('copies the schema header glyph onto the node', () => {
+      reg.register({ type: 'Cpu', title: 'Cpu', glyph: { icon: 'cpu', side: 'right' }, pins: [] })
+      const node = reg.instantiate('Cpu', { x: 0, y: 0 })
+      expect(node.glyph).toEqual({ icon: 'cpu', side: 'right' })
+      // a fresh copy, not the schema's object
+      expect(node.glyph).not.toBe(reg.get('Cpu')!.glyph)
+    })
+
+    it('leaves glyph undefined when the schema omits it', () => {
+      expect(reg.instantiate('Source', { x: 0, y: 0 }).glyph).toBeUndefined()
+    })
   })
 
   describe('search', () => {

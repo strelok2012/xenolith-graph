@@ -183,17 +183,27 @@ describe('measureNodeSize', () => {
     expect(measureNodeSize(n, 'X', SIZE_TOKENS, fakeMeasure).x).toBe(150)
   })
 
-  it('widens to fit a long title', () => {
+  it('widens to fit a title up to a cap, then caps (renderer ellipsises instead of growing)', () => {
+    const make = (title: string): number =>
+      measureNodeSize({ id: createNodeId(), type: 'T', position: { x: 0, y: 0 }, state: {}, pins: [] }, title, SIZE_TOKENS, fakeMeasure).x
+    // A title past minWidth widens the node…
+    expect(make('ConditioningCombine')).toBeGreaterThan(150)
+    // …but two very long titles of DIFFERENT lengths cap to the SAME width — the node stops growing
+    // and the renderer ellipsises the title instead.
+    const a = make('ConditioningCombineAdvancedVeryLong')
+    const b = make(`${'ConditioningCombineAdvancedVeryLong'}EvenMoreAndMoreAndMore`)
+    expect(a).toBe(b)
+  })
+
+  it('widens (uncapped) to fit a long PIN label — pins always fit', () => {
+    const longLabel = 'a_really_long_pin_label_that_exceeds_the_title_cap_by_a_lot'
     const n: Node = {
-      id: createNodeId(), type: 'T', position: { x: 0, y: 0 }, state: {}, pins: [],
+      id: createNodeId(), type: 'X', position: { x: 0, y: 0 }, state: {},
+      pins: [labelledPin('in', longLabel)],
     }
-    const long = 'ConditioningCombineAdvancedVeryLong'
-    const w = measureNodeSize(n, long, SIZE_TOKENS, fakeMeasure).x
-    // title region offset + measured title must fit inside the width
-    const titleX = SIZE_TOKENS.node.headerPadding + 8 + SIZE_TOKENS.header.chevronSize / 2 - 4
-      + SIZE_TOKENS.header.chevronSize / 2 + SIZE_TOKENS.header.titleGap
-    expect(w).toBeGreaterThanOrEqual(titleX + fakeMeasure(long, 12, 700))
-    expect(w).toBeGreaterThan(150)
+    const w = measureNodeSize(n, 'X', SIZE_TOKENS, fakeMeasure).x
+    const sidePad = SIZE_TOKENS.pin.diameter / 2 + SIZE_TOKENS.pin.labelGap
+    expect(w).toBeGreaterThanOrEqual(sidePad + fakeMeasure(longLabel, 10, 400) + sidePad)
   })
 
   it('widens so an input label and the opposite output label never overlap', () => {
@@ -262,5 +272,67 @@ describe('measureNodeSize — widgets', () => {
     }
     const w = measureNodeSize(n, 'X', WIDGET_TOKENS, fakeMeasure).x
     expect(w).toBeGreaterThan(150)
+  })
+})
+
+describe('computeNodeLayout — exec pins at top (UE layout)', () => {
+  const execPin = (direction: 'in' | 'out', id = createPinId()): Pin =>
+    ({ id, kind: 'exec', direction, type: 'exec', multiple: false })
+
+  it('places exec pins in the top row and data below, regardless of declaration order', () => {
+    const eIn = createPinId(), eOut = createPinId(), dIn = createPinId(), dOut = createPinId()
+    // declared data-first to prove ordering is by KIND, not declaration order
+    const n = node({ pins: [pin('in', dIn), execPin('in', eIn), pin('out', dOut), execPin('out', eOut)] })
+    const l = computeNodeLayout(n, TOKENS)
+    const Y = (id: Pin['id']) => l.pins.find((p) => p.id === id)!.y
+    const side = (id: Pin['id']) => l.pins.find((p) => p.id === id)!.side
+    expect(Y(eIn)).toBe(Y(eOut))         // exec in/out share the top row
+    expect(Y(dIn)).toBe(Y(dOut))         // data in/out share their row
+    expect(Y(eIn)).toBeLessThan(Y(dIn))  // exec row sits above the data row
+    expect(side(eIn)).toBe('left')
+    expect(side(eOut)).toBe('right')
+  })
+
+  it('stacks multiple exec outputs (Sequence) above the data band (not hoisted)', () => {
+    const eIn = createPinId(), e0 = createPinId(), e1 = createPinId(), d = createPinId()
+    const n = node({ pins: [execPin('in', eIn), execPin('out', e0), execPin('out', e1), pin('out', d)] })
+    const l = computeNodeLayout(n, TOKENS)
+    const Y = (id: Pin['id']) => l.pins.find((p) => p.id === id)!.y
+    expect(Y(e0)).toBeGreaterThan(n.position.y + TOKENS.node.headerHeight) // 2 exec-outs stay in body
+    expect(Y(e0)).toBeLessThan(Y(e1)) // two stacked exec-out rows
+    expect(Y(e1)).toBeLessThan(Y(d))  // data pin below the 2-row exec band
+  })
+})
+
+describe('computeNodeLayout — single exec hoisted onto the header line', () => {
+  const execPin = (direction: 'in' | 'out', id = createPinId(), label?: string): Pin =>
+    ({ id, kind: 'exec', direction, type: 'exec', multiple: false, ...(label ? { label } : {}) })
+  const noSize = (pins: Pin[]): Node =>
+    ({ id: createNodeId(), type: 'T', position: { x: 100, y: 200 }, state: {}, pins })
+
+  it('places a lone exec-in/out on the header line (y = headerHeight/2) at the side edges', () => {
+    const eIn = createPinId(), eOut = createPinId(), dIn = createPinId(), dOut = createPinId()
+    const n = node({ pins: [execPin('in', eIn), execPin('out', eOut), pin('in', dIn), pin('out', dOut)] })
+    const l = computeNodeLayout(n, TOKENS)
+    const P = (id: Pin['id']) => l.pins.find((p) => p.id === id)!
+    expect(P(eIn).y).toBe(n.position.y + TOKENS.node.headerHeight / 2) // on the header line
+    expect(P(eOut).y).toBe(n.position.y + TOKENS.node.headerHeight / 2)
+    expect(P(eIn).x).toBe(n.position.x)                // header left edge
+    expect(P(eOut).x).toBe(n.position.x + n.size!.x)   // header right edge
+    expect(P(dIn).y).toBeGreaterThan(n.position.y + TOKENS.node.headerHeight) // data in the body
+    expect(P(dIn).y).toBe(P(dOut).y)
+  })
+
+  it('a LABELLED single exec stays in the body band (not hoisted)', () => {
+    const eOut = createPinId()
+    const n = node({ pins: [execPin('out', eOut, 'then'), pin('in')] })
+    const l = computeNodeLayout(n, TOKENS)
+    expect(l.pins.find((p) => p.id === eOut)!.y).toBeGreaterThan(n.position.y + TOKENS.node.headerHeight)
+  })
+
+  it('hoisting a single exec pair saves a body row (naturalHeight)', () => {
+    const hoisted = noSize([execPin('in'), execPin('out'), pin('in'), pin('out')]) // 1 data body row
+    const dataOnly = noSize([pin('in'), pin('out')])                                // 1 data body row
+    expect(computeNodeLayout(hoisted, TOKENS).body.height).toBe(computeNodeLayout(dataOnly, TOKENS).body.height)
   })
 })
