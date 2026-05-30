@@ -3,13 +3,18 @@ import { REROUTE_TYPE, REROUTE_NODE_TYPE, defaultWidgetValue, type WidgetSpec } 
 
 export { createCurveWidget } from './curve-widget.js'
 export { createXYPadWidget } from './xy-pad-widget.js'
+export { createPreviewWidget } from './preview-widget.js'
 import { CURVE_DEFAULT } from './curve-widget.js'
 import { XYPAD_DEFAULT } from './xy-pad-widget.js'
+import { PREVIEW_DEFAULT } from './preview-widget.js'
 
 /** Initial value for a custom widget — its controller's default, persisted into node.state so a
  *  loaded graph is self-contained (getWidgetValue returns real data, not undefined). */
 function customDefault(renderer: string): unknown {
-  return renderer === 'curve' ? CURVE_DEFAULT : renderer === 'xypad' ? XYPAD_DEFAULT : null
+  return renderer === 'curve' ? CURVE_DEFAULT
+    : renderer === 'xypad'    ? XYPAD_DEFAULT
+    : renderer === 'preview'  ? PREVIEW_DEFAULT
+    : null
 }
 
 /**
@@ -47,35 +52,61 @@ const SPECS: NodeSpec[] = [
   { key: 'filter',    type: 'Filter',    category: 'logic',   description: 'Drops values failing a predicate',        keywords: ['where'],           position: { x: 40,  y: 360 }, collapsed: true, pins: [p('in','float','In'), p('out','float','Out')] },
   { key: 'cache',     type: 'Cache',     category: 'data',    description: 'Memoises the last seen object',           keywords: ['store', 'memo'],   position: { x: 40,  y: 500 }, collapsed: true, pins: [p('in','object','In'), p('out','object','Out')] },
   // 'gather' and 'pack' are MACRO groups, authored in the macro section below (not plain nodes).
-  { key: 'transform', type: 'Transform', category: 'data',    description: 'Maps an object to a new shape',           keywords: ['move', 'map'],     position: { x: 560, y: 140 }, pins: [p('in','object','In'), p('out','object','Out')],
+  // NOTE: CONNS indexes pins by POSITION — keep the original [In, Out, …] prefix and APPEND
+  // widget-bound pins after Out so existing connections still resolve to the right pin (otherwise
+  // a wire defined as `transform, 1, …` would land on `scale` instead of `Out`).
+  { key: 'transform', type: 'Transform', category: 'data',    description: 'Maps an object to a new shape',           keywords: ['move', 'map'],     position: { x: 560, y: 140 },
+    pins: [p('in','object','In'), p('out','object','Out'), p('in','float','scale'), p('in','string','mode'), p('in','bool','mirror')],
     widgets: [
-      { id: 'scale', type: 'slider', label: 'Scale', key: 'scale', min: 0, max: 2, step: 0.05 },
-      { id: 'mode',  type: 'combo',  label: 'Mode',  key: 'mode',  values: ['fit', 'fill', 'stretch'] },
-      { id: 'mirror', type: 'toggle', label: 'Mirror', key: 'mirror' },
+      { id: 'scale',  type: 'slider', label: '', key: 'scale',  min: 0, max: 2, step: 0.05 },
+      { id: 'mode',   type: 'combo',  label: '', key: 'mode',   values: ['fit', 'fill', 'stretch'] },
+      { id: 'mirror', type: 'toggle', label: '', key: 'mirror' },
     ] },
-  { key: 'validate',  type: 'Validate',  category: 'data',    description: 'Checks an object against a schema',       keywords: ['check'],           position: { x: 560, y: 300 }, pins: [p('in','object','In'), p('out','wildcard','Out')],
+  { key: 'validate',  type: 'Validate',  category: 'data',    description: 'Checks an object against a schema',       keywords: ['check'],           position: { x: 560, y: 300 },
+    pins: [p('in','object','In'), p('out','wildcard','Out'), p('in','any','response')],
     widgets: [
-      { id: 'response', type: 'custom', renderer: 'curve', key: 'response', label: 'Response', height: 120 },
+      { id: 'response', type: 'custom', renderer: 'curve', key: 'response', label: '', height: 120 },
     ] },
-  { key: 'enrich',    type: 'Enrich',    category: 'data',    description: 'Augments an object with extra fields',    keywords: ['augment'],         position: { x: 560, y: 510 }, pins: [p('in','object','In'), p('out','object','Out')],
+  { key: 'enrich',    type: 'Enrich',    category: 'data',    description: 'Augments an object with extra fields',    keywords: ['augment'],         position: { x: 560, y: 510 },
+    pins: [p('in','object','In'), p('out','object','Out'), p('in','string','tint'), p('in','float','strength')],
     widgets: [
-      { id: 'tint',     type: 'color',  label: 'Tint',     key: 'tint' },
-      { id: 'strength', type: 'slider', label: 'Strength', key: 'strength', min: 0, max: 1, step: 0.01 },
+      { id: 'tint',     type: 'color',  label: '', key: 'tint' },
+      { id: 'strength', type: 'slider', label: '', key: 'strength', min: 0, max: 1, step: 0.01 },
     ] },
   { key: 'score',     type: 'Score',     category: 'macro',   description: 'Ranks an object, emits a float score',    keywords: ['rank'],            position: { x: 820, y: 200 }, collapsed: true, pins: [p('in','object','In'), p('out','float','Out')] },
-  { key: 'resolve',   type: 'Resolve',   category: 'macro',   description: 'Finalises into a string result',          keywords: ['finalize'],        position: { x: 820, y: 360 }, pins: [p('in','object','In'), p('in','float','Hint'), p('in','wildcard','Aux'), p('out','string','Out')],
+  { key: 'resolve',   type: 'Resolve',   category: 'macro',   description: 'Finalises into a string result',          keywords: ['finalize'],        position: { x: 820, y: 360 },
+    pins: [p('in','object','In'), p('in','float','Hint'), p('in','wildcard','Aux'), p('out','string','Out'), p('in','float','seed'), p('in','string','prompt')],
     widgets: [
-      { id: 'seed', type: 'number', label: 'Seed', key: 'seed', min: 0, max: 999999, step: 1 },
-      { id: 'prompt', type: 'text', label: 'Prompt', key: 'prompt', multiline: true, placeholder: 'describe…' },
+      { id: 'seed',   type: 'number', label: '', key: 'seed',   min: 0, max: 999999, step: 1 },
+      { id: 'prompt', type: 'text',   label: '', key: 'prompt', placeholder: 'describe…' },
     ] },
   { key: 'format',    type: 'Format',    category: 'data',    description: 'Renders a result to a display string',    keywords: ['template'],        position: { x: 820, y: 600 }, collapsed: true, pins: [p('in','string','In'), p('out','string','Out')] },
   { key: 'display',   type: 'Display',   category: 'utility', description: 'Renders a string to the viewport',        keywords: ['show', 'output'],  position: { x: 1100, y: 120 }, pins: [p('in','string','In'), p('out','any','Out')] },
   { key: 'audit',     type: 'Audit',     category: 'utility', description: 'Logs a float for inspection',             keywords: ['log'],             position: { x: 1100, y: 280 }, pins: [p('in','float','In'), p('out','any','Out')] },
   { key: 'persist',   type: 'Persist',   category: 'utility', description: 'Writes a string to durable storage',      keywords: ['save', 'write'],   position: { x: 1100, y: 440 }, pins: [p('in','string','In'), p('out','any','Out')] },
   { key: 'notify',    type: 'Notify',    category: 'utility', description: 'Pushes a notification on completion',     keywords: ['alert', 'webhook'],position: { x: 1100, y: 600 }, pins: [p('in','string','In'), p('out','any','Out')] },
-  { key: 'archive',   type: 'Archive',   category: 'utility', description: 'Cold-stores any payload',                 keywords: ['cold', 'backup'],  position: { x: 1380, y: 360 }, pins: [p('in','any','In'),  p('out','any','Out')],
+  { key: 'archive',   type: 'Archive',   category: 'utility', description: 'Cold-stores any payload',                 keywords: ['cold', 'backup'],  position: { x: 1380, y: 360 },
+    pins: [p('in','any','In'), p('out','any','Out'), p('in','any','offset')],
     widgets: [
-      { id: 'offset', type: 'custom', renderer: 'xypad', key: 'offset', label: 'Offset', height: 110 },
+      { id: 'offset', type: 'custom', renderer: 'xypad', key: 'offset', label: '', height: 110 },
+    ] },
+  // -------- Canon showcase --------------------------------------------------------------------
+  // Demonstrates the widget canon in one node:
+  //  - `name`   IN-pin + text widget (default-value: hides when a wire arrives, reappears on disc).
+  //  - `say`    IN-pin + custom 'preview' widget (visibility:'always', renders the wire's value).
+  //  - actions row button (`+ reset`) — under the pin block.
+  { key: 'greet', type: 'Greet', category: 'utility',
+    description: 'Pin-bound widget showcase: default-value text, always-on preview, actions row',
+    keywords: ['canon', 'widget', 'default', 'preview'],
+    position: { x: 1660, y: 60 },
+    // First IN-pair has no widget so it pairs cleanly with `out` on row 0. The widget-carrying
+    // pins (`name`, `say`) sit on their own rows underneath — the widget takes the row's right
+    // half without colliding with an opposite-side label.
+    pins: [p('in','object','In'), p('out','string','out'), p('in','string','name'), p('in','string','say')],
+    widgets: [
+      { id: 'name',  type: 'text',   label: '', key: 'name'  },
+      { id: 'say',   type: 'custom', renderer: 'preview', key: 'say', label: '', visibility: 'always' },
+      { id: 'reset', type: 'button', label: '+ reset', action: 'resetGreet' },
     ] },
 ]
 
@@ -100,8 +131,9 @@ const CONNS: Conn[] = [
   // source → (rectangular Reroute relay) → audit — a pullable relay node across the canvas.
   ['source', 0, 'rr_box', 0, 'float'],
   ['rr_box', 1, 'audit', 0, 'float'],
+  // Archive.In is a single-feed IN-pin → only `display` feeds it. `persist` already drains from
+  // `resolve` (line above) — leave its Out free for the user to wire as they like.
   ['display', 1, 'archive', 0, 'any'],
-  ['persist', 1, 'archive', 0, 'any'],
 ]
 
 // Reroute placements (positioned by top-left; small footprints).

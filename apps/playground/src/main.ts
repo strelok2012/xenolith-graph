@@ -1,7 +1,7 @@
 import { XenolithEditor } from '@xenolith/editor'
 import { xenTheme, type XenolithTheme } from '@xenolith/render-pixi'
 import { liquidGlassTheme } from '@xenolith/theme-liquid-glass'
-import { demoGraph, demoSchemas, createCurveWidget, createXYPadWidget } from '@xenolith/demo'
+import { demoGraph, demoSchemas, createCurveWidget, createXYPadWidget, createPreviewWidget } from '@xenolith/demo'
 
 const editor = await XenolithEditor.init('#app', {
   theme: xenTheme,
@@ -13,6 +13,7 @@ const editor = await XenolithEditor.init('#app', {
 // load the whole graph from our own xenolith.v1 data format and frame it. No hand-built nodes.
 editor.registerWidget('curve', createCurveWidget())
 editor.registerWidget('xypad', createXYPadWidget())
+editor.registerWidget('preview', createPreviewWidget())
 for (const schema of demoSchemas) editor.registry.register(schema)
 editor.loadJSON(demoGraph)
 editor.fitView({ padding: 56, maxZoom: 1 })

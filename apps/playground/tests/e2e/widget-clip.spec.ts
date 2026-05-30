@@ -23,8 +23,10 @@ test('a custom canvas widget that overdraws is clipped to the node', async ({ pa
     })
     e.registry.register({
       type: 'Over', title: 'Over',
-      pins: [{ kind: 'data', direction: 'in', type: 'float' }],
-      widgets: [{ id: 'ov', type: 'custom', renderer: 'overflow', label: 'ov', height: 40 }],
+      // Pin label matches the widget's `key` so the canon's auto-bind catches it (widget binds to
+      // this IN-pin; without a matching pin the widget is silently dropped under the canon).
+      pins: [{ kind: 'data', direction: 'in', type: 'float', label: 'ov' }],
+      widgets: [{ id: 'ov', type: 'custom', renderer: 'overflow', label: 'ov', key: 'ov', height: 40 }],
     })
     e.insertNode('Over', { x: 0, y: 0 })
   }, E)

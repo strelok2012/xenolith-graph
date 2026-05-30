@@ -93,8 +93,13 @@ export class CommandBus {
   canRedo(): boolean { return this.#cursor < this.#log.length }
 
   transaction<R>(fn: () => R): R {
+    // Nested transactions join the outer one — commands accumulate in the same buffer, and the
+    // OUTERMOST call is the only one that commits or reverts. Lets a high-level multi-step
+    // operation (e.g. macro→template) call into building-block methods that each open a transaction
+    // and still produce a SINGLE undoable history entry. Inner errors propagate so the outermost
+    // handler rolls everything back atomically.
     if (this.#txBuffer) {
-      throw new Error('CommandBus: nested transactions are not supported')
+      return fn()
     }
     const buffer: AppliedCommand[] = []
     this.#txBuffer = buffer

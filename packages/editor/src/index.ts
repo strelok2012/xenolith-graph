@@ -22,12 +22,14 @@ import {
   isReroute,
   createReroute,
   SetNodePins,
+  SetNodeWidgets,
   rerouteNodeSchema,
   REROUTE_NODE_TYPE,
   isMacro,
   createMacro,
   macroMembers,
   flattenMacroProxies,
+  flattenAllTemplateInstances,
   planMacroCollapse,
   MACRO_TYPE,
   type MacroProxyRecord,
@@ -50,6 +52,8 @@ import {
   createPinId,
   clampWidgetValue,
   widgetValue,
+  widgetBindKey,
+  widgetVisibility,
   comboOptions,
   type CoreEvents,
   type WidgetStyle,
@@ -74,6 +78,7 @@ import {
   computeEdgePath,
   computeNodeLayout,
   computeOverlapBackdropPlan,
+  findPinByKey,
   createGridSprite,
   createPixiTextMeasurer,
   drawEdge,
@@ -579,7 +584,12 @@ export class XenolithEditor {
       this.#wireStageInteraction()
       window.addEventListener('keydown', this.#onKeyDown)
       ;(app.canvas as HTMLCanvasElement).addEventListener('dblclick', this.#onDoubleClick)
+      // Suppress the browser context menu — `#onContextMenu` only preventDefaults; the actual menu
+      // OPEN fires on pointerup (after a non-drag right click) so dragging the canvas with the
+      // right button doesn't flash the menu mid-pan.
       ;(app.canvas as HTMLCanvasElement).addEventListener('contextmenu', this.#onContextMenu)
+      ;(app.canvas as HTMLCanvasElement).addEventListener('pointerdown', this.#onRightDown)
+      ;(app.canvas as HTMLCanvasElement).addEventListener('pointerup',   this.#onRightUp)
     } else {
       this.#interaction = null
     }
@@ -605,9 +615,64 @@ export class XenolithEditor {
     // microtask so a transaction that fires N command:applied events collapses to one O(N) sync
     // instead of N × O(N+E) = O(N²) — critical for paste/duplicate at high node counts.
     const scheduleSync = (): void => { this.#scheduleSync(); this.#requestRender() }
+    // Drop the macro parent-index whenever the graph topology MIGHT have changed (add/remove node,
+    // SetNodeState that touched state.members). Cheaper to flag-and-rebuild on next read than to
+    // mutate the index in lockstep with every command.
+    const invalidateMacroIndex = ({ command }: { command: { type: string } }): void => {
+      const t = command.type
+      if (t === 'AddNode' || t === 'RemoveNode' || t === 'SetNodeState' || t === 'SetNodeWidgets') {
+        this.#invalidateMacroIndex()
+      }
+    }
+    this.#coreEvents.on('command:applied', invalidateMacroIndex)
+    this.#coreEvents.on('command:undone',  invalidateMacroIndex)
+    this.#coreEvents.on('command:redone',  invalidateMacroIndex)
     this.#coreEvents.on('command:applied', scheduleSync)
     this.#coreEvents.on('command:undone',  scheduleSync)
     this.#coreEvents.on('command:redone',  scheduleSync)
+
+    // Repaint endpoint nodes when an edge attaches/detaches so the exec-pin "outlined when free /
+    // filled gold when wired" signal stays live. Cheap: only the two endpoint nodes are touched.
+    // A node with pin-bound widgets needs RESIZE (its row heights change with widget visibility)
+    // — bare repaint would draw the new widget visibility into a stale size box.
+    const repaintEndpoint = (id: NodeId): void => {
+      if (!this.#views.has(id)) return
+      const n = this.graph.getNode(id)
+      // Resize (rebuilds size + view) when ANY widget binds to a pin — explicit `pinKey` OR
+      // implicit via `key`. A `whenDisconnected` widget needs the node to shrink/grow on
+      // connect/disconnect; `widgetBindKey()` is the same predicate computeWidgetRects uses.
+      const hasBoundWidget = !!n?.widgets?.some((w) => widgetBindKey(w) !== undefined)
+      if (hasBoundWidget) this.#resizeNodeView(id); else this.#rerenderNode(id)
+    }
+    const repaintEndpoints = (from: NodeId, to: NodeId): void => {
+      repaintEndpoint(from)
+      if (to !== from) repaintEndpoint(to)
+      this.#requestRender()
+    }
+    this.#events.on('edge:connected',    ({ edge })   => {
+      // `#edgesByNode` is rebuilt in a microtask via `#scheduleSync`, but this listener runs
+      // SYNCHRONOUSLY right after the command — before that microtask. Without an up-front index
+      // update, `#connectedPinIdsFor` (called by the renderer in `repaintEndpoints` below) would
+      // see stale state and a pin-bound widget wouldn't hide on connect.
+      this.#addEdgeToIndex(edge as Edge)
+      repaintEndpoints(edge.from.node, edge.to.node)
+    })
+    this.#events.on('edge:disconnected', ({ edgeId }) => {
+      // By the time this fires the edge is already gone from the graph, so look up endpoints
+      // through the per-node index (which lags removal but still remembers the stale edgeId).
+      const touched: NodeId[] = []
+      for (const [nid, eids] of this.#edgesByNode) if (eids.includes(edgeId as EdgeId)) touched.push(nid)
+      // Drop the dead edge id from the index NOW so the resize+repaint below sees it gone.
+      for (const nid of touched) {
+        const arr = this.#edgesByNode.get(nid)
+        if (arr) {
+          const filtered = arr.filter((e) => e !== edgeId)
+          if (filtered.length === 0) this.#edgesByNode.delete(nid); else this.#edgesByNode.set(nid, filtered)
+        }
+      }
+      if (touched.length === 2) repaintEndpoints(touched[0]!, touched[1]!)
+      else if (touched.length === 1) repaintEndpoints(touched[0]!, touched[0]!)
+    })
 
     // Render-on-demand: drop PIXI's unconditional per-frame render and drive it ourselves only
     // when the scene is dirty. On a static graph the ticker callback does a single boolean check
@@ -857,6 +922,9 @@ export class XenolithEditor {
     this.#freezeRT = null
     for (const view of this.#views.values()) view.container.visible = true
     this.#frozen = false
+    // Restoring visible=true blindly re-exposed collapsed-macro members. Re-apply macro rules so
+    // hidden members go back to hidden.
+    this.#applyMacroVisibility()
     this.#requestRender()
   }
 
@@ -1041,6 +1109,10 @@ export class XenolithEditor {
     }
     if (!changed) return
     if (this.#lodLevel === 'full') this.#cullEdges() // wires follow the live nodes
+    // A freshly-materialised view starts with visible=true, but if it's a member of a collapsed
+    // macro it must stay hidden. Without this, paste-then-pan reveals "dissolved" members the
+    // moment they re-enter the viewport — exactly the regression image #23 was showing.
+    this.#applyMacroVisibility()
     this.#updateVisualStates()
     // NOT #scheduleMinimapSync(): culling only changes which views are live, not the graph data the
     // minimap draws (node positions are unchanged). Rebuilding it here meant an O(N) minimap repaint
@@ -1082,7 +1154,9 @@ export class XenolithEditor {
    *  routing is invisible at this zoom and a per-edge Graphics each is what makes the wire-web crawl. */
   #buildLODEdges(): Graphics {
     const edges = new Graphics()
+    const hidden = this.#hiddenMembers
     for (const e of this.graph.edges()) {
+      if (hidden.has(e.from.node) || hidden.has(e.to.node)) continue
       const a = this.graph.getNode(e.from.node), b = this.graph.getNode(e.to.node)
       if (!a || !b) continue
       const aw = a.size?.x ?? 0, ah = a.size?.y ?? 0, bw = b.size?.x ?? 0, bh = b.size?.y ?? 0
@@ -1099,7 +1173,9 @@ export class XenolithEditor {
     const tokens = this.#theme.tokens
     const radius = tokens.geometry.node.radius
     const nodes = new Graphics()
+    const hidden = this.#hiddenMembers
     for (const n of this.graph.nodes()) {
+      if (hidden.has(n.id)) continue
       const w = n.size?.x ?? tokens.geometry.node.minWidth
       const h = n.size?.y ?? tokens.geometry.node.headerHeight
       const ro = this.#renderOpts.get(n.id)
@@ -1167,22 +1243,85 @@ export class XenolithEditor {
   /** Right-click on (or near) an edge opens its context menu — Add Reroute / Add Node. Right-click
    *  on empty canvas is ignored (lets the browser menu through is undesirable on a canvas, so we
    *  simply suppress and do nothing). */
-  readonly #onContextMenu = (e: MouseEvent): void => {
-    const screen = { x: e.offsetX, y: e.offsetY }
+  // Tracks a right-button press so we can fire the context menu on RELEASE (mouseup) only when
+  // the pointer didn't move — right-mouse-drag is the pan gesture and must NOT pop the menu.
+  #rightDownAt: { x: number; y: number } | null = null
+  readonly #onRightDown = (e: PointerEvent): void => {
+    if (e.button !== 2) return
+    this.#rightDownAt = { x: e.clientX, y: e.clientY }
+  }
+  readonly #onRightUp = (e: PointerEvent): void => {
+    if (e.button !== 2 || !this.#rightDownAt) return
+    const dx = e.clientX - this.#rightDownAt.x
+    const dy = e.clientY - this.#rightDownAt.y
+    this.#rightDownAt = null
+    // Movement threshold — pan, not a click. Tuned so a tiny accidental jitter (≤4px) still
+    // counts as a click; deliberate drag suppresses the menu.
+    if (Math.hypot(dx, dy) > 4) return
+    this.#openMenuAt({ x: e.offsetX, y: e.offsetY })
+  }
+
+  /** Pick the deepest interactive target under `screen` (pin → node → edge midpoint) and open the
+   *  matching context menu. Called from `#onRightUp` after confirming the gesture wasn't a pan. */
+  #openMenuAt(screen: { x: number; y: number }): void {
     const world = screenToWorld(screen, this.#viewport.state)
-    // A node under the cursor takes priority — open the node menu (Delete / Group / Convert to Template).
+    const pinHit = this.#pickPinAt(world)
+    if (pinHit) { this.#openPinMenu(pinHit.nodeId, pinHit.pinId, screen); return }
     const nodeId = (this.#hoveredId !== null && this.graph.getNode(this.#hoveredId)) ? this.#hoveredId : this.#pickNodeAt(world)
-    if (nodeId !== null) {
-      e.preventDefault()
-      this.#openNodeMenu(nodeId, screen)
-      return
-    }
-    // Grab radius around the midpoint dot — the dot radius plus a small forgiving pad (world units).
+    if (nodeId !== null) { this.#openNodeMenu(nodeId, screen); return }
     const tolerance = this.#theme.tokens.geometry.edge.midpointRadius + 5
     const edgeId = this.#pickEdgeAt(world, tolerance)
-    if (!edgeId) return
+    if (edgeId) this.#openEdgeMenu(edgeId, screen)
+  }
+
+  /** Suppress the browser context menu — the editor opens its own on `pointerup` (`#onRightUp`)
+   *  so right-button drag doesn't flash a menu mid-pan. */
+  readonly #onContextMenu = (e: MouseEvent): void => {
     e.preventDefault()
-    this.#openEdgeMenu(edgeId, screen)
+  }
+
+  /** Topmost pin whose hit area contains `world`, or null. Walks live views (so it respects pin
+   *  positions at the current zoom + per-node row heights). Used by the right-click pin menu. */
+  #pickPinAt(world: { x: number; y: number }): { nodeId: NodeId; pinId: string } | null {
+    const r = this.#theme.tokens.geometry.pin.diameter / 2 + this.#theme.tokens.geometry.pin.hitPadding
+    let best: { nodeId: NodeId; pinId: string } | null = null
+    let bestDist = r
+    for (const n of this.graph.nodes()) {
+      if (this.#hiddenMembers.has(n.id)) continue
+      for (const pin of (n as Node).pins) {
+        const pos = this.#pinWorldPosition(n as Node, String(pin.id))
+        if (!pos) continue
+        const d = Math.hypot(world.x - pos.x, world.y - pos.y)
+        if (d <= bestDist) { bestDist = d; best = { nodeId: n.id as NodeId, pinId: String(pin.id) } }
+      }
+    }
+    return best
+  }
+
+  /** Open the pin context menu for one specific pin. MVP item: Unbind — disconnects every edge
+   *  attached to that pin in one undoable transaction. */
+  #openPinMenu(nodeId: NodeId, pinId: string, screen: { x: number; y: number }): void {
+    const incident: EdgeId[] = []
+    for (const edge of this.graph.edges()) {
+      if ((edge.from.node === nodeId && String(edge.from.pin) === pinId) ||
+          (edge.to.node   === nodeId && String(edge.to.pin)   === pinId)) {
+        incident.push(edge.id as EdgeId)
+      }
+    }
+    const menu = this.#ensureEdgeMenu()
+    const items: EdgeMenuItem[] = []
+    items.push({
+      label: incident.length > 1 ? 'Unbind (all wires)' : 'Unbind',
+      hint: incident.length > 0 ? `${incident.length} wire${incident.length === 1 ? '' : 's'}` : 'no wires',
+      onSelect: () => {
+        if (incident.length === 0) return
+        this.commandBus.transaction(() => {
+          for (const eid of incident) this.deleteEdge(eid)
+        })
+        this.#requestRender()
+      },
+    })
+    menu.open(screen, items)
   }
 
   /** Topmost visible node whose box contains a world point (iteration order ≈ paint order, so the
@@ -1471,6 +1610,8 @@ export class XenolithEditor {
       requestRender: this.#requestRender,
       customWidgets: this.#widgetControllers,
       types: this.#types,
+      connectedPinIds: this.#connectedPinIdsFor(node.id),
+      ...(this.#pinLiveValueFor(node.id) ? { pinLiveValue: this.#pinLiveValueFor(node.id)! } : {}),
       // Mark a node with a header glyph (explicit node.glyph, or the built-in template/group markers)
       // so kinds read apart without relying on colour.
       ...(() => { const g = this.#resolveGlyph(node); return g ? { glyph: g } : {} })(),
@@ -1956,7 +2097,7 @@ export class XenolithEditor {
       ? rerouteSize(this.#theme.tokens)
       : node.type === REROUTE_NODE_TYPE
         ? rerouteBoxSize(this.#theme.tokens)
-        : measureNodeSize(node, render.title ?? node.type, this.#sizeTokens(), this.#textMeasure)
+        : measureNodeSize(node, render.title ?? node.type, this.#sizeTokens(), this.#textMeasure, (k) => this.#isPinConnected(node.id, k))
   }
 
   /** Add a node as DATA only — graph model + render opts + size, no PIXI view. Used by the
@@ -2103,8 +2244,10 @@ export class XenolithEditor {
   }
 
   /** Core template-extraction step shared by the public Cmd+Shift+G path and the macro-conversion
-   *  path. Trusts the caller's member list (no filtering) — the public entry filters first. */
-  #extractTemplateFromMembers(members: Node[], title: string): NodeId | null {
+   *  path. Trusts the caller's member list (no filtering) — the public entry filters first.
+   *  `hiddenMembers` go into the definition + are removed from the outer graph but DON'T contribute
+   *  to the template interface — used for nested-macro members whose pins are behind a proxy. */
+  #extractTemplateFromMembers(members: Node[], title: string, hiddenMembers: Node[] = []): NodeId | null {
     if (members.length === 0) return null
     let minX = Infinity, minY = Infinity
     for (const m of members) { minX = Math.min(minX, m.position.x); minY = Math.min(minY, m.position.y) }
@@ -2114,6 +2257,7 @@ export class XenolithEditor {
       (n, p) => this.#pinInfo(n, p),
       { node: createNodeId, pin: createPinId, edge: createEdgeId, def: () => createNodeId() as unknown as TemplateDefId },
       title,
+      hiddenMembers,
     )
     this.#definitions.set(plan.definition.id, plan.definition)
     this.#registerTemplateSchema(plan.definition.id)
@@ -2193,7 +2337,17 @@ export class XenolithEditor {
       this.commandBus.apply(new RemoveNode(id))
       for (const e of plan.addEdges) this.commandBus.apply(new ConnectPins(e))
     })
-    this.selection.replaceWith(plan.addNodes.map((n) => n.id))
+    // Selection covers TOP-LEVEL inlined members only. A node that's `state.members` of a nested
+    // Macro that's also in the inlined set is "inside" — leaving it in the selection would let a
+    // follow-up createMacroFromSelection list it BOTH on the new outer macro AND on the nested
+    // one (double membership → phantom interface pins on the next convert-to-template cycle).
+    const inlinedIds = new Set(plan.addNodes.map((n) => String(n.id)))
+    const insideAnother = new Set<string>()
+    for (const n of plan.addNodes) {
+      if (n.type !== 'Macro') continue
+      for (const m of macroMembers(n)) if (inlinedIds.has(String(m))) insideAnother.add(String(m))
+    }
+    this.selection.replaceWith(plan.addNodes.filter((n) => !insideAnother.has(String(n.id))).map((n) => n.id))
     this.#requestRender()
     return true
   }
@@ -2206,8 +2360,15 @@ export class XenolithEditor {
     const node = this.graph.getNode(id)
     if (!node || !isTemplateInstance(node)) return null
     const title = this.#renderOpts.get(id)?.title
-    if (!this.unpackTemplateInstance(id)) return null // inlines members + selects them
-    return this.createMacroFromSelection(undefined, title ?? 'Group') // wraps the selection in a macro
+    // Wrap unpack + re-collapse in a single outer transaction so one Ctrl+Z undoes the whole
+    // conversion atomically (the inner methods' transactions join the outer one — without this,
+    // undo only rolls back the macro re-collapse and leaves the graph as a sea of inlined members).
+    let macroId: NodeId | null = null
+    this.commandBus.transaction(() => {
+      if (!this.unpackTemplateInstance(id)) return // inlines members + selects them
+      macroId = this.createMacroFromSelection(undefined, title ?? 'Group') // wraps the selection in a macro
+    })
+    return macroId
   }
 
   /** Convert a **Group** (Macro) into a reusable **Template**: dissolve the macro, then extract a
@@ -2218,23 +2379,67 @@ export class XenolithEditor {
     const node = this.graph.getNode(id)
     if (!node || !isMacro(node)) return null
     const title = this.#renderOpts.get(id)?.title
-    if (!this.ungroupMacro(id)) return null // dissolves outer macro + selects its direct members
-    // Recursively pull in nested macros' hidden members so the WHOLE group goes into the template
-    // (otherwise a nested collapsed macro would pop out as a top-level loose node).
-    const direct = this.selection.ids() as NodeId[]
-    const all: Node[] = []
-    const seen = new Set<string>()
-    const stack: NodeId[] = [...direct]
-    while (stack.length) {
-      const nid = stack.pop()!
-      if (seen.has(String(nid))) continue
-      seen.add(String(nid))
-      const n = this.graph.getNode(nid)
-      if (!n || isTemplateBoundary(n)) continue
-      all.push(n as Node)
-      if (isMacro(n)) for (const m of macroMembers(n as Node)) stack.push(m)
-    }
-    return this.#extractTemplateFromMembers(all, title ?? 'Template')
+    // Wrap ungroup + template-extraction in one outer transaction so a single Ctrl+Z atomically
+    // restores the original collapsed macro. Without this, undo only rolled back the extraction
+    // and left the macro dissolved into loose members across the canvas.
+    let instanceId: NodeId | null = null
+    this.commandBus.transaction(() => {
+      if (!this.ungroupMacro(id)) return // dissolves outer macro + selects its direct members
+      // Direct members shape the template's interface (their boundary-crossing pins become In/Out
+      // boundaries). Nested-macro members are pulled in as HIDDEN (definition-only): they're behind
+      // their parent macro's proxy pins so have no real edges, and iterating their pins would mint
+      // phantom $templateInput/$templateOutput for every "free-looking" pin. They still must come
+      // along — the parent macro references them by id, so leaving them in the outer graph would
+      // orphan them.
+      //
+      // Iteration is IN ORDER of the original macro's `state.members` so the resulting template
+      // instance's pins appear in the same order as the macro's proxy pins (A, B, C — not C, B, A
+      // from a stack-pop reversal that bit us before).
+      const direct = this.selection.ids() as NodeId[]
+      const directSet = new Set(direct.map(String))
+      // Defensive: if `direct` somehow contains BOTH a Macro AND nodes that are members of it
+      // (e.g. an unpack→re-collapse cycle left them flat in the outer macro's `state.members`),
+      // demote those inner-via-another-macro members to "hidden" so their pins don't double up.
+      const memberOfAnotherMacroInDirect = new Set<string>()
+      for (const nid of direct) {
+        const n = this.graph.getNode(nid)
+        if (n && isMacro(n)) {
+          for (const m of macroMembers(n as Node)) {
+            if (directSet.has(String(m))) memberOfAnotherMacroInDirect.add(String(m))
+          }
+        }
+      }
+      const interfaceMembers: Node[] = []
+      const hidden: Node[] = []
+      const seen = new Set<string>()
+      // Pass 1 — direct selection in order. Each ends up in `interfaceMembers` unless it's already
+      // claimed by another macro in `direct` (then it joins `hidden`).
+      for (const nid of direct) {
+        if (seen.has(String(nid))) continue
+        seen.add(String(nid))
+        const n = this.graph.getNode(nid)
+        if (!n || isTemplateBoundary(n)) continue
+        if (memberOfAnotherMacroInDirect.has(String(nid))) hidden.push(n as Node)
+        else interfaceMembers.push(n as Node)
+      }
+      // Pass 2 — BFS into nested macros' members (these weren't in `direct` so they were never
+      // selected — but they must come along so the included nested Macro doesn't orphan them).
+      const queue: NodeId[] = []
+      for (const n of [...interfaceMembers, ...hidden]) {
+        if (isMacro(n)) for (const m of macroMembers(n)) queue.push(m)
+      }
+      while (queue.length) {
+        const nid = queue.shift()!
+        if (seen.has(String(nid))) continue
+        seen.add(String(nid))
+        const n = this.graph.getNode(nid)
+        if (!n || isTemplateBoundary(n)) continue
+        hidden.push(n as Node)
+        if (isMacro(n)) for (const m of macroMembers(n as Node)) queue.push(m)
+      }
+      instanceId = this.#extractTemplateFromMembers(interfaceMembers, title ?? 'Template', hidden)
+    })
+    return instanceId
   }
 
   /** Mint a fresh `$templateInstance` node for a definition (pins materialised from its interface). */
@@ -2641,21 +2846,40 @@ export class XenolithEditor {
   /** Keep macro z-order correct: an EXPANDED macro's frame + members reparent into #macroOverlayLayer
    *  (above all ordinary nodes) so the whole group reads as one thing on top; a COLLAPSED macro's node
    *  rises to the top of #nodesLayer. Nested macros stack by depth (deeper → on top). */
-  /** The macro whose member list contains `nid` (its immediate container), or undefined. */
-  #macroParentOf(nid: NodeId): Node | undefined {
-    for (const n of this.graph.nodes()) if (isMacro(n) && macroMembers(n as Node).includes(nid)) return n as Node
-    return undefined
+  /** Member → owning macro index. Rebuilt lazily; invalidated whenever the graph mutates (add/
+   *  remove node, SetNodeState — covers `state.members` edits). Without this, every macro lookup
+   *  was O(N) → `#reparentMacros` ran O(M·N) per sync, which is what melts 37k-node paste. */
+  #macroParentIndex: Map<NodeId, NodeId> | null = null
+  #invalidateMacroIndex(): void { this.#macroParentIndex = null }
+  #rebuildMacroIndex(): Map<NodeId, NodeId> {
+    const idx = new Map<NodeId, NodeId>()
+    for (const n of this.graph.nodes()) {
+      if (!isMacro(n)) continue
+      for (const m of macroMembers(n as Node)) idx.set(m, n.id as NodeId)
+    }
+    this.#macroParentIndex = idx
+    return idx
   }
-  /** Nesting depth of a node (how many macros transitively contain it). */
+  #ensureMacroIndex(): Map<NodeId, NodeId> { return this.#macroParentIndex ?? this.#rebuildMacroIndex() }
+
+  /** The macro whose member list contains `nid` (its immediate container), or undefined. O(1). */
+  #macroParentOf(nid: NodeId): Node | undefined {
+    const idx = this.#ensureMacroIndex()
+    const pid = idx.get(nid)
+    return pid !== undefined ? (this.graph.getNode(pid) as Node | undefined) : undefined
+  }
+  /** Nesting depth of a node (how many macros transitively contain it). O(depth). */
   #macroDepthOf(id: NodeId): number {
-    let d = 0, p = this.#macroParentOf(id)
-    while (p) { d++; p = this.#macroParentOf(p.id) }
+    const idx = this.#ensureMacroIndex()
+    let d = 0, p: NodeId | undefined = idx.get(id)
+    while (p !== undefined) { d++; p = idx.get(p) }
     return d
   }
-  /** Is `ancestor` a (transitive) container of `id`? */
+  /** Is `ancestor` a (transitive) container of `id`? O(depth). */
   #macroIsAncestor(ancestor: NodeId, id: NodeId): boolean {
-    let p = this.#macroParentOf(id)
-    while (p) { if (p.id === ancestor) return true; p = this.#macroParentOf(p.id) }
+    const idx = this.#ensureMacroIndex()
+    let p: NodeId | undefined = idx.get(id)
+    while (p !== undefined) { if (p === ancestor) return true; p = idx.get(p) }
     return false
   }
   /** Deepest currently-expanded macro (the innermost open one) — what a click-outside collapses first. */
@@ -2923,6 +3147,10 @@ export class XenolithEditor {
     // node; otherwise it's data + index and #cullEdges draws it when an endpoint scrolls in.
     const incident = this.#views.has(fromNode.id) || this.#views.has(toNode.id)
     if (this.#lodLevel === 'full' && (!this.#virtualizeActive() || incident)) this.#materializeEdge(edge, opts)
+    // Direct-API connect bypasses the command bus (it isn't undoable), but listeners — including
+    // the endpoint-resize hook that grows/shrinks pin-bound widgets — still need to know an edge
+    // appeared. Drag-UI connect already fires this via the commandBus→events bridge.
+    this.#events.emit('edge:connected', { edge })
     this.#requestRender()
     return edge.id
   }
@@ -2972,6 +3200,21 @@ export class XenolithEditor {
     this.#syncDomWidgets()
   }
 
+  /** Provider that resolves the live runtime value flowing into a node's bound pin (typically
+   *  registered by a runtime plugin such as `@xenolith/plugin-runtime`). A `'always'` (display)
+   *  widget reads this when its bound pin is connected — that's how Output-style preview nodes
+   *  show what's wired through them. Without a provider, display widgets fall back to state. */
+  #pinLiveValueProvider: ((nodeId: NodeId, pinKey: string) => unknown) | null = null
+  setPinLiveValueProvider(fn: ((nodeId: NodeId, pinKey: string) => unknown) | null): void {
+    this.#pinLiveValueProvider = fn
+    this.#requestRender()
+  }
+  #pinLiveValueFor(nodeId: NodeId): ((pinKey: string) => unknown) | undefined {
+    const p = this.#pinLiveValueProvider
+    if (!p) return undefined
+    return (k) => p(nodeId, k)
+  }
+
   // ---- DOM-mounted custom widgets --------------------------------------------------------------
   // A screen-space layer over the canvas hosts framework/HTML widgets; we keep each element synced
   // to its node's on-screen widget rect (pan/zoom/drag/collapse) every painted frame.
@@ -2982,10 +3225,29 @@ export class XenolithEditor {
     const g = this.#theme.tokens.geometry
     return {
       node:   { headerHeight: g.node.headerHeight },
-      pin:    { rowSpacing: g.pin.rowSpacing, rowHeight: g.pin.rowHeight },
+      pin:    { rowSpacing: g.pin.rowSpacing, rowHeight: g.pin.rowHeight, diameter: g.pin.diameter, labelGap: g.pin.labelGap },
       header: { toPinsGap: g.header.toPinsGap },
       widget: { rowHeight: g.widget.rowHeight, gap: g.widget.gap, paddingX: g.widget.paddingX },
     }
+  }
+
+  /** True when the data IN-pin identified by `pinKey` (matched against pin label, then id) has
+   *  ≥1 incoming edge. Drives pin-bound widget visibility — a widget bound to a connected pin is
+   *  hidden so the pin's normal label takes the row width. */
+  #isPinConnected(nodeId: NodeId, pinKey: string): boolean {
+    const node = this.graph.getNode(nodeId)
+    if (!node) return false
+    const pin = findPinByKey(node as Node, pinKey)
+    if (!pin) return false
+    const pinId = String(pin.id)
+    // Walk only edges INCIDENT to this node — O(node.degree), not O(graph.E). Called per-frame from
+    // `#positionDomWidgets` for every visible DOM widget, so the index lookup is what keeps a 10k
+    // node + 9k edge graph at 60fps; a naïve `graph.edges()` walk would melt it.
+    for (const eid of this.#edgesByNode.get(nodeId) ?? []) {
+      const e = this.graph.getEdge(eid as EdgeId)
+      if (e && String(e.to.node) === String(nodeId) && String(e.to.pin) === pinId) return true
+    }
+    return false
   }
 
   #ensureDomLayer(): HTMLDivElement {
@@ -3008,6 +3270,17 @@ export class XenolithEditor {
     for (const [k, v] of Object.entries(vars)) el.style.setProperty(k, v)
   }
 
+  /** Resolve the value a custom widget should display: live runtime value when its bound pin is
+   *  wired AND visibility is 'always' (display widgets), else the stored state default. */
+  #widgetDisplayValue(node: Node, w: WidgetSpec): unknown {
+    const bind = widgetBindKey(w)
+    if (bind && widgetVisibility(w) === 'always' && this.#isPinConnected(node.id, bind)) {
+      const live = this.#pinLiveValueProvider?.(node.id, bind)
+      if (live !== undefined) return live
+    }
+    return widgetValue(node, w)
+  }
+
   #syncDomWidgets(): void {
     const seen = new Set<string>()
     for (const node of this.graph.nodes()) {
@@ -3019,7 +3292,7 @@ export class XenolithEditor {
         seen.add(key)
         if (this.#domWidgets.has(key)) {
           this.#applyWidgetVars(this.#domWidgets.get(key)!.el, w)
-          ctrl.update?.({ value: widgetValue(node, w), node, width: 0, height: 0, ...this.#widgetThemeColors(w) })
+          ctrl.update?.({ value: this.#widgetDisplayValue(node as Node, w), node, width: 0, height: 0, ...this.#widgetThemeColors(w) })
           continue
         }
         const el = document.createElement('div')
@@ -3027,7 +3300,7 @@ export class XenolithEditor {
         this.#applyWidgetVars(el, w)
         this.#ensureDomLayer().appendChild(el)
         const cleanup = ctrl.mount(el, {
-          value: widgetValue(node, w), node, width: 0, height: 0, ...this.#widgetThemeColors(w),
+          value: this.#widgetDisplayValue(node as Node, w), node, width: 0, height: 0, ...this.#widgetThemeColors(w),
           setValue: (v) => this.setWidgetValue(node.id, w.id, v),
         })
         const entry: { el: HTMLElement; controller: DomWidgetController; cleanup?: () => void; nodeId: NodeId; widgetId: string } =
@@ -3058,7 +3331,7 @@ export class XenolithEditor {
     for (const rec of this.#domWidgets.values()) {
       const node = this.graph.getNode(rec.nodeId)
       const view = this.#views.get(rec.nodeId)
-      const rect = node?.size ? computeWidgetRects(node, node.size.x, layout).find((r) => r.id === rec.widgetId) : undefined
+      const rect = node?.size ? computeWidgetRects(node, node.size.x, layout, { isPinConnected: (k) => this.#isPinConnected(rec.nodeId, k) }).find((r) => r.id === rec.widgetId) : undefined
       if (!node || !view || !rect || view.isCollapsed()) { rec.el.style.display = 'none'; continue }
       // Use the VIEW container's live world position, not node.position — during a drag the model
       // position isn't committed until drop, but the container moves every frame.
@@ -3255,6 +3528,7 @@ export class XenolithEditor {
       step: (dtMs) => self.step(dtMs),
       setWidgetValue: (nodeId, widgetId, value, opts) => self.setWidgetValue(nodeId, widgetId, value, opts),
       setNodePins: (nodeId, pins) => self.setNodePins(nodeId, pins),
+      setNodeWidgets: (nodeId, widgets) => self.setNodeWidgets(nodeId, widgets),
       setEdgeAnimated: (edgeId, animated) => self.setEdgeAnimated(edgeId, animated),
       expandTemplateInstance: (nodeId) => self.expandTemplateInstance(nodeId),
       graphSnapshot: (opts) => self.graphSnapshot(opts),
@@ -3586,6 +3860,10 @@ export class XenolithEditor {
     for (const node of parsed.nodes) this.#addNodeData(node, parsed.renderOpts.get(String(node.id)) ?? {})
     for (const edge of parsed.edges) this.#addEdgeData(edge, parsed.edgeOpts.get(String(edge.id)) ?? {})
     for (const comment of parsed.comments) this.graph._addComment(comment)
+    // `#addNodeData` bypasses the command bus, so the macro-parent index hasn't been invalidated
+    // by event hooks — do it explicitly before `#materializeLoadedMacros` runs (it reads parents
+    // to nest macros deepest-first).
+    this.#invalidateMacroIndex()
     // A macro is stored DECLARATIVELY: a Macro node with state.members + collapsed, its members and
     // their real edges present as ordinary data. Materialise the collapse (derive proxy pins, rewire)
     // deepest-nested first, so an inner macro is a real collapsed node before an outer one collapses.
@@ -3599,6 +3877,11 @@ export class XenolithEditor {
     }
     this.#syncComments()
     this.#applyMacroVisibility()
+    // loadJSON bypasses the command bus, so the command:applied hook that normally mounts DOM
+    // widgets after a mutation doesn't run for the initial set — every custom-widget node would
+    // paint with bare pins until the first drag/collapse forced a re-render. Force one pass now
+    // so DOM controllers mount during the same frame as the rest of the node visual.
+    this.#syncDomWidgets()
     // Refresh the minimap — loadJSON adds nodes as data (#addNodeData), which doesn't schedule a
     // minimap sync the way addNode does, so do it explicitly (otherwise the minimap keeps its 1×1
     // default bounds and renders empty).
@@ -3669,6 +3952,7 @@ export class XenolithEditor {
   }
 
   #clearAll(): void {
+    this.#invalidateMacroIndex()
     this.#categoryPalette = undefined
     this.#definitions.clear()
     this.#templateRegistry.clear()
@@ -3776,14 +4060,30 @@ export class XenolithEditor {
 
   #snapshotSelection(): ClipboardSnapshot | null {
     const ids = new Set(this.selection.ids())
-    // Selected comments copy WITH their contents: everything geometrically inside each frame.
     const comments: Comment[] = []
     const allNodes = [...this.graph.nodes()] as Node[]
+    // Selected comments copy WITH their contents: every node geometrically inside each frame.
+    // Naïve `for comment { nodesInsideComment(c, allNodes) }` was O(C × N) — on a Ctrl+A of a
+    // duplicated graph C and N both grow per copy, melting `copySelection` into O(N²) (~1.7s at
+    // 37k nodes). Walk nodes ONCE, check against the selected-comment rects only when the node
+    // isn't already in `ids` (Ctrl+A short-circuits everything).
+    const selComments: Comment[] = []
     for (const cid of this.#selectedComments) {
       const c = this.graph.getComment(cid)
       if (!c) continue
       comments.push(c as Comment)
-      for (const id of nodesInsideComment(c, allNodes)) ids.add(id)
+      selComments.push(c as Comment)
+    }
+    if (selComments.length > 0) {
+      for (const n of allNodes) {
+        if (ids.has(n.id)) continue
+        const cx = n.position.x + (n.size ? n.size.x / 2 : 0)
+        const cy = n.position.y + (n.size ? n.size.y / 2 : 0)
+        for (const c of selComments) {
+          if (cx >= c.position.x && cx <= c.position.x + c.size.x &&
+              cy >= c.position.y && cy <= c.position.y + c.size.y) { ids.add(n.id); break }
+        }
+      }
     }
     // A selected macro copies WITH its members (and nested macros' members) so the group can be
     // recreated — otherwise the clone would be an empty wrapper referencing missing nodes.
@@ -3979,12 +4279,19 @@ export class XenolithEditor {
    *  with no PIXI/view data. With `{ expandMacros: true }` collapsed macros are flattened to their
    *  primitives (proxy-pin edges remapped to member pins) so the executor sees one flat graph and the
    *  grouping stays purely visual. Read-only; does not mutate the document. */
-  graphSnapshot(opts?: { expandMacros?: boolean }): GraphSnapshot {
+  graphSnapshot(opts?: { expandMacros?: boolean; expandTemplates?: boolean }): GraphSnapshot {
     const rawNodes = [...this.graph.nodes()] as Node[]
     const rawEdges = [...this.graph.edges()] as Edge[]
-    const { nodes, edges } = opts?.expandMacros
+    let { nodes, edges } = opts?.expandMacros
       ? flattenMacroProxies(rawNodes, rawEdges)
       : { nodes: rawNodes, edges: rawEdges }
+    if (opts?.expandTemplates) {
+      ({ nodes, edges } = flattenAllTemplateInstances(
+        nodes, edges,
+        (id: TemplateDefId) => this.#definitions.get(id),
+        { node: createNodeId, pin: createPinId, edge: createEdgeId },
+      ))
+    }
     return {
       nodes: nodes.map((n) => ({
         id: String(n.id),
@@ -3993,6 +4300,7 @@ export class XenolithEditor {
         pins: n.pins.map((p) => ({
           id: String(p.id), kind: p.kind, direction: p.direction, type: String(p.type),
           ...(p.default !== undefined ? { default: p.default } : {}),
+          ...(p.multiple ? { multiple: true } : {}),
         })),
       })),
       edges: edges.map((e) => ({
@@ -4022,6 +4330,21 @@ export class XenolithEditor {
     // Pins changed (count/labels) → drop the stale size so the rebuilt view refits to the new pins.
     delete (this.graph.getNode(nodeId) as { size?: unknown }).size
     this.#rerenderNode(nodeId)
+    this.#requestRender()
+  }
+
+  /** Replace a node's widget list wholesale — the dual of `setNodePins`, used by runtime plugins
+   *  to synthesise widgets in response to schema changes (e.g. when a Schema node wires into a
+   *  Struct, the plugin uses `setNodePins` + `setNodeWidgets` to derive both a pin and a
+   *  pinKey-bound default-value widget per field). Undoable. Preserves `node.state[w.key]` — a
+   *  re-add under the same key restores its prior value. */
+  setNodeWidgets(nodeId: NodeId, widgets: WidgetSpec[] | undefined): void {
+    if (!this.graph.getNode(nodeId)) return
+    this.commandBus.apply(new SetNodeWidgets(nodeId, widgets))
+    // Widget set changed (count/heights) → drop the stale size so the view refits + DOM widgets sync.
+    delete (this.graph.getNode(nodeId) as { size?: unknown }).size
+    this.#rerenderNode(nodeId)
+    this.#syncDomWidgets()
     this.#requestRender()
   }
 
@@ -4244,6 +4567,8 @@ export class XenolithEditor {
     this.#hostResizeObserver?.disconnect()
     ;(this.#app.canvas as HTMLCanvasElement | undefined)?.removeEventListener('dblclick', this.#onDoubleClick)
     ;(this.#app.canvas as HTMLCanvasElement | undefined)?.removeEventListener('contextmenu', this.#onContextMenu)
+    ;(this.#app.canvas as HTMLCanvasElement | undefined)?.removeEventListener('pointerdown', this.#onRightDown)
+    ;(this.#app.canvas as HTMLCanvasElement | undefined)?.removeEventListener('pointerup',   this.#onRightUp)
     this.#palette?.destroy()
     this.#interaction?.detach()
     if (this.#freezeTimer) clearTimeout(this.#freezeTimer)
@@ -4367,16 +4692,26 @@ export class XenolithEditor {
     return this.#livePosition(nodeId)
   }
 
+  /** Is this node's view currently DRAWN on the canvas? Returns:
+   *   - `true`  — view exists AND its container is visible (a viewer would see it),
+   *   - `false` — view exists but is hidden (typically a macro member when its macro is collapsed),
+   *   - `null`  — no view at all (off-screen under virtualisation, or never materialised).
+   *  Designed for e2e introspection: tests can assert "macro members must NOT be visible after
+   *  paste" without poking at private state. Cheap (Map lookup + bool read). */
+  isNodeRendered(nodeId: NodeId): boolean | null {
+    const view = this.#views.get(nodeId)
+    if (!view) return null
+    return view.container.visible === true
+  }
+
   #pinLayoutFor(node: Node, pinIndex: number): PinLayout {
+    const g = this.#theme.tokens.geometry
     const layout = computeNodeLayout(node, {
-      node:   this.#theme.tokens.geometry.node,
-      pin:    {
-        diameter:   this.#theme.tokens.geometry.pin.diameter,
-        rowSpacing: this.#theme.tokens.geometry.pin.rowSpacing,
-        rowHeight:  this.#theme.tokens.geometry.pin.rowHeight,
-      },
-      header: { toPinsGap: this.#theme.tokens.geometry.header.toPinsGap },
-    })
+      node:   g.node,
+      pin:    { diameter: g.pin.diameter, rowSpacing: g.pin.rowSpacing, rowHeight: g.pin.rowHeight },
+      header: { toPinsGap: g.header.toPinsGap },
+      widget: { rowHeight: g.widget.rowHeight, gap: g.widget.gap, controlMinWidth: g.widget.controlMinWidth },
+    }, (k) => this.#isPinConnected(node.id, k))
     const pin = node.pins[pinIndex]
     if (!pin) throw new Error(`pinLayoutFor: no pin at index ${pinIndex}`)
     const layoutPin = layout.pins.find((p) => p.id === pin.id)
@@ -4626,6 +4961,19 @@ export class XenolithEditor {
 
   /** Rebuild a single node's view in place (e.g. after its pin types changed). Preserves position,
    *  collapse state and selection. */
+  /** Pin ids on `nodeId` that currently have at least one edge attached. Drives the exec-pin paint
+   *  via {@link RenderNodeOptions.connectedPinIds}. Cheap — reads the per-node edge index. */
+  #connectedPinIdsFor(nodeId: NodeId): Set<string> {
+    const out = new Set<string>()
+    for (const eid of this.#edgesByNode.get(nodeId) ?? []) {
+      const e = this.graph.getEdge(eid as EdgeId)
+      if (!e) continue
+      if (e.from.node === nodeId) out.add(String(e.from.pin))
+      if (e.to.node === nodeId)   out.add(String(e.to.pin))
+    }
+    return out
+  }
+
   #rerenderNode(id: NodeId): void {
     const node = this.graph.getNode(id)
     const oldView = this.#views.get(id)

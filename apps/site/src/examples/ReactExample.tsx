@@ -49,7 +49,7 @@ export default function ReactExample({ id }: { id: string }): React.ReactElement
   const Cmp = MAP[id]
   if (!Cmp) return null
   return (
-    <div key={nonce} style={{ position: 'absolute', inset: 0, display: 'flex' }}>
+    <div key={nonce} className="app" style={{ position: 'absolute', inset: 0, display: 'flex', height: 'auto' }}>
       <Cmp />
     </div>
   )

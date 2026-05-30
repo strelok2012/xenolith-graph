@@ -9,26 +9,72 @@ import type { XenolithGraphV1, XenolithNodeV1, XenolithPinV1, XenolithEdgeV1 } f
  * when long / has newlines). Values seed `node.state[wN]`. Full fidelity (names, combos, min/max)
  * arrives when object_info is supplied — a later upgrade.
  */
-function widgetsFromValues(values: unknown): { widgets: WidgetSpec[]; state: Record<string, unknown> } {
+/** ComfyUI widgets_values are POSITIONAL — without object_info we can't recover the param names.
+ *  Under the widget canon every widget binds to an IN-pin via its `key`, so we mint one synthetic
+ *  IN-pin per importable widget. The pin's label is the same `param N` the widget shows; the
+ *  caller can wire into it just like a regular input. Outputs: widgets (with `key` matching the
+ *  pin's label), state seeded with each value, and the synthetic pins to merge into `node.pins`. */
+function widgetsFromValues(values: unknown): { widgets: WidgetSpec[]; state: Record<string, unknown>; widgetPins: PinSchema[] } {
   const widgets: WidgetSpec[] = []
   const state: Record<string, unknown> = {}
-  if (!Array.isArray(values)) return { widgets, state }
+  const widgetPins: PinSchema[] = []
+  if (!Array.isArray(values)) return { widgets, state, widgetPins }
   values.forEach((v, i) => {
-    const key = `w${i}`
-    // Without object_info the widget's real name is unknown — a positional `param N` label is the
-    // honest best (still distinguishes the controls). Long text gets its label above, on its own row.
-    const label = `param ${i + 1}`
-    if (typeof v === 'number') widgets.push({ id: key, type: 'number', label, key })
-    else if (typeof v === 'boolean') widgets.push({ id: key, type: 'toggle', label, key })
-    else if (typeof v === 'string') widgets.push({ id: key, type: 'text', label, key, multiline: v.length > 36 || v.includes('\n') })
-    else return // arrays / objects (e.g. seed-control pairs) — skip
+    const key = `param ${i + 1}`
+    // Widget `key` = pin `label`; the canon's auto-bind matches them so the widget rides in the
+    // pin's row (hidden when the user wires a value in). The synthetic IN-pin uses the same id
+    // namespace as the rest of the node's pins (`c<id>:w<i>`).
+    if (typeof v === 'number') {
+      widgets.push({ id: key, type: 'number', label: '', key })
+      widgetPins.push({ kind: 'data', direction: 'in', type: 'float', label: key, multiple: false })
+    } else if (typeof v === 'boolean') {
+      widgets.push({ id: key, type: 'toggle', label: '', key })
+      widgetPins.push({ kind: 'data', direction: 'in', type: 'bool', label: key, multiple: false })
+    } else if (typeof v === 'string') {
+      widgets.push({ id: key, type: 'text', label: '', key })
+      widgetPins.push({ kind: 'data', direction: 'in', type: 'string', label: key, multiple: false })
+    } else return // arrays / objects (e.g. seed-control pairs) — skip
     state[key] = v
   })
-  return { widgets, state }
+  return { widgets, state, widgetPins }
 }
 
 /** ComfyUI/litegraph reroute node type names that map onto our core reroute knot. */
 const COMFY_REROUTE_TYPES = new Set(['Reroute', 'RerouteNode', 'Reroute (rgthree)'])
+
+/** Heuristic category for a ComfyUI node type. ComfyUI doesn't ship category metadata in the
+ *  workflow JSON (it's on the server's `object_info`), but the type names follow strong patterns
+ *  — `KSampler*` is sampling, `CLIPText*` is conditioning, `VAE*` is vae, etc. We map onto a
+ *  small palette that the import seeds via the graph's `categories` field so the imported
+ *  workflow renders with semantic colours instead of all-grey "utility". */
+type ComfyCategory = 'sampler' | 'conditioning' | 'vae' | 'latent' | 'image' | 'loader' | 'controlnet' | 'mask' | 'utility'
+function comfyCategoryOf(type: string): ComfyCategory {
+  // Domain matchers — `test` runs against the whole type name so 3rd-party prefixes
+  // (Searge*, RGT*, WAS*, Custom*) still classify by the meaningful word inside.
+  if (/Sampler|Scheduler/.test(type))                                        return 'sampler'
+  if (/CLIP|Conditioning|TextInput|TextEncode|Prompt|FluxGuidance|FluxKontext/.test(type)) return 'conditioning'
+  if (/VAE/.test(type))                                                      return 'vae'
+  if (/Latent|EmptyImage/.test(type))                                        return 'latent'
+  if (/Preview|SaveImage|LoadImage|Image.?to.?Image|Inpaint|ImageScale|ImageBlur|ImageBatch|Upscale/i.test(type)) return 'image'
+  if (/Loader|Checkpoint|Lora|UNETLoader|DualCLIPLoader|TripleCLIPLoader/.test(type))    return 'loader'
+  if (/ControlNet/.test(type))                                               return 'controlnet'
+  if (/Mask/.test(type))                                                     return 'mask'
+  return 'utility'
+}
+
+/** Category accent palette merged into the imported graph's `categories` field. Each colour is
+ *  picked to feel at home in both Xen and Liquid Glass — saturated but not neon. */
+const COMFY_CATEGORY_PALETTE: Record<ComfyCategory, { accent: string }> = {
+  sampler:      { accent: '#E27A4A' },
+  conditioning: { accent: '#C065D5' },
+  vae:          { accent: '#5BC1A6' },
+  latent:       { accent: '#3E95B9' },
+  image:        { accent: '#D0A82E' },
+  loader:       { accent: '#8090A8' },
+  controlnet:   { accent: '#B85A5A' },
+  mask:         { accent: '#9B7EDB' },
+  utility:      { accent: '#9AA0A6' },
+}
 
 /**
  * ComfyUI / litegraph workflow JSON → xenolith.v1 graph (+ derived node schemas).
@@ -94,6 +140,10 @@ function pinSchemasOf(node: ComfyNode): PinSchema[] {
   ;(node.outputs ?? []).forEach((s) => {
     pins.push({ kind: 'data', direction: 'out', type: comfyTypeToXen(s.type ?? '*'), label: s.name ?? s.type ?? 'out', multiple: true })
   })
+  // Mirror the per-widget IN-pins onto the schema so an insert from the palette gets the same
+  // shape the imported instance has (pins + widgets agree).
+  const { widgetPins } = widgetsFromValues(node.widgets_values)
+  for (const s of widgetPins) pins.push(s)
   return pins
 }
 
@@ -124,16 +174,21 @@ export function importComfyWorkflow(input: unknown): ComfyImportResult {
     ;(n.outputs ?? []).forEach((s, i) => {
       pins.push({ id: outPinId(n.id, i), kind: 'data', direction: 'out', type: reroute ? rerouteType : comfyTypeToXen(s.type ?? '*'), multiple: true, label: reroute ? '' : (s.name ?? s.type ?? `out${i}`) })
     })
-    // Inline reroutes carry no widgets; everything else maps its widgets_values to typed widgets.
-    const { widgets, state: widgetState } = reroute
-      ? { widgets: [], state: {} }
+    // Inline reroutes carry no widgets; everything else maps its widgets_values to typed widgets
+    // PLUS a synthetic IN-pin per widget (canon: every widget binds to a pin, hides on wire-in).
+    const { widgets, state: widgetState, widgetPins } = reroute
+      ? { widgets: [], state: {}, widgetPins: [] as PinSchema[] }
       : widgetsFromValues(n.widgets_values)
+    // Synth pin ids share the node's `c<id>:w<i>` namespace; auto-bind happens by label match.
+    widgetPins.forEach((s, i) => {
+      pins.push({ id: `${nodeId(n.id)}:w${i}`, kind: 'data', direction: 'in', type: s.type, multiple: false, label: s.label ?? '' })
+    })
     const node: XenolithNodeV1 = {
       id: nodeId(n.id),
       type: reroute ? REROUTE_TYPE : n.type,
       position: vec2(n.pos),
       pins,
-      render: { title: n.title ?? n.type },
+      render: { title: n.title ?? n.type, ...(reroute ? {} : { category: comfyCategoryOf(n.type) }) },
       state: {
         ...widgetState,
         __comfy: {
@@ -175,8 +230,20 @@ export function importComfyWorkflow(input: unknown): ComfyImportResult {
     if (COMFY_REROUTE_TYPES.has(n.type)) continue // reroute is a built-in knot, not a palette type
     if (seen.has(n.type)) continue
     seen.add(n.type)
-    schemas.push({ type: n.type, title: n.title ?? n.type, pins: pinSchemasOf(n) })
+    const { widgets } = widgetsFromValues(n.widgets_values)
+    const sch: NodeSchema = { type: n.type, title: n.title ?? n.type, pins: pinSchemasOf(n), category: comfyCategoryOf(n.type) }
+    if (widgets.length > 0) sch.widgets = widgets
+    schemas.push(sch)
   }
 
-  return { graph: { version: 'xenolith.v1', nodes, edges }, schemas }
+  // Seed the graph's `categories` palette so headers render with semantic colours (sampler/vae/…)
+  // instead of falling back to the theme's "utility" grey. The serialize schema accepts
+  // `{ color }` per category — a solid accent works for both Xen and Liquid Glass.
+  const categories: Record<string, { color: string }> = {}
+  for (const n of wf.nodes) {
+    if (COMFY_REROUTE_TYPES.has(n.type)) continue
+    const cat = comfyCategoryOf(n.type)
+    if (!categories[cat]) categories[cat] = { color: COMFY_CATEGORY_PALETTE[cat].accent }
+  }
+  return { graph: { version: 'xenolith.v1', nodes, edges, ...(Object.keys(categories).length > 0 ? { categories } : {}) }, schemas }
 }

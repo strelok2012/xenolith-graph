@@ -128,6 +128,44 @@ function flatten(
   return { nodes, edges, boundary: { inputs, outputs } }
 }
 
+/** Snapshot-level helper: replace every `$templateInstance` in (`nodes`, `edges`) with its flattened
+ *  primitive sub-graph and rewire the external edges that touched the instance's interface pins to
+ *  the boundary-mapped internal pins. Mirrors `flattenMacroProxies` for templates. Pure — inputs are
+ *  not mutated. An instance whose definition is missing or recursive is left in place. */
+export function flattenAllTemplateInstances(
+  nodes: Node[],
+  edges: Edge[],
+  resolveDef: (defId: TemplateDefId) => TemplateDefinition | undefined,
+  mint: FlattenMint,
+): { nodes: Node[]; edges: Edge[] } {
+  const instanceFlat = new Map<string, FlattenedTemplate>()
+  const outNodes: Node[] = []
+  for (const n of nodes) {
+    if (!isTemplateInstance(n)) { outNodes.push(n); continue }
+    const flat = flattenTemplateInstance(n, resolveDef, mint)
+    if (!flat) { outNodes.push(n); continue } // unresolved / recursive — leave as data so the host sees it
+    instanceFlat.set(String(n.id), flat)
+    outNodes.push(...flat.nodes)
+  }
+  const outEdges: Edge[] = []
+  for (const e of edges) {
+    const srcFlat = instanceFlat.get(String(e.from.node))
+    const dstFlat = instanceFlat.get(String(e.to.node))
+    if (!srcFlat && !dstFlat) { outEdges.push(e); continue }
+    const sources = srcFlat
+      ? (srcFlat.boundary.outputs[String(e.from.pin)] ? [srcFlat.boundary.outputs[String(e.from.pin)]!] : [])
+      : [{ node: e.from.node, pin: e.from.pin }]
+    const targets = dstFlat
+      ? (dstFlat.boundary.inputs[String(e.to.pin)] ?? [])
+      : [{ node: e.to.node, pin: e.to.pin }]
+    for (const s of sources) for (const t of targets) outEdges.push({ id: mint.edge(), from: s, to: t })
+  }
+  // Internal definition edges already live in flat.edges (carried via outNodes' spread above isn't right —
+  // edges live separately). Concat them explicitly.
+  for (const flat of instanceFlat.values()) outEdges.push(...flat.edges)
+  return { nodes: outNodes, edges: outEdges }
+}
+
 function invertPinBoundary(instance: Node): Map<string, string> {
   const pinBoundary = (instance.state['pinBoundary'] ?? {}) as Record<string, string>
   const out = new Map<string, string>()

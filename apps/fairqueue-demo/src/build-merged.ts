@@ -1,15 +1,19 @@
-// The MERGED view (`?engine=merged`): the two demos become one. Agents and Goodies are REAL editable
-// nodes in the same graph as the algorithm. `Gather` scans them by type each tick (no wires needed),
-// so adding an Agent/Goodie via Tab joins the simulation automatically and editing its salary/cost
-// slider changes the model live. `Scatter Agent.priority` publishes the result; the host harvests the
-// `scatter:Agent:priority` var and writes it back onto each agent's priority bar (ephemeral, no undo).
+// The MERGED view (`?engine=merged`): the two demos become one. Agents and Goodies are generic
+// `Struct` instances (no bespoke node types). The compute graph is fully wire-driven:
+//   - `Goodie.self → Gather Goodies`              feeds the algorithm with goodie records
+//   - `Agent.self  → Gather Agents`               feeds the algorithm with agent records
+//   - `Goodie.self → Agent.subscribe` (multi)     IS each agent's subscription set
+//   - `Scatter.oN  → Agent.priority`              IS the per-agent priority feedback
+// Host plumbing left over today:
+//   - Mirror `subscribe` wires into `data.subs` (a domain alias the algorithm/widget reads as the
+//     subscriptions list). Driven by `edge:connected/disconnected`. Will go when subscriptions are
+//     consumed directly via the multi-pin.
+//   - Read `leftovers` VM var into the warehouse counter (until the warehouse becomes a node).
 
-import type { XenolithEditor, NodeId, Node } from '@xenolith/editor'
-import { SetNodeState } from '@xenolith/core'
-import { Runtime, runtimePlugin, domainNodes, SCATTER_VAR_PREFIX } from '@xenolith/plugin-runtime'
+import type { XenolithEditor } from '@xenolith/editor'
+import { Runtime, runtimePlugin, attachRuntimeBridge } from '@xenolith/plugin-runtime'
 import { fairqueueMergedGraph, MERGED_DEFS } from './runtime-graph.js'
-import { AGENT_WIDGETS, GOODIE_WIDGETS } from './sim-to-graph.js'
-import { priorityBar } from './priority-bar.js'
+import { subscriptionsFromWires, type SubEdge } from './subscriptions.js'
 import type { Agent, GoodieSpec } from './fairqueue.js'
 
 const TICK_MS = 340
@@ -45,79 +49,78 @@ function defaultScenario(): { agents: Agent[]; goodies: GoodieSpec[] } {
   return { agents, goodies }
 }
 
-const goodieTypes = (editor: XenolithEditor): string[] =>
-  [...editor.graph.nodes()].filter((n) => n.type === 'Goodie').map((n) => String(n.state['type'] ?? ''))
+// Pick out the agent / goodie Struct nodes. All merged-graph nodes are generic Structs; `state.kind`
+// is the discriminator the host uses (NOT `render.category` — `render` lives in a separate map on
+// the editor, not on Node, so it's invisible to host code that reads `editor.graph.nodes()`).
+export const isAgentStruct = (n: { type: string; state: Record<string, unknown> }): boolean =>
+  n.type === 'Struct' && n.state['kind'] === 'agent'
+export const isGoodieStruct = (n: { type: string; state: Record<string, unknown> }): boolean =>
+  n.type === 'Struct' && n.state['kind'] === 'goodie'
 
 export function buildMerged(editor: XenolithEditor): MergedHandle {
   const { agents, goodies } = defaultScenario()
-  editor.use(runtimePlugin) // primitives + pin types
+  editor.use(runtimePlugin) // primitives (incl. Struct) + pin types + struct/output widgets
   // Domain pin types: `agent` (whole agent record), `goodie-rec` (whole goodie record) — distinct
-  // colours so wires read at a glance. `scalar` already comes from runtimePlugin (used for priority).
+  // colours so wires read at a glance even though both records are Structs underneath.
   editor.types.register({ id: 'agent', color: '#7C5CFF', shape: 'circle' })
   editor.types.register({ id: 'goodie-rec', color: '#FFB020', shape: 'circle' })
-  editor.registerWidget('priorityBar', priorityBar)
-
-  // Domain node kinds in the palette (Tab). REAL pins, not "Gather-by-type": each Agent exposes
-  // `self` (the whole record out) and `priority` (in, scattered back). Goodie exposes `self` only.
-  editor.registry.register({
-    type: 'Agent', title: 'Agent', category: 'agent', description: 'A person in the queue',
-    pins: [
-      { kind: 'data', direction: 'out', type: 'agent', multiple: true, label: 'self' },
-      { kind: 'data', direction: 'in', type: 'scalar', multiple: false, label: 'priority' },
-    ],
-    widgets: AGENT_WIDGETS,
-  })
-  editor.registry.register({
-    type: 'Goodie', title: 'Goodie', category: 'goodie', description: 'A good that spawns and is claimed',
-    pins: [{ kind: 'data', direction: 'out', type: 'goodie-rec', multiple: true, label: 'self' }],
-    widgets: GOODIE_WIDGETS,
-  })
 
   editor.loadJSON(fairqueueMergedGraph(agents, goodies))
   editor.fitView({ padding: 80, maxZoom: 0.9 })
 
-  // Seed sane defaults for palette-added nodes (node:added fires only on real inserts).
-  let goodieCounter = 0
-  const offNodeAdded = editor.on('node:added', ({ node }) => {
-    if (node.type === 'Agent') {
-      editor.setWidgetValue(node.id, 'salary', 0.5)
-      editor.setWidgetValue(node.id, 'priority', 0)
-      editor.commandBus.apply(new SetNodeState(node.id, { subs: goodieTypes(editor) })) // subscribe to all by default
-    } else if (node.type === 'Goodie') {
-      const type = `good-${++goodieCounter}`
-      editor.setWidgetValue(node.id, 'cost', 2)
-      editor.setWidgetValue(node.id, 'rate', 0.3)
-      editor.commandBus.apply(new SetNodeState(node.id, { type }))
+  // Wires ARE the subscriptions: re-derive every agent's `state.subs` from the current edge set
+  // whenever a wire is added or removed. Ephemeral writes (no undo spam — the wires themselves are
+  // the undoable record of intent). Goodie type lives in each Goodie Struct's `state.type`.
+  // NOTE: bypasses setWidgetValue because `subs` is not user-editable here (no widget bound to it);
+  // we mutate state directly so Struct V3's fallback reads it on the next tick.
+  const rebuildSubs = (): void => {
+    const all = [...editor.graph.nodes()]
+    const agentIds = all.filter(isAgentStruct).map((n) => String(n.id))
+    const goodieTypeByNodeId = new Map<string, string>()
+    for (const g of all.filter(isGoodieStruct)) {
+      const t = g.state['type']
+      if (typeof t === 'string') goodieTypeByNodeId.set(String(g.id), t)
     }
-  })
+    const edges: SubEdge[] = [...editor.graph.edges()].map((edge) => ({
+      from: { node: String(edge.from.node), pin: String(edge.from.pin) },
+      to:   { node: String(edge.to.node),   pin: String(edge.to.pin)   },
+    }))
+    const perAgent = subscriptionsFromWires(agentIds, edges, goodieTypeByNodeId)
+    for (const a of all.filter(isAgentStruct)) {
+      const next = perAgent.get(String(a.id)) ?? []
+      const old  = Array.isArray(a.state['subs']) ? (a.state['subs'] as string[]) : []
+      if (old.length === next.length && old.every((v, i) => v === next[i])) continue
+      // Use setWidgetValue (not direct state mutation) so the bound `field:subs` widget re-renders
+      // with the new value. Ephemeral = no undo (the subscribe wires themselves are the undoable
+      // record of intent).
+      editor.setWidgetValue(a.id, 'field:subs', next, { ephemeral: true })
+    }
+  }
+  const offConn = editor.on('edge:connected',    rebuildSubs)
+  const offDisc = editor.on('edge:disconnected', rebuildSubs)
 
   const rt = new Runtime(MERGED_DEFS)
+  // Auto-mirror Output VM vars → widget state on every tick. One line, no per-host loop.
+  const offBridge = attachRuntimeBridge(editor, rt)
 
   let tickCount = 0
-  let warehouse = 0
   const subs = new Set<(m: MergedMetrics) => void>()
-  const agentPriorities = (): number[] =>
-    domainNodes(
-      [...editor.graph.nodes()].map((n) => ({ id: String(n.id), type: n.type, state: n.state ?? {}, pins: [] })),
-      'Agent',
-    ).map((n) => Number(n.state?.['priority'] ?? 0))
+  // Panel reads the SAME VM vars that the Output widgets read — single source of truth, can't
+  // drift apart. Mean = `output:meanOut` (set by Mean → Output chain in the graph); warehouse =
+  // `warehouse` variable (set by the Length+Add+SetVar accumulator in the graph). No host math.
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
   const emit = (running: boolean): void => {
-    const p = agentPriorities()
-    const mean = p.length ? p.reduce((s, v) => s + v, 0) / p.length : 0
+    const mean      = num(rt.getVar('output:meanOut'))
+    const warehouse = num(rt.getVar('warehouse'))
     for (const cb of subs) cb({ step: tickCount, meanPriority: mean, warehouse, running })
   }
 
   let timer: ReturnType<typeof setInterval> | null = null
   const tick = (): void => {
     tickCount++
-    rt.tick(editor.graphSnapshot({ expandMacros: true }))
-    // ScatterToOutputs writes its array into `scatter-out:<nodeId>`; pin i in declared order maps
-    // to the i-th Agent (Scatter's data-outs were created with agents[] in fairqueueMergedGraph).
-    const scattered = (rt.getVar('scatter-out:scatter') as number[] | undefined) ?? []
-    const orderedAgentIds = [...editor.graph.nodes()].filter((n) => n.type === 'Agent').map((n) => String(n.id))
-    orderedAgentIds.forEach((id, i) => { if (i < scattered.length) editor.setWidgetValue(id as NodeId, 'priority', scattered[i]!, { ephemeral: true }) })
-    const leftovers = (rt.getVar('leftovers') as unknown[] | undefined) ?? []
-    if (leftovers.length > 0) warehouse += leftovers.length
+    rt.tick(editor.graphSnapshot({ expandMacros: true, expandTemplates: true }))
+    // All aggregates live in VM vars now (Mean Output, warehouse accumulator). Output widget mirror
+    // happens via attachRuntimeBridge. No host arithmetic.
     emit(timer !== null)
   }
   const start = (): void => { if (timer === null) timer = setInterval(tick, TICK_MS) }
@@ -133,7 +136,7 @@ export function buildMerged(editor: XenolithEditor): MergedHandle {
       if (timer !== null) clearInterval(timer)
       timer = null
       subs.clear()
-      offNodeAdded()
+      offConn(); offDisc(); offBridge()
     },
   }
 }

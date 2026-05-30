@@ -21,6 +21,10 @@ export interface RtPin {
   direction: 'in' | 'out'
   type?: string
   default?: unknown
+  /** Marks a pin that accepts multiple incoming edges (collection-style, read via inputAll).
+   *  Generic primitives may treat single vs multi pins differently — e.g. Struct's per-field
+   *  override only applies to non-multi data-in pins. */
+  multiple?: boolean
 }
 export interface RtNode {
   id: string
@@ -76,6 +80,14 @@ const execOuts = (n: RtNode): RtPin[] => n.pins.filter((p) => p.kind === 'exec' 
 export class Runtime {
   readonly #defs: Map<string, NodeDef>
   readonly #vars = new Map<string, VmValue>()
+  // Cross-tick latched exec-out values: an exec node's `setOutput(i, v)` survives to the NEXT tick
+  // so a pure-pull that reaches an exec node before its `run` has fired this tick returns the prior
+  // value rather than `undefined`. This is what makes feedback loops (e.g. `Scatter.oN → Struct.priority`)
+  // actually carry the previous tick's value into the next tick instead of always zero.
+  readonly #latchedOutputs = new Map<string, VmValue>() // `${node}:${dataOutIndex}` → last value
+  // Listeners fired after every `tick()` returns — used by the editor-bridge to mirror Output
+  // node values into widget state without each host having to re-write that loop.
+  readonly #afterTickListeners = new Set<(graph: RtGraph) => void>()
   #currentNodes: readonly RtNode[] = [] // the node set for the in-flight tick (for io.nodes())
 
   constructor(defs: ReadonlyArray<NodeDef>) {
@@ -85,6 +97,14 @@ export class Runtime {
   getVar(name: string): VmValue | undefined { return this.#vars.get(name) }
   setVar(name: string, value: VmValue): void { this.#vars.set(name, value) }
   get variables(): ReadonlyMap<string, VmValue> { return this.#vars }
+
+  /** Subscribe to a "tick just finished" callback. Receives the same graph the tick ran on, so
+   *  bridges (e.g. the editor's Output-widget mirror) can iterate nodes and read fresh VM vars
+   *  without each host writing the same loop themselves. Returns an unsubscribe. */
+  onAfterTick(cb: (graph: RtGraph) => void): () => void {
+    this.#afterTickListeners.add(cb)
+    return () => { this.#afterTickListeners.delete(cb) }
+  }
 
   /** Run one step: fire every entry node of `entryType` (default `Tick`) and walk the exec graph.
    *  Variables persist; per-tick output overrides are fresh. Use `entryType: 'Init'` once at start
@@ -103,9 +123,11 @@ export class Runtime {
     }
     const overrides = new Map<string, VmValue>() // `${node}:${dataOutIndex}` -> latched value
 
-    // Pull the value on a node's data-out (by output index): a latched override, else evaluate it.
+    // Pull the value on a node's data-out (by output index): an override set this tick, else the
+    // node's pure evaluator, else its latched output from the PREVIOUS tick (for feedback loops).
     const pullOut = (nodeId: string, outIndex: number, depth: number): VmValue | undefined => {
-      if (overrides.has(`${nodeId}:${outIndex}`)) return overrides.get(`${nodeId}:${outIndex}`)
+      const key = `${nodeId}:${outIndex}`
+      if (overrides.has(key)) return overrides.get(key)
       if (depth > MAX_PULL_DEPTH) throw new Error('Runtime: pure-pull depth exceeded (cycle?)')
       const node = nodeById.get(nodeId)
       if (!node) return undefined
@@ -114,7 +136,8 @@ export class Runtime {
       // Source nodes without an evaluator (e.g. domain `Agent`/`Goodie`) expose their own `state`
       // record on every data-out pin — lets a wire from `Agent.self` carry the agent's record.
       if (!def && node.state) return node.state as VmValue
-      return undefined
+      // Exec nodes haven't fired yet this tick — return last tick's latched value (feedback path).
+      return this.#latchedOutputs.get(key)
     }
     const pullSrc = (src: { node: string; pin: string }, depth: number): VmValue | undefined => {
       const srcNode = nodeById.get(src.node)
@@ -151,6 +174,12 @@ export class Runtime {
     }
 
     for (const node of graph.nodes) if (node.type === entryType) runExec(node.id)
+
+    // Latch this tick's exec outputs so the NEXT tick's pure-pulls see them when reaching an exec
+    // node before its run fires (feedback loops). Keep growing — stale ids for nodes no longer
+    // in the graph don't hurt correctness (pullOut only queries them when wires still reference).
+    for (const [k, v] of overrides) this.#latchedOutputs.set(k, v)
+    for (const cb of this.#afterTickListeners) cb(graph)
   }
 
   #pureIO(

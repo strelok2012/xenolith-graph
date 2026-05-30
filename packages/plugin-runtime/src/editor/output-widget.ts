@@ -15,11 +15,21 @@ function format(value: unknown): string {
 
 export const outputWidget: CanvasWidgetController = {
   draw(ctx, { value, width, height, accent, muted }) {
-    ctx.fillStyle = accent
-    ctx.font = '24px Inter'
+    const text = format(value)
+    // Pick the largest font size from a fixed ladder that still fits the rect width — prevents the
+    // big-number-clipped-on-the-left bug where "0.45" rendered as ".45" because right-aligned text
+    // overflowed past the widget's left edge.
+    const sizes = [24, 20, 17, 14, 12, 10]
     ctx.textBaseline = 'middle'
     ctx.textAlign = 'right'
-    ctx.fillText(format(value), width, height / 2)
+    let size = sizes[sizes.length - 1]!
+    for (const s of sizes) {
+      ctx.font = `${s}px Inter`
+      if (ctx.measureText(text).width <= width - 2) { size = s; break }
+    }
+    ctx.font = `${size}px Inter`
+    ctx.fillStyle = accent
+    ctx.fillText(text, width, height / 2)
     ctx.fillStyle = muted
     ctx.font = '9px Inter'
     ctx.textAlign = 'left'

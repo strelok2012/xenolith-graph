@@ -8,6 +8,7 @@ import {
   resolvePinShape,
   resolveEdgeColor,
   resolveCategoryGradient,
+  execPinColors,
   hexToRgba,
 } from './style.js'
 
@@ -201,5 +202,14 @@ describe('resolveCategoryGradient', () => {
     const grad = resolveCategoryGradient('made-up', xenTokens)
     expect(grad.start).toBe(hexToRgba(xenTokens.category.utility.accent, 0.6))
     expect(grad.end).toBe(hexToRgba(xenTokens.category.utility.accent, 0))
+  })
+})
+
+describe('execPinColors', () => {
+  it('connected exec pin: solid gold fill with dark stroke', () => {
+    expect(execPinColors(true)).toEqual({ fill: '#FCB400', fillAlpha: 1, stroke: '#1A1A1A' })
+  })
+  it('unconnected exec pin: transparent fill (alpha 0) with white stroke — reads as outlined triangle', () => {
+    expect(execPinColors(false)).toEqual({ fill: '#FFFFFF', fillAlpha: 0, stroke: '#FFFFFF' })
   })
 })

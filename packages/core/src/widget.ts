@@ -35,12 +35,26 @@ export interface WidgetStyle {
 interface WidgetBase {
   id: string
   label: string
-  /** Key into `node.state` holding the value. Absent for `button`. */
+  /** Key into `node.state` holding the value. Absent for `button`. Also doubles as the implicit
+   *  pin-binding key (see `pinKey`) — most schemas don't need to set `pinKey` manually if the
+   *  widget's `key` matches a data IN-pin's `label` / `id`. */
   key?: string
   disabled?: boolean
   hint?: string
   /** Per-widget visual override, merged over the theme's widget tokens. */
   style?: WidgetStyle
+  /** Override the implicit `key`-based pin match. Matched against a data IN-pin's `label` (schema
+   *  authors can't predict auto-minted pin ids), then by pin `id` (loaded graphs serialize ids).
+   *  Almost never needed — leave unset and use the same `key` on widget and pin. */
+  pinKey?: string
+  /** Render-time visibility against the bound pin:
+   *  - `'whenDisconnected'` (default for input controls — number/slider/text/combo/toggle/color):
+   *    UE-Blueprint default-value behaviour. Widget visible only while the pin has no edge;
+   *    connecting hides it (the pin's wire becomes the value source).
+   *  - `'always'`: display/preview behaviour. Widget always visible regardless of pin state;
+   *    when the pin has a wire, the widget reads the runtime's LIVE value and renders read-only.
+   *    Default for `custom` widgets — most custom controls are visualisations. */
+  visibility?: 'whenDisconnected' | 'always'
 }
 
 export type WidgetSpec =
@@ -139,4 +153,19 @@ export function widgetValue(node: Node, spec: WidgetSpec): unknown {
   if (spec.key === undefined) return defaultWidgetValue(spec)
   const stored = node.state[spec.key]
   return stored === undefined ? defaultWidgetValue(spec) : clampWidgetValue(spec, stored)
+}
+
+/** Effective widget visibility policy. ALL widget types default to `'whenDisconnected'` — they're
+ *  input controls that the user sets a value for, and connecting a wire makes the widget's value
+ *  redundant. Display/preview widgets (e.g. an Output node's value readout) opt into `'always'`
+ *  explicitly. `button` widgets aren't pin-bound — they live in the actions row. */
+export function widgetVisibility(spec: WidgetSpec): 'whenDisconnected' | 'always' {
+  return spec.visibility ?? 'whenDisconnected'
+}
+
+/** The lookup key used to bind a widget to its pin: explicit `pinKey`, else the widget's `key`.
+ *  Returns undefined for widgets that don't bind to a pin (`button` — actions, not values). */
+export function widgetBindKey(spec: WidgetSpec): string | undefined {
+  if (spec.type === 'button') return undefined
+  return spec.pinKey ?? spec.key
 }

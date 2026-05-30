@@ -1,4 +1,4 @@
-import type { CommandBus, Graph, NodeRegistry, TypeRegistry, NodeId, EdgeId, Pin, FlattenedTemplate } from '@xenolith/core'
+import type { CommandBus, Graph, NodeRegistry, TypeRegistry, NodeId, EdgeId, Pin, WidgetSpec, FlattenedTemplate } from '@xenolith/core'
 import type { Application } from 'pixi.js'
 import type { CustomWidgetController, IconRegistry } from '@xenolith/render-pixi'
 import type { EditorEvents } from './events.js'
@@ -36,6 +36,10 @@ export interface PluginContext {
   setWidgetValue(nodeId: NodeId, widgetId: string, value: unknown, opts?: { ephemeral?: boolean }): void
   /** Replace a node's pins at runtime (variadic-pin primitives). */
   setNodePins(nodeId: NodeId, pins: Pin[]): void
+  /** Replace a node's widgets at runtime — pairs with `setNodePins` for runtime plugins that
+   *  synthesise per-field pin/widget pairs from upstream data (e.g. a Schema node driving a
+   *  Struct's editable fields). Undoable; `node.state[w.key]` is preserved across removals. */
+  setNodeWidgets(nodeId: NodeId, widgets: WidgetSpec[] | undefined): void
   /** Toggle an edge's animated flow. */
   setEdgeAnimated(edgeId: EdgeId, animated: boolean): void
   /** Read-only flatten of a template instance into its primitive subgraph. */

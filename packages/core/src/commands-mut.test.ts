@@ -7,7 +7,7 @@ import type { Node } from './graph.js'
 import { createNodeId, createPinId, createEdgeId } from './ids.js'
 import { AddNode, ConnectPins } from './commands.js'
 import type { Pin } from './graph.js'
-import { MoveNode, ResizeNode, SetNodeState, SetNodePins } from './commands-mut.js'
+import { MoveNode, ResizeNode, SetNodeState, SetNodePins, SetNodeWidgets } from './commands-mut.js'
 
 function makeNode(): Node {
   return {
@@ -188,6 +188,70 @@ describe('SetNodePins', () => {
     const { bus, ctx, b } = setup()
     const before = ctx.graph.version
     bus.apply(new SetNodePins(b.id, [dataPin({})]))
+    expect(ctx.graph.version).toBeGreaterThan(before)
+  })
+})
+
+describe('SetNodeWidgets', () => {
+  function setup() {
+    const events = new EventEmitter<CoreEvents>()
+    const graph = new Graph()
+    const ctx: CommandContext = { graph, events }
+    const bus = new CommandBus(ctx)
+    const a: Node = {
+      id: createNodeId(), type: 'A', position: { x: 0, y: 0 }, state: { name: 'Ada', priority: 7 }, pins: [],
+      widgets: [{ id: 'name', type: 'text', label: '', key: 'name' }],
+    }
+    bus.apply(new AddNode(a))
+    return { bus, ctx, a }
+  }
+
+  it('replaces the widget list wholesale', () => {
+    const { bus, ctx, a } = setup()
+    bus.apply(new SetNodeWidgets(a.id, [
+      { id: 'priority', type: 'number', label: '', key: 'priority' },
+      { id: 'flag',     type: 'toggle', label: '', key: 'flag'     },
+    ]))
+    expect(ctx.graph.getNode(a.id)!.widgets!.map((w) => w.id)).toEqual(['priority', 'flag'])
+  })
+
+  it('passing undefined removes widgets entirely', () => {
+    const { bus, ctx, a } = setup()
+    bus.apply(new SetNodeWidgets(a.id, undefined))
+    expect(ctx.graph.getNode(a.id)!.widgets).toBeUndefined()
+  })
+
+  it("does NOT touch node.state[key] — re-adding a widget under the same key restores its value", () => {
+    const { bus, ctx, a } = setup()
+    bus.apply(new SetNodeWidgets(a.id, undefined))            // widget removed; state.name STAYS
+    expect(ctx.graph.getNode(a.id)!.state['name']).toBe('Ada')
+    bus.apply(new SetNodeWidgets(a.id, [{ id: 'name', type: 'text', label: '', key: 'name' }]))
+    expect(ctx.graph.getNode(a.id)!.state['name']).toBe('Ada') // and is still 'Ada' on re-add
+  })
+
+  it('undo restores the prior widget list (including the original ids)', () => {
+    const { bus, ctx, a } = setup()
+    bus.apply(new SetNodeWidgets(a.id, [{ id: 'flag', type: 'toggle', label: '', key: 'flag' }]))
+    bus.undo()
+    expect(ctx.graph.getNode(a.id)!.widgets!.map((w) => w.id)).toEqual(['name'])
+  })
+
+  it('redo re-applies the replacement', () => {
+    const { bus, ctx, a } = setup()
+    bus.apply(new SetNodeWidgets(a.id, [{ id: 'flag', type: 'toggle', label: '', key: 'flag' }]))
+    bus.undo(); bus.redo()
+    expect(ctx.graph.getNode(a.id)!.widgets!.map((w) => w.id)).toEqual(['flag'])
+  })
+
+  it('throws if the node does not exist', () => {
+    const { bus } = setup()
+    expect(() => bus.apply(new SetNodeWidgets(createNodeId(), []))).toThrow(/not found/i)
+  })
+
+  it('bumps graph.version', () => {
+    const { bus, ctx, a } = setup()
+    const before = ctx.graph.version
+    bus.apply(new SetNodeWidgets(a.id, [{ id: 'x', type: 'number', label: '', key: 'x' }]))
     expect(ctx.graph.version).toBeGreaterThan(before)
   })
 })

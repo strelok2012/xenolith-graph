@@ -23,8 +23,8 @@ export type { Command, CommandContext, CommandBusOptions, CoreEvents } from './c
 export { AddNode, RemoveNode, ConnectPins, DisconnectEdge } from './commands.js'
 export type { RemoveNodeUndo } from './commands.js'
 
-export { MoveNode, ResizeNode, SetNodeState, SetNodePins } from './commands-mut.js'
-export type { SetNodePinsUndo } from './commands-mut.js'
+export { MoveNode, ResizeNode, SetNodeState, SetNodePins, SetNodeWidgets } from './commands-mut.js'
+export type { SetNodePinsUndo, SetNodeWidgetsUndo } from './commands-mut.js'
 
 export { AddComment, RemoveComment, MoveComment, ResizeComment, SetCommentText } from './commands-comment.js'
 export { nodesInsideComment } from './comment-spatial.js'
@@ -67,8 +67,8 @@ export type {
   TemplateUnpackPlan,
 } from './template-def.js'
 
-export { flattenTemplateInstance } from './template-flatten.js'
+export { flattenTemplateInstance, flattenAllTemplateInstances } from './template-flatten.js'
 export type { FlattenedTemplate, PinRef } from './template-flatten.js'
 
-export { defaultWidgetValue, widgetValue, clampWidgetValue, comboOptions } from './widget.js'
+export { defaultWidgetValue, widgetValue, clampWidgetValue, comboOptions, widgetVisibility, widgetBindKey } from './widget.js'
 export type { WidgetSpec, WidgetType, WidgetStyle, ComboOption, ComboOptionResolved } from './widget.js'

@@ -167,3 +167,323 @@ describe('Spawn', () => {
     rt.tick(g); expect(rt.getVar('out')).toEqual(['a'])
   })
 })
+
+describe('Struct', () => {
+  it('builds the record from per-field state values, keyed by pin id suffix', () => {
+    const graph: RtGraph = {
+      nodes: [
+        tick(),
+        node('s', 'Struct', [
+          { id: 'Ada:name',     kind: 'data', direction: 'in' },
+          { id: 'Ada:salary',   kind: 'data', direction: 'in' },
+          dout('self'),
+        ], { name: 'Ada', salary: 0.5 }),
+        setVar('sv', 'agent'),
+      ],
+      edges: [
+        edge('tick', 'out', 'sv', 'in'),
+        edge('s', 'self', 'sv', 'value'),
+      ],
+    }
+    expect(run(graph).getVar('agent')).toEqual({ name: 'Ada', salary: 0.5 })
+  })
+
+  it('a Struct with no data-in pins emits an empty object (no fallback to state.data)', () => {
+    const graph: RtGraph = {
+      nodes: [tick(), node('s', 'Struct', [dout('self')], { data: { ignored: true } }), setVar('sv', 'agent')],
+      edges: [edge('tick', 'out', 'sv', 'in'), edge('s', 'self', 'sv', 'value')],
+    }
+    expect(run(graph).getVar('agent')).toEqual({})
+  })
+
+  it('a connected data-in pin overrides the per-field state value (field = pin id after last `:`)', () => {
+    const graph: RtGraph = {
+      nodes: [
+        tick(),
+        constN('p', 7),
+        node('s', 'Struct', [
+          { id: 'Ada:name',     kind: 'data', direction: 'in' },
+          { id: 'Ada:priority', kind: 'data', direction: 'in' },
+          dout('self'),
+        ], { name: 'Ada', priority: 0 }),
+        setVar('sv', 'agent'),
+      ],
+      edges: [
+        edge('tick', 'out', 'sv', 'in'),
+        edge('p', 'out', 's', 'Ada:priority'),
+        edge('s', 'self', 'sv', 'value'),
+      ],
+    }
+    expect(run(graph).getVar('agent')).toEqual({ name: 'Ada', priority: 7 })
+  })
+
+  it('multi-input pins do NOT contribute a field (collection-style, skipped)', () => {
+    const graph: RtGraph = {
+      nodes: [
+        tick(),
+        constN('g', { type: 'gift' }),
+        node('s', 'Struct', [
+          { id: 'Ada:subscribe', kind: 'data', direction: 'in', multiple: true },
+          { id: 'Ada:name',      kind: 'data', direction: 'in' },
+          dout('self'),
+        ], { name: 'Ada' }),
+        setVar('sv', 'agent'),
+      ],
+      edges: [
+        edge('tick', 'out', 'sv', 'in'),
+        edge('g', 'out', 's', 'Ada:subscribe'),
+        edge('s', 'self', 'sv', 'value'),
+      ],
+    }
+    // No `subscribe` key — multi pin skipped; only `name` is in the record.
+    expect(run(graph).getVar('agent')).toEqual({ name: 'Ada' })
+  })
+
+  it('an unconnected data-in pin falls back to state[field]', () => {
+    const graph: RtGraph = {
+      nodes: [
+        tick(),
+        node('s', 'Struct', [
+          { id: 'Ada:priority', kind: 'data', direction: 'in' },
+          dout('self'),
+        ], { priority: 0.42 }),
+        setVar('sv', 'agent'),
+      ],
+      edges: [edge('tick', 'out', 'sv', 'in'), edge('s', 'self', 'sv', 'value')],
+    }
+    expect(run(graph).getVar('agent')).toEqual({ priority: 0.42 })
+  })
+})
+
+describe('Schema', () => {
+  it('emits state.fields as the definition value on its sole data-out pin', () => {
+    const fields = { name: 'Ada', priority: 0, salary: 0.5, subs: [] }
+    const graph: RtGraph = {
+      nodes: [
+        tick(),
+        node('sc', 'Schema', [dout('definition')], { fields }),
+        setVar('sv', 'def'),
+      ],
+      edges: [edge('tick', 'out', 'sv', 'in'), edge('sc', 'definition', 'sv', 'value')],
+    }
+    expect(run(graph).getVar('def')).toEqual(fields)
+  })
+
+  it('a Schema with no state.fields emits an empty object', () => {
+    const graph: RtGraph = {
+      nodes: [tick(), node('sc', 'Schema', [dout('definition')]), setVar('sv', 'def')],
+      edges: [edge('tick', 'out', 'sv', 'in'), edge('sc', 'definition', 'sv', 'value')],
+    }
+    expect(run(graph).getVar('def')).toEqual({})
+  })
+})
+
+describe('Mean', () => {
+  it('emits the arithmetic mean of an input array of numbers', () => {
+    const graph: RtGraph = {
+      nodes: [
+        tick(),
+        constN('arr', [1, 2, 3, 4]),
+        node('m', 'Mean', [din('a'), dout('out')]),
+        setVar('s', 'avg'),
+      ],
+      edges: [
+        edge('tick', 'out', 's', 'in'),
+        edge('arr', 'out', 'm', 'a'),
+        edge('m', 'out', 's', 'value'),
+      ],
+    }
+    expect(run(graph).getVar('avg')).toBe(2.5)
+  })
+
+  it('an empty array yields 0 (no NaN)', () => {
+    const graph: RtGraph = {
+      nodes: [tick(), constN('arr', []), node('m', 'Mean', [din('a'), dout('out')]), setVar('s', 'avg')],
+      edges: [edge('tick', 'out', 's', 'in'), edge('arr', 'out', 'm', 'a'), edge('m', 'out', 's', 'value')],
+    }
+    expect(run(graph).getVar('avg')).toBe(0)
+  })
+
+  it('coerces non-number elements via asNumber (matches the rest of the math primitives)', () => {
+    const graph: RtGraph = {
+      nodes: [tick(), constN('arr', ['2', '4', 6]), node('m', 'Mean', [din('a'), dout('out')]), setVar('s', 'avg')],
+      edges: [edge('tick', 'out', 's', 'in'), edge('arr', 'out', 'm', 'a'), edge('m', 'out', 's', 'value')],
+    }
+    expect(run(graph).getVar('avg')).toBe(4)
+  })
+})
+
+describe('Runtime.onAfterTick', () => {
+  it('fires the listener after every tick, with the graph that ran', () => {
+    const calls: number[] = []
+    const rt = new Runtime(BUILTIN_PRIMITIVES)
+    const off = rt.onAfterTick((g) => calls.push(g.nodes.length))
+    const graph: RtGraph = { nodes: [tick()], edges: [] }
+    rt.tick(graph); rt.tick(graph)
+    expect(calls).toEqual([1, 1])
+    off()
+    rt.tick(graph)
+    expect(calls).toEqual([1, 1]) // unsubscribed
+  })
+
+  it('multiple listeners all fire, in registration order', () => {
+    const order: string[] = []
+    const rt = new Runtime(BUILTIN_PRIMITIVES)
+    rt.onAfterTick(() => order.push('a'))
+    rt.onAfterTick(() => order.push('b'))
+    rt.tick({ nodes: [tick()], edges: [] })
+    expect(order).toEqual(['a', 'b'])
+  })
+})
+
+describe('Index', () => {
+  const run1 = (arr: unknown, idx: number): unknown => {
+    const g: RtGraph = {
+      nodes: [tick(), constN('a', arr), constN('i', idx), node('x', 'Index', [din('a'), din('i'), dout('out')]), setVar('s', 'v')],
+      edges: [edge('tick', 'out', 's', 'in'), edge('a', 'out', 'x', 'a'), edge('i', 'out', 'x', 'i'), edge('x', 'out', 's', 'value')],
+    }
+    return run(g).getVar('v')
+  }
+  it('returns element at index', () => expect(run1([10, 20, 30], 1)).toBe(20))
+  // Index primitive returns `undefined` for OOB/non-array; SetVar coerces undefined→0
+  // (`io.input(0) ?? 0`), so downstream observes 0. Algorithms guard with Length first.
+  it('idx out of bounds → 0 (undefined coerced by SetVar)',  () => expect(run1([10], 5)).toBe(0))
+  it('negative idx → 0 (no Python-style wrap)',              () => expect(run1([10, 20], -1)).toBe(0))
+  it('non-array input → 0',                                   () => expect(run1(42, 0)).toBe(0))
+})
+
+describe('ArrayWrite', () => {
+  const run1 = (arr: unknown, idx: number, val: unknown): unknown => {
+    const g: RtGraph = {
+      nodes: [tick(), constN('a', arr), constN('i', idx), constN('v', val),
+        node('x', 'ArrayWrite', [din('a'), din('i'), din('v'), dout('out')]), setVar('s', 'r')],
+      edges: [edge('tick', 'out', 's', 'in'),
+        edge('a', 'out', 'x', 'a'), edge('i', 'out', 'x', 'i'), edge('v', 'out', 'x', 'v'),
+        edge('x', 'out', 's', 'value')],
+    }
+    return run(g).getVar('r')
+  }
+  it('immutable replace at index', () => expect(run1([1, 2, 3], 1, 9)).toEqual([1, 9, 3]))
+  it('returns a NEW array (does not mutate input)', () => {
+    const before = [1, 2, 3]
+    const after = run1(before, 0, 99)
+    expect(after).toEqual([99, 2, 3])
+    expect(before).toEqual([1, 2, 3])
+  })
+  it('out-of-bounds idx → unchanged array (no grow, no throw)', () => {
+    expect(run1([1, 2], 5, 99)).toEqual([1, 2])
+  })
+  it('non-array input → [value] at index 0, else []', () => {
+    expect(run1(null, 0, 'x')).toEqual([])
+  })
+})
+
+describe('Includes', () => {
+  const run1 = (arr: unknown, item: unknown): unknown => {
+    const g: RtGraph = {
+      nodes: [tick(), constN('a', arr), constN('i', item),
+        node('x', 'Includes', [din('a'), din('i'), dout('out')]), setVar('s', 'r')],
+      edges: [edge('tick', 'out', 's', 'in'),
+        edge('a', 'out', 'x', 'a'), edge('i', 'out', 'x', 'i'),
+        edge('x', 'out', 's', 'value')],
+    }
+    return run(g).getVar('r')
+  }
+  it('item in array → true',     () => expect(run1(['a', 'b'], 'b')).toBe(true))
+  it('item NOT in array → false', () => expect(run1(['a', 'b'], 'c')).toBe(false))
+  it('empty array → false',       () => expect(run1([], 'a')).toBe(false))
+  it('non-array → false',         () => expect(run1(42, 'a')).toBe(false))
+})
+
+describe('ArgMax', () => {
+  const run1 = (arr: unknown): unknown => {
+    const g: RtGraph = {
+      nodes: [tick(), constN('a', arr), node('x', 'ArgMax', [din('a'), dout('out')]), setVar('s', 'r')],
+      edges: [edge('tick', 'out', 's', 'in'), edge('a', 'out', 'x', 'a'), edge('x', 'out', 's', 'value')],
+    }
+    return run(g).getVar('r')
+  }
+  it('index of the max value', () => expect(run1([3, 7, 5, 7])).toBe(1)) // ties → first
+  it('single element → 0',     () => expect(run1([42])).toBe(0))
+  it('empty array → -1',       () => expect(run1([])).toBe(-1))
+  it('coerces non-numbers',    () => expect(run1(['1', '2', '3'])).toBe(2))
+})
+
+describe('FilterIndices', () => {
+  const run1 = (arr: unknown, item: unknown): unknown => {
+    const g: RtGraph = {
+      nodes: [tick(), constN('a', arr), constN('i', item),
+        node('x', 'FilterIndices', [din('a'), din('i'), dout('out')]), setVar('s', 'r')],
+      edges: [edge('tick', 'out', 's', 'in'),
+        edge('a', 'out', 'x', 'a'), edge('i', 'out', 'x', 'i'),
+        edge('x', 'out', 's', 'value')],
+    }
+    return run(g).getVar('r')
+  }
+  it('returns indices of arrays containing item', () => {
+    expect(run1([['gift', 'coin'], ['coin'], ['gift', 'star']], 'gift')).toEqual([0, 2])
+  })
+  it('no matches → empty', () => {
+    expect(run1([['a'], ['b']], 'z')).toEqual([])
+  })
+  it('item in every subarray → all indices', () => {
+    expect(run1([['x'], ['x', 'y'], ['x']], 'x')).toEqual([0, 1, 2])
+  })
+  it('non-array element treated as no-match', () => {
+    expect(run1([['gift'], 42, ['gift']], 'gift')).toEqual([0, 2])
+  })
+})
+
+describe('ObjectGet', () => {
+  const run1 = (obj: unknown, key: unknown): unknown => {
+    const g: RtGraph = {
+      nodes: [tick(), constN('o', obj), constN('k', key),
+        node('x', 'ObjectGet', [din('o'), din('k'), dout('out')]), setVar('s', 'r')],
+      edges: [edge('tick', 'out', 's', 'in'),
+        edge('o', 'out', 'x', 'o'), edge('k', 'out', 'x', 'k'),
+        edge('x', 'out', 's', 'value')],
+    }
+    return run(g).getVar('r')
+  }
+  it('returns obj[key]',                () => expect(run1({ gift: 2, coin: 1.5 }, 'gift')).toBe(2))
+  it('missing key → 0 (SetVar coerce)', () => expect(run1({ a: 1 }, 'b')).toBe(0))
+  it('non-object input → 0',            () => expect(run1(null, 'a')).toBe(0))
+})
+
+describe('IndexAll', () => {
+  const run1 = (arr: unknown, idxs: unknown): unknown => {
+    const g: RtGraph = {
+      nodes: [tick(), constN('a', arr), constN('i', idxs),
+        node('x', 'IndexAll', [din('a'), din('i'), dout('out')]), setVar('s', 'r')],
+      edges: [edge('tick', 'out', 's', 'in'),
+        edge('a', 'out', 'x', 'a'), edge('i', 'out', 'x', 'i'),
+        edge('x', 'out', 's', 'value')],
+    }
+    return run(g).getVar('r')
+  }
+  it('subset at indices', () => expect(run1([10, 20, 30, 40], [0, 2])).toEqual([10, 30]))
+  it('order follows indices, not values', () => expect(run1([10, 20, 30], [2, 0, 1])).toEqual([30, 10, 20]))
+  it('OOB indices contribute undefined elements (coerced downstream)', () => {
+    expect(run1([1, 2], [0, 5])).toEqual([1, undefined])
+  })
+  it('empty indices → empty', () => expect(run1([1, 2, 3], [])).toEqual([]))
+})
+
+describe('Append', () => {
+  const run1 = (arr: unknown, item: unknown): unknown => {
+    const g: RtGraph = {
+      nodes: [tick(), constN('a', arr), constN('i', item),
+        node('x', 'Append', [din('a'), din('i'), dout('out')]), setVar('s', 'r')],
+      edges: [edge('tick', 'out', 's', 'in'),
+        edge('a', 'out', 'x', 'a'), edge('i', 'out', 'x', 'i'),
+        edge('x', 'out', 's', 'value')],
+    }
+    return run(g).getVar('r')
+  }
+  it('pushes to end immutably', () => {
+    const before = [1, 2]
+    expect(run1(before, 3)).toEqual([1, 2, 3])
+    expect(before).toEqual([1, 2])
+  })
+  it('non-array input treated as empty', () => expect(run1(null, 'x')).toEqual(['x']))
+})

@@ -237,41 +237,62 @@ const WIDGET_TOKENS: NodeSizeTokens = {
   widget: { rowHeight: 18, gap: 6, controlMinWidth: 60 },
 }
 
-describe('measureNodeSize — widgets', () => {
+describe('measureNodeSize — widgets (canon: every widget binds to a pin; buttons → actions row)', () => {
   const base: Pick<Node, 'id' | 'type' | 'position' | 'state'> = {
     id: createNodeId(), type: 'X', position: { x: 0, y: 0 }, state: {},
   }
-  const oneRow = [labelledPin('in', 'a'), labelledPin('out', 'b')]
 
-  it('adds a widget block below the pins (taller than the same node without widgets)', () => {
-    const without: Node = { ...base, pins: oneRow }
-    const withW: Node = {
-      ...base, pins: oneRow,
-      widgets: [
-        { id: 'n', type: 'number', label: 'N', key: 'n' },
-        { id: 't', type: 'toggle', label: 'T', key: 't' },
-      ],
+  it('a visible pin-bound widget grows ITS pin row (pin band uses widget.rowHeight uniformly)', () => {
+    const pins = [labelledPin('in', 'name'), labelledPin('out', 'self')]
+    const without: Node = { ...base, pins }
+    const withWidget: Node = {
+      ...base, pins,
+      widgets: [{ id: 'name', type: 'text', label: '', key: 'name' }],
     }
     const h0 = measureNodeSize(without, 'X', WIDGET_TOKENS, fakeMeasure).y
-    const h2 = measureNodeSize(withW, 'X', WIDGET_TOKENS, fakeMeasure).y
-    // block = leading gap + 2*rowHeight + 1 between-gap = 6 + 36 + 6 = 48
-    expect(h2).toBe(h0 + (6 + 2 * 18 + 6))
+    const h1 = measureNodeSize(withWidget, 'X', WIDGET_TOKENS, fakeMeasure).y
+    // Pin row grows from pin.rowHeight (11) → widget.rowHeight (18), +7 per row.
+    expect(h1 - h0).toBe(18 - 11)
   })
 
-  it('multiline text widget is taller than a single-row widget', () => {
-    const single: Node = { ...base, pins: oneRow, widgets: [{ id: 't', type: 'text', label: 'T', key: 't' }] }
-    const multi: Node = { ...base, pins: oneRow, widgets: [{ id: 't', type: 'text', label: 'T', key: 't', multiline: true }] }
-    expect(measureNodeSize(multi, 'X', WIDGET_TOKENS, fakeMeasure).y)
-      .toBeGreaterThan(measureNodeSize(single, 'X', WIDGET_TOKENS, fakeMeasure).y)
+  it('a button widget adds an actions row under the pin block', () => {
+    const pins = [labelledPin('in', 'name'), labelledPin('out', 'self')]
+    const withWidget: Node = {
+      ...base, pins,
+      widgets: [{ id: 'name', type: 'text', label: '', key: 'name' }],
+    }
+    const withButton: Node = {
+      ...base, pins,
+      widgets: [
+        { id: 'name', type: 'text', label: '', key: 'name' },
+        { id: 'add', type: 'button', label: '+ add field', action: 'addField' },
+      ],
+    }
+    const h1 = measureNodeSize(withWidget, 'X', WIDGET_TOKENS, fakeMeasure).y
+    const h2 = measureNodeSize(withButton, 'X', WIDGET_TOKENS, fakeMeasure).y
+    // One button row + leading gap = widget.rowHeight + widget.gap = 18 + 6.
+    expect(h2 - h1).toBe(18 + 6)
   })
 
-  it('widens to fit a wide widget (label + control)', () => {
+  it('widens to fit a long pin label + widget control side-by-side', () => {
+    const pins = [labelledPin('in', 'very_long_field_name'), labelledPin('out', 'self')]
     const n: Node = {
-      ...base, pins: [],
-      widgets: [{ id: 's', type: 'slider', label: 'A very long widget label indeed', key: 's', min: 0, max: 1 }],
+      ...base, pins,
+      widgets: [{ id: 'very_long_field_name', type: 'slider', label: '', key: 'very_long_field_name', min: 0, max: 1 }],
     }
     const w = measureNodeSize(n, 'X', WIDGET_TOKENS, fakeMeasure).x
     expect(w).toBeGreaterThan(150)
+  })
+
+  it('a widget that cannot resolve its pin does NOT inflate the node', () => {
+    const pins = [labelledPin('in', 'name'), labelledPin('out', 'self')]
+    const orphan: Node = {
+      ...base, pins,
+      widgets: [{ id: 'orphan', type: 'number', label: '', key: 'nonexistent' }],
+    }
+    const bare: Node = { ...base, pins }
+    expect(measureNodeSize(orphan, 'X', WIDGET_TOKENS, fakeMeasure).y)
+      .toBe(measureNodeSize(bare, 'X', WIDGET_TOKENS, fakeMeasure).y)
   })
 })
 
@@ -304,35 +325,25 @@ describe('computeNodeLayout — exec pins at top (UE layout)', () => {
   })
 })
 
-describe('computeNodeLayout — single exec hoisted onto the header line', () => {
+describe('computeNodeLayout — exec pins always live in the body band', () => {
   const execPin = (direction: 'in' | 'out', id = createPinId(), label?: string): Pin =>
     ({ id, kind: 'exec', direction, type: 'exec', multiple: false, ...(label ? { label } : {}) })
-  const noSize = (pins: Pin[]): Node =>
-    ({ id: createNodeId(), type: 'T', position: { x: 100, y: 200 }, state: {}, pins })
 
-  it('places a lone exec-in/out on the header line (y = headerHeight/2) at the side edges', () => {
+  it('a single exec-in/out pair sits on the first body row, NOT on the header line', () => {
     const eIn = createPinId(), eOut = createPinId(), dIn = createPinId(), dOut = createPinId()
     const n = node({ pins: [execPin('in', eIn), execPin('out', eOut), pin('in', dIn), pin('out', dOut)] })
     const l = computeNodeLayout(n, TOKENS)
     const P = (id: Pin['id']) => l.pins.find((p) => p.id === id)!
-    expect(P(eIn).y).toBe(n.position.y + TOKENS.node.headerHeight / 2) // on the header line
-    expect(P(eOut).y).toBe(n.position.y + TOKENS.node.headerHeight / 2)
-    expect(P(eIn).x).toBe(n.position.x)                // header left edge
-    expect(P(eOut).x).toBe(n.position.x + n.size!.x)   // header right edge
-    expect(P(dIn).y).toBeGreaterThan(n.position.y + TOKENS.node.headerHeight) // data in the body
+    expect(P(eIn).y).toBeGreaterThan(n.position.y + TOKENS.node.headerHeight) // in the body
+    expect(P(eIn).y).toBe(P(eOut).y)        // exec in/out share their row
+    expect(P(eIn).y).toBeLessThan(P(dIn).y) // exec row above the data row
     expect(P(dIn).y).toBe(P(dOut).y)
   })
 
-  it('a LABELLED single exec stays in the body band (not hoisted)', () => {
+  it('a labelled exec also stays in the body band', () => {
     const eOut = createPinId()
     const n = node({ pins: [execPin('out', eOut, 'then'), pin('in')] })
     const l = computeNodeLayout(n, TOKENS)
     expect(l.pins.find((p) => p.id === eOut)!.y).toBeGreaterThan(n.position.y + TOKENS.node.headerHeight)
-  })
-
-  it('hoisting a single exec pair saves a body row (naturalHeight)', () => {
-    const hoisted = noSize([execPin('in'), execPin('out'), pin('in'), pin('out')]) // 1 data body row
-    const dataOnly = noSize([pin('in'), pin('out')])                                // 1 data body row
-    expect(computeNodeLayout(hoisted, TOKENS).body.height).toBe(computeNodeLayout(dataOnly, TOKENS).body.height)
   })
 })

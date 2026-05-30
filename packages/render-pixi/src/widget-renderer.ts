@@ -1,7 +1,7 @@
 import { BitmapText, Container, Graphics, Sprite, Text, Texture } from 'pixi.js'
-import { comboOptions, widgetValue, type Node, type WidgetSpec, type WidgetStyle } from '@xenolith/core'
+import { comboOptions, widgetValue, widgetVisibility, widgetBindKey, type Node, type WidgetSpec, type WidgetStyle } from '@xenolith/core'
 import type { XenTokens } from '@xenolith/theme-xen'
-import { pinRowCount } from './layout.js'
+import { pinRowCount, pinRowHeights, pinBandHeight, pinRowCenterY, pinRowIndexFor, isFreeFloating } from './layout.js'
 
 /** Context handed to a custom widget's draw/pointer callbacks. Coords are widget-local CSS px.
  *  Theme colours (`accent`/`text`/`muted`) come from the resolved widget tokens so a canvas widget
@@ -120,7 +120,10 @@ export function themeCssVars(tokens: XenTokens): Record<string, string> {
 
 export interface WidgetLayoutTokens {
   node: { headerHeight: number }
-  pin: { rowSpacing: number; rowHeight: number }
+  /** `diameter` + `labelGap` make widget rects share the same content columns as the pin labels
+   *  above them (left edge at the leftmost pin's label x, right edge at the rightmost) — `paddingX`
+   *  is used as a fallback only when pin geometry is absent (legacy callers). */
+  pin: { rowSpacing: number; rowHeight: number; diameter?: number; labelGap?: number }
   header: { toPinsGap: number }
   widget: { rowHeight: number; gap: number; paddingX: number }
 }
@@ -133,32 +136,90 @@ export interface WidgetRect {
   height: number
 }
 
-function widgetRowHeight(w: WidgetSpec, rowHeight: number): number {
-  // Labelled text puts its label on a row ABOVE the field box, so it needs an extra row.
-  if (w.type === 'text') {
-    const field = w.multiline ? rowHeight * 3 : rowHeight
-    return w.label ? field + rowHeight : field
-  }
-  if (w.type === 'custom') return w.height ?? rowHeight * 4
+function controlHeight(w: WidgetSpec, rowHeight: number): number {
+  // A custom widget declares its own height; everything else fits the standard control row.
+  if (w.type === 'custom') return w.height ?? rowHeight
   return rowHeight
 }
 
-/** Local-space rects for each widget row, stacked below the pin block. Pure — drives both drawing
- *  and hit-testing so they never disagree. */
-export function computeWidgetRects(node: Node, width: number, tokens: WidgetLayoutTokens): WidgetRect[] {
-  if (!node.widgets || node.widgets.length === 0) return []
-  // Hoisted exec pins ride the header line and don't take a body row — use the shared row counter
-  // so naturalHeight and widget placement agree (otherwise hoisted execs add a phantom empty band).
-  const rows = pinRowCount(node.pins)
-  const pinRowsHeight = rows > 0 ? rows * tokens.pin.rowHeight + (rows - 1) * tokens.pin.rowSpacing : 0
-  const padX = tokens.widget.paddingX
+/** Context used to resolve pin-bound widget visibility against the live graph: which pins are
+ *  connected (drives `'whenDisconnected'` hiding) and what value the runtime currently produces
+ *  on a connected pin (drives `'always'` widgets that display live data). */
+export interface ComputeWidgetRectsCtx {
+  /** True when the IN-pin identified by `pinKey` (matched against pin label, then id) has ≥1
+   *  incoming edge. */
+  isPinConnected: (pinKey: string) => boolean
+  /** When a host runtime is loaded, returns the value currently flowing into the bound pin
+   *  (i.e. the upstream node's last produced output). A `'always'` (display) widget reads this
+   *  in preference to its stored state when the pin is connected. Undefined when no runtime is
+   *  attached or the value isn't available. */
+  pinLiveValue?: (pinKey: string) => unknown
+}
 
-  let y = tokens.node.headerHeight + tokens.header.toPinsGap + pinRowsHeight + tokens.widget.gap
+/** Local-space rects for every visible widget. The canon: every widget is bound to one IN-pin
+ *  (via `widgetBindKey`) and renders INSIDE that pin's row — pin dot + label on the left, control
+ *  on the right. `button` widgets aren't pin-bound — they stack in an "actions row" under the pin
+ *  block. Visibility per widget follows `widgetVisibility`: input controls hide on connect, custom
+ *  widgets display live runtime values when connected.  Returns rects in source order; pin-bound
+ *  ones whose pin can't be resolved (or is hoisted to the header) are silently skipped. */
+export function computeWidgetRects(node: Node, width: number, tokens: WidgetLayoutTokens, ctx?: ComputeWidgetRectsCtx): WidgetRect[] {
+  if (!node.widgets || node.widgets.length === 0) return []
+  // Per-row pin heights so a tall custom widget grows ONLY its row (other rows stay theme rowH).
+  const rowHeights = pinRowHeights(node, tokens.pin.rowHeight, tokens.widget.rowHeight, ctx?.isPinConnected)
+  const bandH = pinBandHeight(rowHeights, tokens.pin.rowSpacing)
+  // Pin label / widget column inset — keeps left/right edges of widget rects aligned with the pin
+  // label columns above them. Falls back to widget.paddingX only when pin geometry is absent.
+  const padX = (tokens.pin.diameter !== undefined && tokens.pin.labelGap !== undefined)
+    ? tokens.pin.diameter / 2 + tokens.pin.labelGap
+    : tokens.widget.paddingX
+
+  // Free-floating custom widgets band starts below the pin block; one row per widget at its own
+  // declared height. Then the actions row stacks underneath.
+  let bandY = tokens.node.headerHeight + tokens.header.toPinsGap + bandH + tokens.widget.gap
   const out: WidgetRect[] = []
+  // Pass 1 — free-floating custom widgets (body band).
   for (const w of node.widgets) {
-    const height = widgetRowHeight(w, tokens.widget.rowHeight)
-    out.push({ id: w.id, x: padX, y, width: width - padX * 2, height })
-    y += height + tokens.widget.gap
+    if (!isFreeFloating(node, w)) continue
+    const h = w.type === 'custom' ? (w.height ?? tokens.widget.rowHeight) : tokens.widget.rowHeight
+    out.push({ id: w.id, x: padX, y: bandY, width: width - padX * 2, height: h })
+    bandY += h + tokens.widget.gap
+  }
+  // Pass 2 — buttons (actions row, beneath the free band).
+  let actionsY = bandY
+  for (const w of node.widgets) {
+    if (w.type !== 'button') continue
+    const h = tokens.widget.rowHeight
+    out.push({ id: w.id, x: padX, y: actionsY, width: width - padX * 2, height: h })
+    actionsY += h + tokens.widget.gap
+  }
+  // Pass 3 — pin-bound widgets inline in their pin rows.
+  for (const w of node.widgets) {
+    if (w.type === 'button' || isFreeFloating(node, w)) continue
+    const bindKey = widgetBindKey(w)
+    if (bindKey === undefined) continue
+    const visible = widgetVisibility(w) === 'always' || !(ctx?.isPinConnected(bindKey))
+    if (!visible) continue
+    const rowIdx = pinRowIndexFor(node, bindKey)
+    if (rowIdx === undefined) continue // pin not found OR hoisted into header — nowhere to host it
+    const cy = pinRowCenterY(rowHeights, rowIdx, tokens.pin.rowSpacing, tokens.node.headerHeight, tokens.header.toPinsGap)
+    // The widget takes the row's full natural height (so a 120px curve fits). Clamp only against
+    // the row's actual height (never crops a custom widget by clipping to default rowHeight).
+    const h = Math.min(controlHeight(w, tokens.widget.rowHeight), rowHeights[rowIdx]!)
+    // Custom widgets declaring their own height render as a SQUARE (width = height) anchored to
+    // the right edge — curve editors, XY pads, image previews all want a 1:1 aspect by default.
+    // Standard controls (number/slider/combo/toggle/color/text) stretch across the row's right
+    // half so the value/track has room to breathe.
+    const wantsSquare = w.type === 'custom' && w.height !== undefined
+    const rightX = width - padX
+    let wX: number, wW: number
+    if (wantsSquare) {
+      wW = Math.min(h, width - 2 * padX)
+      wX = rightX - wW
+    } else {
+      wX = Math.floor(width / 2)
+      wW = width - wX - padX
+    }
+    out.push({ id: w.id, x: wX, y: Math.round(cy - h / 2), width: wW, height: h })
   }
   return out
 }
@@ -188,9 +249,10 @@ export function renderWidgets(
   tokens: XenTokens,
   layoutTokens: WidgetLayoutTokens,
   customWidgets?: ReadonlyMap<string, CustomWidgetController>,
+  ctx?: ComputeWidgetRectsCtx,
 ): WidgetsView {
   const container = new Container({ label: `widgets:${node.id}` })
-  const rects = computeWidgetRects(node, width, layoutTokens)
+  const rects = computeWidgetRects(node, width, layoutTokens, ctx)
   const fontFamily = tokens.typography.fontFamily
   const labelSize = tokens.typography.label.size
   const wRowHeight = layoutTokens.widget.rowHeight
@@ -233,7 +295,18 @@ export function renderWidgets(
         c2d.restore()
         tex.source.update()
       }
-      redraw(widgetValue(node, spec))
+      // Display widgets read live pin values when their bound pin is wired (visibility:'always'
+      // + pin connected → upstream runtime value); fall back to stored state otherwise. Default
+      // value-input customs still use state.
+      const initial = (() => {
+        const bind = widgetBindKey(spec)
+        if (bind && widgetVisibility(spec) === 'always' && ctx?.isPinConnected(bind) && ctx?.pinLiveValue) {
+          const live = ctx.pinLiveValue(bind)
+          if (live !== undefined) return live
+        }
+        return widgetValue(node, spec)
+      })()
+      redraw(initial)
       byId.set(rect.id, { spec, redraw })
       continue
     }

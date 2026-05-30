@@ -4,6 +4,8 @@ import {
   widgetValue,
   clampWidgetValue,
   comboOptions,
+  widgetVisibility,
+  widgetBindKey,
   type WidgetSpec,
 } from './widget.js'
 import type { Node } from './graph.js'
@@ -95,5 +97,36 @@ describe('comboOptions', () => {
       .toEqual([{ label: 'a', value: 'a' }, { label: 'b', value: 'b' }])
     expect(comboOptions(combo([{ label: 'Hi', value: 2 }]) as Extract<WidgetSpec, { type: 'combo' }>))
       .toEqual([{ label: 'Hi', value: 2 }])
+  })
+})
+
+describe('widgetVisibility', () => {
+  it('input controls default to whenDisconnected (UE-style)', () => {
+    expect(widgetVisibility(number())).toBe('whenDisconnected')
+    expect(widgetVisibility(slider())).toBe('whenDisconnected')
+    expect(widgetVisibility({ id: 'w', type: 'text',   label: 'T', key: 't' })).toBe('whenDisconnected')
+    expect(widgetVisibility({ id: 'w', type: 'toggle', label: 'B', key: 'b' })).toBe('whenDisconnected')
+    expect(widgetVisibility({ id: 'w', type: 'combo',  label: 'C', key: 'c', values: ['a'] })).toBe('whenDisconnected')
+    expect(widgetVisibility({ id: 'w', type: 'color',  label: 'Cl', key: 'cl' })).toBe('whenDisconnected')
+  })
+  it('custom widgets also default to whenDisconnected — they are usually input controls (curve, XY pad)', () => {
+    expect(widgetVisibility({ id: 'w', type: 'custom', renderer: 'foo', key: 'k', label: '' })).toBe('whenDisconnected')
+  })
+  it('explicit visibility wins over the default', () => {
+    expect(widgetVisibility({ id: 'w', type: 'number', label: 'N', key: 'n', visibility: 'always' })).toBe('always')
+    expect(widgetVisibility({ id: 'w', type: 'custom', renderer: 'foo', key: 'k', label: '', visibility: 'whenDisconnected' })).toBe('whenDisconnected')
+  })
+})
+
+describe('widgetBindKey', () => {
+  it('returns the widget key when no pinKey override is set', () => {
+    expect(widgetBindKey(number())).toBe('n')
+    expect(widgetBindKey({ id: 'w', type: 'custom', renderer: 'r', key: 'data', label: '' })).toBe('data')
+  })
+  it('pinKey wins over key when both are set', () => {
+    expect(widgetBindKey({ ...number(), pinKey: 'value' } as WidgetSpec)).toBe('value')
+  })
+  it('button widgets are not pin-bound — they live in the actions row', () => {
+    expect(widgetBindKey({ id: 'w', type: 'button', label: '+ add', action: 'addField' })).toBeUndefined()
   })
 })

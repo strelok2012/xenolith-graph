@@ -186,4 +186,16 @@ export class Graph {
     this.#version++
     return node
   }
+
+  /** @internal — replace a node's widget list wholesale. Per-widget `node.state[key]` values are
+   *  NOT touched: re-adding a previously-removed widget under the same key restores its value.
+   *  Use via the `SetNodeWidgets` command so the change is undoable. */
+  _setNodeWidgets(id: NodeId, widgets: WidgetSpec[] | undefined): Readonly<Node> | undefined {
+    const node = this.#nodes.get(id)
+    if (!node) return undefined
+    if (widgets && widgets.length > 0) node.widgets = widgets
+    else delete node.widgets
+    this.#version++
+    return node
+  }
 }

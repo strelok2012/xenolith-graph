@@ -51,16 +51,16 @@ describe('importComfyWorkflow', () => {
     expect(graph.version).toBe('xenolith.v1')
   })
 
-  it('maps widgets_values to typed widgets with seeded state', () => {
+  it('maps widgets_values to typed widgets keyed by `param N` (matches synthetic IN-pin labels)', () => {
     const loader = graph.nodes.find((n) => n.type === 'CheckpointLoader')!
     const sampler = graph.nodes.find((n) => n.type === 'KSampler')!
-    // CheckpointLoader: ['sd_xl.safetensors'] → one text widget (generic positional label)
-    expect(loader.widgets).toEqual([{ id: 'w0', type: 'text', label: 'param 1', key: 'w0', multiline: false }])
-    expect(loader.state?.['w0']).toBe('sd_xl.safetensors')
-    // KSampler: [12345, 20, 8] → three number widgets
+    // CheckpointLoader: ['sd_xl.safetensors'] → one text widget; key/id match the synthetic pin label.
+    expect(loader.widgets).toEqual([{ id: 'param 1', type: 'text', label: '', key: 'param 1' }])
+    expect(loader.state?.['param 1']).toBe('sd_xl.safetensors')
+    // KSampler: [12345, 20, 8] → three number widgets, each bound to its synthetic IN-pin.
     expect(sampler.widgets).toHaveLength(3)
     expect(sampler.widgets!.every((w) => w.type === 'number')).toBe(true)
-    expect(sampler.state).toMatchObject({ w0: 12345, w1: 20, w2: 8 })
+    expect(sampler.state).toMatchObject({ 'param 1': 12345, 'param 2': 20, 'param 3': 8 })
   })
 
   it('imports every node with mapped position (array and object pos forms)', () => {
@@ -71,14 +71,17 @@ describe('importComfyWorkflow', () => {
     expect(sampler.position).toEqual({ x: 480, y: 220 })
   })
 
-  it('derives pins from inputs/outputs with mapped types and labels', () => {
+  it('derives pins from inputs/outputs with mapped types and labels, plus a synthetic IN-pin per widget', () => {
     const loader = graph.nodes.find((n) => n.type === 'CheckpointLoader')!
     const outs = loader.pins.filter((p) => p.direction === 'out')
     expect(outs.map((p) => p.label)).toEqual(['MODEL', 'CLIP'])
     expect(outs[0]!.type).toBe('object') // MODEL → object
     const sampler = graph.nodes.find((n) => n.type === 'KSampler')!
-    expect(sampler.pins.filter((p) => p.direction === 'in')).toHaveLength(2)
-    expect(sampler.pins.find((p) => p.label === 'seed')!.type).toBe('float') // INT → float
+    // KSampler had 2 declared inputs (model, seed) + 3 widget_values → 3 synthetic IN-pins (param 1..3).
+    const sins = sampler.pins.filter((p) => p.direction === 'in')
+    expect(sins.map((p) => p.label).sort()).toEqual(['model', 'param 1', 'param 2', 'param 3', 'seed'])
+    expect(sampler.pins.find((p) => p.label === 'seed')!.type).toBe('float')      // INT → float
+    expect(sampler.pins.find((p) => p.label === 'param 1')!.type).toBe('float')   // widget-pin matches the widget type
   })
 
   it('preserves the raw ComfyUI payload in node.state.__comfy for faithful re-export', () => {

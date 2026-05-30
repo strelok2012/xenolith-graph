@@ -1,6 +1,7 @@
 import type { Command, CommandContext } from './command-bus.js'
 import type { Edge, Pin, Vec2 } from './graph.js'
 import type { NodeId } from './ids.js'
+import type { WidgetSpec } from './widget.js'
 
 export class MoveNode implements Command<Vec2> {
   readonly type = 'MoveNode'
@@ -105,5 +106,36 @@ export class SetNodePins implements Command<SetNodePinsUndo> {
   undo(ctx: CommandContext, applied: SetNodePinsUndo): void {
     ctx.graph._setNodePins(this.nodeId, applied.pins.map((p) => ({ ...p })))
     for (const edge of applied.prunedEdges) ctx.graph._addEdge(edge)
+  }
+}
+
+export interface SetNodeWidgetsUndo {
+  widgets: WidgetSpec[] | undefined
+}
+
+/** Replace a node's widget list wholesale. Used by runtime plugins to synthesise widgets in
+ *  response to schema changes (e.g. `@xenolith/plugin-runtime`'s Schema-node flow that derives a
+ *  Struct's editable fields from a wired Schema). Per-widget `state[key]` values survive removal,
+ *  so re-adding a widget under the same key picks up the previously typed value. */
+export class SetNodeWidgets implements Command<SetNodeWidgetsUndo> {
+  readonly type = 'SetNodeWidgets'
+  readonly #widgets: WidgetSpec[] | undefined
+  constructor(
+    private readonly nodeId: NodeId,
+    widgets: WidgetSpec[] | undefined,
+  ) {
+    this.#widgets = widgets ? widgets.map((w) => ({ ...w })) : undefined
+  }
+
+  apply(ctx: CommandContext): SetNodeWidgetsUndo {
+    const node = ctx.graph.getNode(this.nodeId)
+    if (!node) throw new Error(`SetNodeWidgets: node not found: ${this.nodeId}`)
+    const old = node.widgets ? node.widgets.map((w) => ({ ...w })) : undefined
+    ctx.graph._setNodeWidgets(this.nodeId, this.#widgets ? this.#widgets.map((w) => ({ ...w })) : undefined)
+    return { widgets: old }
+  }
+
+  undo(ctx: CommandContext, applied: SetNodeWidgetsUndo): void {
+    ctx.graph._setNodeWidgets(this.nodeId, applied.widgets ? applied.widgets.map((w) => ({ ...w })) : undefined)
   }
 }

@@ -8,7 +8,7 @@ import {
   type TemplateDefId,
   type TemplateDefinition,
 } from './template-def.js'
-import { flattenTemplateInstance } from './template-flatten.js'
+import { flattenTemplateInstance, flattenAllTemplateInstances } from './template-flatten.js'
 
 // Deterministic id minting for readable assertions.
 function minters() {
@@ -168,5 +168,80 @@ describe('flattenTemplateInstance', () => {
   it('returns null when the definition is not registered', () => {
     const inst = instanceNode('x', 'missing_def', [])
     expect(flattenTemplateInstance(inst, () => undefined, minters())).toBeNull()
+  })
+})
+
+describe('flattenAllTemplateInstances', () => {
+  // Reuse: an Add definition (in A, in B → Add member → out Sum).
+  const add_def: TemplateDefinition = {
+    id: 'add_def' as TemplateDefId, title: 'Add',
+    nodes: [
+      tin('ti_a', 'tia_o'), tin('ti_b', 'tib_o'),
+      member('m_add', 'Add', [dpin('ai', 'in'), dpin('bi', 'in'), dpin('ao', 'out')]),
+      tout('to_sum', 'tos_i'),
+    ],
+    edges: [
+      edge('de0', 'ti_a', 'tia_o', 'm_add', 'ai'),
+      edge('de1', 'ti_b', 'tib_o', 'm_add', 'bi'),
+      edge('de2', 'm_add', 'ao', 'to_sum', 'tos_i'),
+    ],
+  }
+  const resolve = (id: TemplateDefId) => (id === add_def.id ? add_def : undefined)
+  const mkInst = (id: string) => instanceNode(id, 'add_def', [
+    { pin: `${id}_pin_a`, dir: 'in',  boundary: 'ti_a' },
+    { pin: `${id}_pin_b`, dir: 'in',  boundary: 'ti_b' },
+    { pin: `${id}_pin_o`, dir: 'out', boundary: 'to_sum' },
+  ])
+
+  it('replaces instances with primitives and rewires external edges to internal pins', () => {
+    // External producers `src_a`, `src_b` feed instance `inst1`; consumer `dst` reads its output.
+    const src_a = member('src_a', 'Src', [dpin('sa_o', 'out')])
+    const src_b = member('src_b', 'Src', [dpin('sb_o', 'out')])
+    const dst   = member('dst',   'Dst', [dpin('di', 'in')])
+    const inst  = mkInst('inst1')
+    const ext: Edge[] = [
+      edge('ee0', 'src_a', 'sa_o', 'inst1', 'inst1_pin_a'),
+      edge('ee1', 'src_b', 'sb_o', 'inst1', 'inst1_pin_b'),
+      edge('ee2', 'inst1', 'inst1_pin_o', 'dst', 'di'),
+    ]
+    const r = flattenAllTemplateInstances([src_a, src_b, inst, dst], ext, resolve, minters())
+
+    expect(r.nodes.map((n) => n.type).sort()).toEqual(['Add', 'Dst', 'Src', 'Src'])
+    expect(r.nodes.some((n) => n.type === TEMPLATE_INSTANCE_TYPE)).toBe(false)
+    const add = r.nodes.find((n) => n.type === 'Add')!
+    const ai = add.pins.find((p) => p.id.toString().endsWith('') && p.direction === 'in')!  // any in
+    // Every external edge must now land on `add` (no edge still references `inst1`).
+    for (const e of r.edges) {
+      expect(String(e.from.node)).not.toBe('inst1')
+      expect(String(e.to.node)).not.toBe('inst1')
+    }
+    // src_a/src_b must each reach one of add's IN pins; add's OUT must reach dst.di.
+    const intoAdd = r.edges.filter((e) => e.to.node === add.id).map((e) => e.from.node).sort()
+    expect(intoAdd).toEqual(['src_a', 'src_b'])
+    const fromAdd = r.edges.find((e) => e.from.node === add.id)!
+    expect(fromAdd.to).toEqual({ node: 'dst', pin: 'di' })
+    void ai
+  })
+
+  it('flattens multiple instances independently (fresh ids, no aliasing)', () => {
+    const a = mkInst('A'); const b = mkInst('B')
+    const r = flattenAllTemplateInstances([a, b], [], resolve, minters())
+    const adds = r.nodes.filter((n) => n.type === 'Add')
+    expect(adds).toHaveLength(2)
+    expect(adds[0]!.id).not.toBe(adds[1]!.id)
+  })
+
+  it('passes through non-template nodes and untouched edges unchanged', () => {
+    const plain = member('plain', 'Plain', [dpin('pi', 'in'), dpin('po', 'out')])
+    const e: Edge = edge('plain_e', 'plain', 'po', 'plain', 'pi') // self-loop, structurally fine for the test
+    const r = flattenAllTemplateInstances([plain], [e], resolve, minters())
+    expect(r.nodes).toEqual([plain])
+    expect(r.edges).toEqual([e])
+  })
+
+  it('leaves an unresolved instance in place (definition missing)', () => {
+    const orphan = instanceNode('orph', 'missing_def', [{ pin: 'p', dir: 'in', boundary: 'x' }])
+    const r = flattenAllTemplateInstances([orphan], [], () => undefined, minters())
+    expect(r.nodes).toEqual([orphan])
   })
 })

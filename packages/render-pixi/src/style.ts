@@ -68,6 +68,16 @@ export function resolvePinStroke(pinType: string, tokens: XenTokens): string {
   return tokens.geometry.pin.strokeColor
 }
 
+/** Exec-pin colour scheme: a filled gold triangle when connected to an edge, an OUTLINED white
+ *  triangle otherwise. Lets you read connectivity at a glance without inspecting wires — the
+ *  data-pin "always filled with type colour" rule wouldn't carry the same signal because data
+ *  type colours already mean "the pin's type", not "the pin's connection state". */
+export function execPinColors(connected: boolean): { fill: string; fillAlpha: number; stroke: string } {
+  return connected
+    ? { fill: '#FCB400', fillAlpha: 1, stroke: '#1A1A1A' }
+    : { fill: '#FFFFFF', fillAlpha: 0, stroke: '#FFFFFF' }
+}
+
 export function resolveEdgeColor(sourceType: string, tokens: XenTokens): string {
   return lookupPin(sourceType, tokens.pinType)?.edgeColor ?? tokens.pinType.any.edgeColor
 }

@@ -43,9 +43,12 @@ test('convert {Transform, Validate, Enrich} → clean 1-in/2-out template, membe
   // The definition must contain ONLY the three selected members (+ boundary nodes). No Merge/Sub/Step
   // from the Gather/Pack macros may leak in.
   expect(r.memberTypes).toEqual(['Enrich', 'Transform', 'Validate'])
-  expect(r.inputBoundaries).toBe(1)   // only gather→transform crosses in
+  // Per the widget canon, every per-widget IN-pin on Transform/Validate/Enrich (scale/mode/mirror,
+  // response, tint/strength) is also a free input → it becomes its own $templateInput boundary.
+  // 4 (transform: In + scale/mode/mirror) + 1 (validate.response) + 2 (enrich.tint/strength) = 7.
+  expect(r.inputBoundaries).toBe(7)
   expect(r.outputBoundaries).toBe(2)  // validate.out and enrich.out cross out
-  expect(r.inPins).toBe(1)
+  expect(r.inPins).toBe(7)
   expect(r.outPins).toBe(2)
 })
 

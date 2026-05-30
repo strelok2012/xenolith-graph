@@ -19,10 +19,12 @@ import {
 } from 'pixi.js'
 import type { StateStyle } from '@xenolith/theme-xen'
 import type { Node, Pin, TypeRegistry } from '@xenolith/core'
+import { widgetBindKey, widgetVisibility } from '@xenolith/core'
+import { pinRowIndexFor } from './layout.js'
 import type { XenTokens } from '@xenolith/theme-xen'
 import { computeNodeLayout } from './layout.js'
 import { renderWidgets, type WidgetHit, type WidgetLayoutTokens, type CustomWidgetController } from './widget-renderer.js'
-import { hexToRgba, resolveCategoryAccent, resolveCategoryGradient, resolvePinFill, resolvePinShape, resolvePinStroke, type GraphCategoryPalette } from './style.js'
+import { execPinColors, hexToRgba, resolveCategoryAccent, resolveCategoryGradient, resolvePinFill, resolvePinShape, resolvePinStroke, type GraphCategoryPalette } from './style.js'
 
 export type NodeVisualState = 'default' | 'hover' | 'selected' | 'active'
 
@@ -97,6 +99,14 @@ export interface RenderNodeOptions {
    *  markup of a 24×24 icon (the editor resolves a {@link NodeGlyph} name via its icon registry);
    *  `side` picks which side of the title it sits on. Positioning/centring is automatic. */
   glyph?: { svg: string; side: 'left' | 'right' }
+  /** PinIds (string) on this node that currently have at least one edge attached. Drives the
+   *  exec-pin paint (filled gold when connected, outlined white when not). The renderer treats
+   *  an absent set as "nothing connected" — safe default for headless tests. */
+  connectedPinIds?: ReadonlySet<string>
+  /** Live runtime value flowing into this node's bound pin (used by `'always'` display widgets
+   *  so they show the wire's current value, not the stored default). Editor binds this from the
+   *  host's runtime plugin; tests usually omit it. */
+  pinLiveValue?: (pinKey: string) => unknown
 }
 
 export interface NodeView {
@@ -158,9 +168,24 @@ export function buildPinShape(g: Graphics, shape: 'circle' | 'diamond' | 'arrow'
   return g.circle(x, y, r)
 }
 
-/** A filled+stroked pin Graphics of the given shape. */
-function drawPin(shape: 'circle' | 'diamond' | 'arrow', x: number, y: number, r: number, fill: string, stroke: string, strokeW: number): Graphics {
-  return buildPinShape(new Graphics(), shape, x, y, r).fill({ color: fill }).stroke({ color: stroke, width: strokeW })
+/** A filled+stroked pin Graphics of the given shape. `fillAlpha < 1` lets the exec-pin outline
+ *  style (transparent triangle, white stroke) reuse the same drawing path as a normal data pin. */
+function drawPin(shape: 'circle' | 'diamond' | 'arrow', x: number, y: number, r: number, fill: string, stroke: string, strokeW: number, fillAlpha = 1): Graphics {
+  return buildPinShape(new Graphics(), shape, x, y, r).fill({ color: fill, alpha: fillAlpha }).stroke({ color: stroke, width: strokeW })
+}
+
+/** Pin paint for a single pin: exec pins use the connected/unconnected scheme; everything else
+ *  follows the type-driven theme tokens. Centralised so expanded + collapsed paths agree. */
+function pinPaint(
+  pin: Pin,
+  tokens: XenTokens,
+  opts: RenderNodeOptions,
+): { fill: string; stroke: string; fillAlpha: number } {
+  if (pin.kind === 'exec') {
+    const connected = opts.connectedPinIds?.has(String(pin.id)) ?? false
+    return execPinColors(connected)
+  }
+  return { fill: resolvePinFill(String(pin.type), tokens, opts.types), stroke: resolvePinStroke(String(pin.type), tokens), fillAlpha: 1 }
 }
 
 /** A header glyph scaled to a `size`×`size` box. `svgInner` is the inner markup of a 24×24 viewBox
@@ -364,11 +389,22 @@ export function renderNode(
   opts: RenderNodeOptions = {},
 ): NodeView {
   const geo = tokens.geometry
+  // Pin-bound widget hides when the bound pin is connected — share the same predicate the widget
+  // renderer uses so node geometry (row heights, pin Y) and widget rects always agree.
+  // Widget bind keys are pin LABELS/keys (auto-mint pin ids are unknown to schema authors), but
+  // `connectedPinIds` is keyed by the real pin id — resolve the bind to a pin first, then check.
+  const isPinConnected = (k: string): boolean => {
+    const set = opts.connectedPinIds
+    if (!set) return false
+    const pin = node.pins.find((p) => p.label === k || String(p.id) === k)
+    return pin ? set.has(String(pin.id)) : false
+  }
   const expandedLayout = computeNodeLayout(node, {
     node:   geo.node,
     pin:    { diameter: geo.pin.diameter, rowSpacing: geo.pin.rowSpacing, rowHeight: geo.pin.rowHeight },
     header: { toPinsGap: geo.header.toPinsGap },
-  })
+    widget: { rowHeight: geo.widget.rowHeight, gap: geo.widget.gap, controlMinWidth: geo.widget.controlMinWidth },
+  }, isPinConnected)
 
   const container = new Container({ label: `node:${node.id}` })
   container.position.set(node.position.x, node.position.y)
@@ -513,6 +549,28 @@ export function renderNode(
   // Pin Graphics & labels for expanded form. We also track pin position lookups for edge wiring.
   const expandedPinLocations = new Map<string, { x: number; y: number }>()
   const pinLabels: BitmapText[] = []
+  // Rows that host a visible bound widget — the widget rect sits in the RIGHT HALF of the row.
+  // We only suppress the OPPOSITE-side (right) pin's label on those rows: that's the one whose
+  // text anchors to the right edge and lands inside the widget area. The LEFT pin's label (next
+  // to its pin dot) is far from the widget and stays visible — that's the row's actual name,
+  // hiding it just leaves a nameless row of dots.
+  const rowsWithWidget = new Set<number>()
+  for (const w of node.widgets ?? []) {
+    if (w.type === 'button') continue
+    const bind = widgetBindKey(w)
+    if (bind === undefined) continue
+    const pin = node.pins.find((p) => p.label === bind || String(p.id) === bind)
+    if (!pin) continue
+    const visible = widgetVisibility(w) === 'always' || !(isPinConnected(bind))
+    if (!visible) continue
+    const rowIdx = pinRowIndexFor(node, bind)
+    if (rowIdx !== undefined) rowsWithWidget.add(rowIdx)
+  }
+  const pinLabelHidden = (pin: Pin, side: 'left' | 'right'): boolean => {
+    if (rowsWithWidget.size === 0 || side === 'left') return false
+    const idx = pinRowIndexFor(node, String(pin.id))
+    return idx !== undefined && rowsWithWidget.has(idx)
+  }
   for (const pin of node.pins) {
     const layoutPin = expandedLayout.pins.find((p) => p.id === pin.id)
     if (!layoutPin) continue
@@ -520,13 +578,12 @@ export function renderNode(
     const localY = layoutPin.y - node.position.y
     expandedPinLocations.set(pin.id, { x: localX, y: localY })
     const radius = geo.pin.diameter / 2
-    const fill = resolvePinFill(String(pin.type), tokens, opts.types)
-    const stroke = resolvePinStroke(String(pin.type), tokens)
-    const pinGfx = drawPin(resolvePinShape(String(pin.type), pin.kind, opts.types), localX, localY, radius, fill, stroke, geo.pin.stroke)
+    const paint = pinPaint(pin, tokens, opts)
+    const pinGfx = drawPin(resolvePinShape(String(pin.type), pin.kind, opts.types), localX, localY, radius, paint.fill, paint.stroke, geo.pin.stroke, paint.fillAlpha)
     markPinInteractive(pinGfx, pin, String(node.id), localX, localY, radius)
     expanded.addChild(pinGfx)
 
-    if (pin.label) {
+    if (pin.label && !pinLabelHidden(pin, layoutPin.side)) {
       const label = new BitmapText({
         text: pin.label,
         style: {
@@ -705,9 +762,8 @@ export function renderNode(
     const localY = pillOffsetY + pp.y
     pillPinLocations.set(pin.id, { x: localX, y: localY })
     const radius = geo.pin.diameter / 2
-    const fill = resolvePinFill(String(pin.type), tokens, opts.types)
-    const stroke = resolvePinStroke(String(pin.type), tokens)
-    const pinGfx = drawPin(resolvePinShape(String(pin.type), pin.kind, opts.types), localX, localY, radius, fill, stroke, geo.pin.stroke)
+    const paint = pinPaint(pin, tokens, opts)
+    const pinGfx = drawPin(resolvePinShape(String(pin.type), pin.kind, opts.types), localX, localY, radius, paint.fill, paint.stroke, geo.pin.stroke, paint.fillAlpha)
     markPinInteractive(pinGfx, pin, String(node.id), localX, localY, radius)
     collapsed.addChild(pinGfx)
   }
@@ -829,12 +885,14 @@ export function renderNode(
   // Widget rows live in the expanded form (below the pins); the pill form has none.
   const widgetLayoutTokens: WidgetLayoutTokens = {
     node:   { headerHeight: geo.node.headerHeight },
-    pin:    { rowSpacing: geo.pin.rowSpacing, rowHeight: geo.pin.rowHeight },
+    pin:    { rowSpacing: geo.pin.rowSpacing, rowHeight: geo.pin.rowHeight, diameter: geo.pin.diameter, labelGap: geo.pin.labelGap },
     header: { toPinsGap: geo.header.toPinsGap },
     widget: { rowHeight: geo.widget.rowHeight, gap: geo.widget.gap, paddingX: geo.widget.paddingX },
   }
   const widgetsView =
-    node.widgets && node.widgets.length > 0 ? renderWidgets(node, w, tokens, widgetLayoutTokens, opts.customWidgets) : null
+    node.widgets && node.widgets.length > 0
+      ? renderWidgets(node, w, tokens, widgetLayoutTokens, opts.customWidgets, { isPinConnected, ...(opts.pinLiveValue ? { pinLiveValue: opts.pinLiveValue } : {}) })
+      : null
   if (widgetsView) expanded.addChild(widgetsView.container)
 
   const view: NodeView = {

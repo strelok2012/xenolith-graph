@@ -31,9 +31,34 @@ export const PRIMITIVE_SCHEMAS: NodeSchema[] = [
   { type: 'Branch', title: 'Branch', category: 'flow', description: 'If / else on a bool', pins: [ei(), di('cond', 'bool'), eo('true'), eo('false')] },
   { type: 'ForEach', title: 'For Each', category: 'flow', description: 'Loop over an array', pins: [ei(), di('array', 'array'), dobj('element', 'any'), dobj('index', 'scalar'), eo('body'), eo('completed')] },
   // state
-  { type: 'SetVar', title: 'Set Variable', category: 'state', description: 'Write a variable (persists across ticks)', pins: [ei(), di('value', 'any'), eo()], widgets: [{ id: 'name', type: 'text', key: 'name', label: 'name' }] },
-  { type: 'GetVar', title: 'Get Variable', category: 'state', description: 'Read a variable', pure: true, pins: [dobj('value', 'any')], widgets: [{ id: 'name', type: 'text', key: 'name', label: 'name' }] },
-  { type: 'Const', title: 'Const', category: 'state', description: 'A literal number', pure: true, pins: [dobj('out', 'scalar')], widgets: [{ id: 'value', type: 'number', key: 'value', label: 'value' }] },
+  // Every widget MUST be pinKey-bound (core's layout reserves no body band for non-bound widgets).
+  // KNOWN VISUAL ISSUE: widget rect spans the full row width, so it overlaps the bound pin's label
+  // (e.g. "warehouse" widget overlaps "value" pin label). Awaiting core fix
+  // (see docs/widget-pin-label-overlap.md); for now we accept the overlap.
+  { type: 'SetVar', title: 'Set Variable', category: 'state', description: 'Write a variable (persists across ticks)', pins: [ei(), di('value', 'any'), eo()], widgets: [{ id: 'name', type: 'text', key: 'name', label: '', pinKey: 'value', visibility: 'always' }] },
+  { type: 'GetVar', title: 'Get Variable', category: 'state', description: 'Read a variable',                          pure: true, pins: [dobj('value', 'any')],                widgets: [{ id: 'name',  type: 'text',   key: 'name',  label: '', pinKey: 'value', visibility: 'always' }] },
+  { type: 'Const',  title: 'Const',        category: 'state', description: 'A literal number',                          pure: true, pins: [dobj('out', 'scalar')],               widgets: [{ id: 'value', type: 'number', key: 'value', label: '', pinKey: 'out',   visibility: 'always' }] },
+  {
+    type: 'Struct', title: 'Struct', category: 'state',
+    description: 'A configurable bag of fields. Wire a Schema into `schema` to synthesize one in-pin per field.',
+    pure: true,
+    pins: [
+      { kind: 'data', direction: 'in', type: 'object', label: 'schema' },
+      dobj('self', 'object'),
+    ],
+  },
+  {
+    type: 'Schema', title: 'Schema', category: 'state',
+    description: 'Field definitions ({fieldName: defaultValue}) consumed by a Struct via its schema pin.',
+    pure: true,
+    // Two pins:
+    //   - `fields` IN  — binding-only target for the struct DOM widget (key='fields' auto-binds
+    //                    via the editor's pin-key match). IN-pin rows host bound widgets cleanly;
+    //                    OUT-pin binding produces visual artifacts (pin + widget on separate rows).
+    //   - `definition` OUT — emits `state.fields` to downstream Struct.schema pins.
+    pins: [di('fields', 'object'), { kind: 'data', direction: 'out', type: 'object', label: '' }],
+    widgets: [{ id: 'fields', type: 'custom', renderer: 'struct', key: 'fields', label: '', height: 110 }],
+  },
   // math
   { type: 'Add', title: 'Add', category: 'math', pure: true, pins: [di('a', 'scalar'), di('b', 'scalar'), dobj('out', 'scalar')] },
   { type: 'Sub', title: 'Subtract', category: 'math', pure: true, pins: [di('a', 'scalar'), di('b', 'scalar'), dobj('out', 'scalar')] },
@@ -42,6 +67,18 @@ export const PRIMITIVE_SCHEMAS: NodeSchema[] = [
   { type: 'ZipAdd', title: 'Zip Add', category: 'array', description: 'Elementwise a + b', pure: true, pins: [di('a', 'array'), di('b', 'array'), dobj('out', 'array')] },
   { type: 'ScaleArray', title: 'Scale Array', category: 'array', description: 'array × k', pure: true, pins: [di('array', 'array'), di('k', 'scalar'), dobj('out', 'array')] },
   { type: 'Length', title: 'Length', category: 'array', pure: true, pins: [di('array', 'array'), dobj('out', 'scalar')] },
+  { type: 'Mean',   title: 'Mean',   category: 'array', description: 'Arithmetic mean of an array (empty → 0)', pure: true, pins: [di('array', 'array'), dobj('out', 'scalar')] },
+  { type: 'Index',         title: 'Index',          category: 'array', description: 'Element at index (oob → undefined)', pure: true, pins: [di('array', 'array'), di('idx', 'scalar'),                              dobj('out', 'any')]    },
+  { type: 'ArrayWrite',    title: 'Array Write',    category: 'array', description: 'Immutable array.set(idx, value)',     pure: true, pins: [di('array', 'array'), di('idx', 'scalar'), di('value', 'any'),         dobj('out', 'array')]  },
+  { type: 'Includes',      title: 'Includes',       category: 'array', description: 'array.includes(item) → bool',         pure: true, pins: [di('array', 'array'), di('item', 'any'),                              dobj('out', 'bool')]   },
+  { type: 'ArgMax',        title: 'ArgMax',         category: 'array', description: 'Index of max value (empty → -1)',     pure: true, pins: [di('array', 'array'),                                                  dobj('out', 'scalar')] },
+  { type: 'FilterIndices', title: 'Filter Indices', category: 'array', description: 'Indices of subarrays containing item', pure: true, pins: [di('array', 'array'), di('item', 'any'),                              dobj('out', 'array')]  },
+  { type: 'ObjectGet',     title: 'Object Get',     category: 'array', description: 'obj[key] — dynamic field lookup',     pure: true, pins: [di('obj', 'object'),  di('key', 'any'),                              dobj('out', 'any')]    },
+  { type: 'IndexAll',      title: 'Index All',      category: 'array', description: 'array[indices] → subset',             pure: true, pins: [di('array', 'array'), di('idxs', 'array'),                            dobj('out', 'array')]  },
+  { type: 'Append',        title: 'Append',         category: 'array', description: 'Immutable array.push(item)',          pure: true, pins: [di('array', 'array'), di('item', 'any'),                              dobj('out', 'array')]  },
+  { type: 'Gt',            title: 'Greater',        category: 'math',  description: 'a > b → bool',                        pure: true, pins: [di('a', 'scalar'), di('b', 'scalar'),                                dobj('out', 'bool')]   },
+  { type: 'Gte',           title: 'Greater or Eq',  category: 'math',  description: 'a >= b → bool',                       pure: true, pins: [di('a', 'scalar'), di('b', 'scalar'),                                dobj('out', 'bool')]   },
+  { type: 'Eq',            title: 'Equal',          category: 'math',  description: 'a === b → bool',                      pure: true, pins: [di('a', 'any'),    di('b', 'any'),                                  dobj('out', 'bool')]   },
   // domain
   {
     type: 'Allocate', title: 'Allocate', category: 'domain',
@@ -56,16 +93,16 @@ export const PRIMITIVE_SCHEMAS: NodeSchema[] = [
     type: 'Gather', title: 'Gather', category: 'domain', description: 'Read a field from every node of a type → array',
     pure: true, pins: [dobj('values', 'array')],
     widgets: [
-      { id: 'nodeType', type: 'text', key: 'nodeType', label: 'node type' },
-      { id: 'field', type: 'text', key: 'field', label: 'field' },
+      { id: 'nodeType', type: 'text', key: 'nodeType', label: 'node type', pinKey: 'values', visibility: 'always' },
+      { id: 'field',    type: 'text', key: 'field',    label: 'field',     pinKey: 'values', visibility: 'always' },
     ],
   },
   {
     type: 'Scatter', title: 'Scatter', category: 'domain', description: 'Write an array back onto each node of a type',
     pins: [ei(), di('values', 'array'), eo()],
     widgets: [
-      { id: 'nodeType', type: 'text', key: 'nodeType', label: 'node type' },
-      { id: 'field', type: 'text', key: 'field', label: 'field' },
+      { id: 'nodeType', type: 'text', key: 'nodeType', label: 'node type', pinKey: 'values', visibility: 'always' },
+      { id: 'field',    type: 'text', key: 'field',    label: 'field',     pinKey: 'values', visibility: 'always' },
     ],
   },
   // Wire-driven gather/scatter: visible plumbing. One multi-input on Gather; one data-out per
@@ -85,32 +122,35 @@ export const PRIMITIVE_SCHEMAS: NodeSchema[] = [
     type: 'GatherRecords', title: 'Gather Records', category: 'domain', description: 'Read several fields from every node of a type → objects',
     pure: true, pins: [dobj('records', 'array')],
     widgets: [
-      { id: 'nodeType', type: 'text', key: 'nodeType', label: 'node type' },
-      { id: 'fields', type: 'text', key: 'fields', label: 'fields (csv)' },
+      { id: 'nodeType', type: 'text', key: 'nodeType', label: 'node type', pinKey: 'records', visibility: 'always' },
+      { id: 'fields',   type: 'text', key: 'fields',   label: 'fields',    pinKey: 'records', visibility: 'always' },
     ],
   },
   {
     type: 'GetField', title: 'Get Field', category: 'array', description: 'Read a field from a record',
     pure: true, pins: [di('record', 'object'), dobj('value', 'any')],
-    widgets: [{ id: 'field', type: 'text', key: 'field', label: 'field' }],
+    widgets: [{ id: 'field', type: 'text', key: 'field', label: '', pinKey: 'record', visibility: 'always' }],
   },
   {
     type: 'MapField', title: 'Map Field', category: 'array', description: 'Pick the same field from every record → array',
     pure: true, pins: [di('records', 'array'), dobj('values', 'array')],
-    widgets: [{ id: 'field', type: 'text', key: 'field', label: 'field' }],
+    widgets: [{ id: 'field', type: 'text', key: 'field', label: '', pinKey: 'records', visibility: 'always' }],
   },
   {
     type: 'Output', title: 'Output', category: 'state',
     description: 'Display the wired value in the node (host renders it as a widget)',
     pins: [ei(), di('value', 'any'), eo()],
-    widgets: [{ id: 'value', type: 'custom', renderer: 'output', key: 'value', label: '', height: 40 }],
+    widgets: [{ id: 'value', type: 'custom', renderer: 'output', key: 'value', label: '', height: 40, pinKey: 'value' }],
   },
   {
     type: 'ToMap', title: 'To Map', category: 'array', description: 'records[] → { key: value } object',
     pure: true, pins: [di('records', 'array'), dobj('map', 'object')],
+    // Only the `key` widget is editable in-node — core's pin-row layout pairs the records IN and
+    // map OUT pins on the SAME row, so showing a second widget for `value` would overlap. The
+    // value-field is set programmatically via `state.value` (or by editing the V1 graph JSON).
+    // Resolves when core supports vertical widget stacking in a pin row (see issue doc).
     widgets: [
-      { id: 'key', type: 'text', key: 'key', label: 'key field' },
-      { id: 'value', type: 'text', key: 'value', label: 'value field' },
+      { id: 'key', type: 'text', key: 'key', label: '', pinKey: 'records', visibility: 'always' },
     ],
   },
 ]
@@ -121,13 +161,18 @@ export const PRIMITIVE_ICONS: Record<string, string> = {
   Tick: 'play', Init: 'flag',
   GetVar: 'database', SetVar: 'database', Const: 'square',
   Add: 'cpu', Sub: 'cpu', Mul: 'cpu',
-  ZipAdd: 'layers', ScaleArray: 'layers', Length: 'layers',
+  ZipAdd: 'layers', ScaleArray: 'layers', Length: 'layers', Mean: 'layers',
+  Index: 'layers', ArrayWrite: 'layers', Includes: 'layers', ArgMax: 'layers', FilterIndices: 'layers',
+  ObjectGet: 'layers', IndexAll: 'layers', Append: 'layers',
+  Gt: 'cpu', Gte: 'cpu', Eq: 'cpu',
   Branch: 'branch', Sequence: 'code', ForEach: 'code',
   Allocate: 'box', Spawn: 'zap',
   Gather: 'database', Scatter: 'database',
   GatherFromInputs: 'database', ScatterToOutputs: 'database',
   GetField: 'layers', MapField: 'layers', GatherRecords: 'database', ToMap: 'layers',
   Output: 'flag',
+  Struct: 'box',
+  Schema: 'layers',
 }
 for (const s of PRIMITIVE_SCHEMAS) s.glyph = { icon: PRIMITIVE_ICONS[s.type] ?? 'circle', side: 'left' }
 

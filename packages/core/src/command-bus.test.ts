@@ -223,14 +223,46 @@ describe('CommandBus — transactions', () => {
     expect(reverted).toHaveBeenCalledTimes(1)
   })
 
-  it('nested transactions throw', () => {
-    const { ctx } = makeContext()
+  it('nested transactions join the outer one — single history entry, single committed event', () => {
+    const { ctx, ops } = makeContext()
     const bus = new CommandBus(ctx)
-    expect(() =>
+    const committed = vi.fn()
+    ctx.events.on('transaction:committed', committed)
+    bus.transaction(() => {
+      bus.apply(makeOpCmd('A', ops))
       bus.transaction(() => {
-        bus.transaction(() => {})
-      }),
-    ).toThrow(/nested/i)
+        bus.apply(makeOpCmd('B', ops))
+        bus.transaction(() => {
+          bus.apply(makeOpCmd('C', ops))
+        })
+      })
+      bus.apply(makeOpCmd('D', ops))
+    })
+    expect(ops.applied).toEqual(['A', 'B', 'C', 'D'])
+    expect(committed).toHaveBeenCalledTimes(1)        // only the outermost commits
+    expect(committed.mock.calls[0]![0].commands.map((c: { type: string }) => c.type)).toEqual(['A', 'B', 'C', 'D'])
+    expect(bus.undo()).toBe(true)
+    expect(bus.canUndo()).toBe(false)                 // one history entry covers all four
+    expect(ops.undone).toEqual(['D', 'C', 'B', 'A'])  // LIFO rollback
+  })
+
+  it('nested transaction error rolls back the whole outer transaction', () => {
+    const { ctx, ops } = makeContext()
+    const bus = new CommandBus(ctx)
+    const reverted = vi.fn()
+    ctx.events.on('transaction:reverted', reverted)
+    try {
+      bus.transaction(() => {
+        bus.apply(makeOpCmd('A', ops))
+        bus.transaction(() => {
+          bus.apply(makeOpCmd('B', ops))
+          throw new Error('inner blew up')
+        })
+      })
+    } catch {}
+    expect(ops.undone).toEqual(['B', 'A'])
+    expect(reverted).toHaveBeenCalledTimes(1)
+    expect(bus.canUndo()).toBe(false)
   })
 
   it('transaction returns the value returned by its function', () => {

@@ -10,4 +10,7 @@ export type { VmValue } from './vm/value.js'
 export { Allocate } from './model/allocate.js'
 
 export { runtimePlugin } from './editor/plugin.js'
+export { attachRuntimeBridge } from './editor/runtime-bridge.js'
 export { PIN_TYPES, PRIMITIVE_SCHEMAS, PRIMITIVE_CATEGORY_COLORS, PRIMITIVE_ICONS } from './editor/schemas.js'
+export { pinsFromSchemaFields, widgetsFromSchemaFields, schemaPinTypeFor } from './editor/schema-sync.js'
+export type { SchemaExtraPin } from './editor/schema-sync.js'
