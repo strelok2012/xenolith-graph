@@ -49,10 +49,10 @@ export function buildConditionalWidgets(editor: XenolithEditor): ConditionalWidg
           // hidden. The pin still exists for serialization & connectivity rules; it just doesn't
           // render. Re-evaluated after every setWidgetValue.
           { id: 'body', type: 'text', key: 'body', label: '',
-            displayOptions: { show: (s) => s['method'] !== 'GET' } },
+            displayOptions: { show: (s: Readonly<Record<string, unknown>>) => s['method'] !== 'GET' } },
           { id: 'auth', type: 'combo', key: 'auth', label: '', values: ['none', 'basic', 'bearer'] },
           { id: 'token', type: 'text', key: 'token', label: '', placeholder: 'Bearer token…',
-            displayOptions: { show: (s) => s['auth'] === 'bearer' } },
+            displayOptions: { show: (s: Readonly<Record<string, unknown>>) => s['auth'] === 'bearer' } },
         ],
       },
     ],

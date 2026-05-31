@@ -2,7 +2,7 @@
 // style at once, plus a "set all to X" panel that flips every wire in place via
 // `editor.setEdgeOptions(id, { pathStyle })`. No render hacks; uses the public per-edge option.
 
-import type { XenolithEditor } from '@xenolith/editor'
+import type { XenolithEditor, XenolithGraphV1 } from '@xenolith/editor'
 import type { EdgeId } from '@xenolith/core'
 import type { EdgePathStyle } from '@xenolith/render-pixi'
 
@@ -16,8 +16,8 @@ export interface EdgePathsScene {
 }
 
 export function buildEdgePaths(editor: XenolithEditor): EdgePathsScene {
-  const nodes: Parameters<XenolithEditor['loadJSON']>[0]['nodes'] = []
-  const edges: Parameters<XenolithEditor['loadJSON']>[0]['edges'] = []
+  const nodes: XenolithGraphV1['nodes'] = []
+  const edges: XenolithGraphV1['edges'] = []
   const edgeStyle = new Map<EdgeId, EdgePathStyle>()
   const colW = 360
   for (let i = 0; i < STYLES.length; i++) {

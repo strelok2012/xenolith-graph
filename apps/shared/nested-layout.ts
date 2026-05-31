@@ -14,17 +14,19 @@ import type { Node, Edge, NodeId, PinId, EdgeId } from '@xenolith/core'
 type Pos = { x: number; y: number }
 const at = (x: number, y: number): Pos => ({ x, y })
 
-// Leaf ops: small generic nodes with one in / one out pin.
+// Leaf ops: small generic nodes with one in / one out pin. `render` is a loadJSON-only metadata
+// channel for title/category (stripped onto editor.#renderOpts during materialisation), not part
+// of the core Node interface — hence the `as Node` cast on the whole literal.
 function leaf(id: string, title: string, pos: Pos): Node {
   return {
     id: id as NodeId, type: 'Op', position: pos, size: { x: 140, y: 56 },
     state: {},
-    render: { title, category: 'logic' } as never,
+    render: { title, category: 'logic' },
     pins: [
       { id: `${id}_in`  as PinId, kind: 'data', direction: 'in',  type: 'float', multiple: false, label: 'in'  },
       { id: `${id}_out` as PinId, kind: 'data', direction: 'out', type: 'float', multiple: true,  label: 'out' },
     ],
-  }
+  } as Node
 }
 // Expanded macro = an in-graph container whose `state.members` is rendered as a frame around
 // the listed nodes. Position is per-macro but the visual frame follows the member bounds.
