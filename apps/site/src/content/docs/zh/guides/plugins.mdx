@@ -1,0 +1,170 @@
+---
+title: Plugins & extras
+description: Auto-layout (Dagre, ELK), drag-and-drop palette sidebar, Live mode, file drop, edge styles, type conversions, dynamic node interfaces.
+---
+
+The editor's surface stays small; richer behaviours land as plugins or opt-in features.
+
+## Auto-layout (`@xenolith/plugin-autolayout`)
+
+One-line arrangement for any graph. Pick an engine (Dagre for layered DAGs, ELK for nested / orthogonal), pass it in, call `arrange()`:
+
+```ts
+import { autoLayoutPlugin } from '@xenolith/plugin-autolayout'
+import { dagreEngine } from '@xenolith/plugin-autolayout/dagre'
+
+const layout = autoLayoutPlugin({
+  engine: dagreEngine(),
+  defaults: {
+    direction: 'LR',                          // 'LR' | 'TB' | 'RL' | 'BT'
+    nodeSep:   80,
+    rankSep:   120,
+    animate:   { durationMs: 600, easing: easeInOutCubic },
+  },
+})
+editor.use(layout)
+
+// Later:
+await layout.arrange()                        // uses defaults
+await layout.arrange({ direction: 'TB' })     // override per-call
+```
+
+ELK adapter for richer layout (orthogonal edges, nested containers):
+
+```ts
+import { elkEngine } from '@xenolith/plugin-autolayout/elk'
+
+editor.use(autoLayoutPlugin({ engine: elkEngine(), defaults: { algorithm: 'layered' } }))
+```
+
+Both adapters animate the move — the plugin tweens positions per frame via an ephemeral path that bypasses the command bus, then commits the final positions in one transaction (one undo entry).
+
+## Palette sidebar (`editor.setPaletteSidebar`)
+
+Persistent left-side panel listing every registered schema. Drag a tile onto the canvas to spawn a node at the drop point:
+
+```ts
+editor.setPaletteSidebar(true)                // default
+editor.setPaletteSidebar({ width: 240, categories: ['logic', 'io'] })
+editor.setPaletteSidebar(false)               // hide
+
+editor.on('node:drop', ({ nodeId, position, items }) => {
+  // items['text/plain'] holds the dragged schema's `type` — auto-wired by the editor.
+})
+```
+
+The drop handler is set up automatically — drag a tile, drop on the canvas, a fresh node spawns at the world position.
+
+## Per-node file drop
+
+Drop files (or DataTransfer items) onto a node and react in your host code:
+
+```ts
+editor.on('node:drop', ({ nodeId, files, text, items, position }) => {
+  if (!nodeId) return                              // dropped on empty canvas — handled by palette
+  if (files.length) loadImageInto(nodeId, files[0])
+})
+```
+
+The payload covers all three drop kinds: real `File[]`, plain text, and every other DataTransfer type (`text/html`, `text/uri-list`, `application/json`, app-specific MIMEs — string types collected under `items`).
+
+## Live Mode
+
+Hide editor chrome (palette, breadcrumb, controls) and lock interaction to viewing — perfect for "preview" / demo modes:
+
+```ts
+editor.setLiveMode(true)
+
+editor.on('livemode:changed', ({ live }) => updateChrome(live))
+```
+
+Edges, widgets, pan, zoom still respond; just no editing.
+
+## Pluggable edge paths
+
+Per-edge path style — pick at create time or change later:
+
+```ts
+editor.addEdge(
+  { id, from: { node: a, pin: 'out' }, to: { node: b, pin: 'in' } },
+)
+editor.setEdgeOptions(edgeId, {
+  pathStyle: 'smoothstep',          // 'bezier' (default) | 'smoothstep' | 'step' | 'linear'
+  animated: true,                   // marching dashes
+  label: 'fail',                    // text floating at the midpoint
+  arrowHead: true,                  // arrowhead at the destination
+})
+
+editor.setEdgeAnimated(edgeId, true)
+```
+
+## Type conversions
+
+The type registry colours pins and validates compatibility. Two pins of different types refuse to connect — **unless** you register a conversion:
+
+```ts
+editor.types.register({ id: 'number', color: '#ff8a3c', shape: 'circle' })
+editor.types.register({ id: 'text',   color: '#9aff8a', shape: 'circle' })
+
+editor.types.registerConversion('number', 'text', (n) => String(n))
+// Now number → text wires connect; the cast fn is invoked at runtime when the host evaluates.
+
+editor.types.hasConversion('number', 'text')   // true
+editor.types.unregisterConversion('number', 'text')
+```
+
+## Dynamic node interfaces (`NodeSchema.dynamic`)
+
+For variadic nodes — Sequence, Math (`N`-ary), Struct (one pin per declared field) — declare a `dynamic` callback. The editor invokes it after every `setWidgetValue` and applies any returned `pins` / `widgets`:
+
+```ts
+editor.registry.register({
+  type: 'Sequence',
+  title: 'Sequence',
+  pins: [{ kind: 'exec', direction: 'in', type: 'exec' }],
+  widgets: [{ id: 'count', type: 'number', key: 'count', label: 'branches', min: 1, max: 16 }],
+
+  dynamic: (node) => {
+    const n = (node.state.count as number) ?? 1
+    const branches: PinSchema[] = Array.from({ length: n }, (_, i) => ({
+      kind: 'exec', direction: 'out', type: 'exec', label: `then ${i + 1}`,
+    }))
+    return {
+      pins: [{ kind: 'exec', direction: 'in', type: 'exec' }, ...branches],
+    }
+  },
+})
+```
+
+Returning `undefined` from a field means "leave it alone". The fn is pure — never mutate the node directly.
+
+`defineDynamicNode(schema)` is a convenience that pre-registers a common Sequence-style variadic shape.
+
+## Headless tick loop
+
+Some hosts need a per-frame callback (runtime evaluators, animated previews). Subscribe to `onTick` and let Xenolith drive it:
+
+```ts
+const offTick = editor.onTick((dtMs) => host.advance(dtMs))
+
+editor.startLoop({ fps: 30 })   // start internal RAF loop, throttled to ~30 fps
+editor.stopLoop()
+editor.step()                   // one tick manually (useful for tests)
+```
+
+When the editor is idle (no animation, no playback) `startLoop` can stay off — `onTick` listeners only fire when a tick actually runs.
+
+## Plugin contract
+
+Custom plugins implement `install(ctx) → dispose` and receive a `PluginContext` mirroring the editor's writable surface (commands, types, graph, requestRender, setNodePositionEphemeral, setWidgetValue, …).
+
+```ts
+const myPlugin: XenolithPlugin = {
+  name: 'my-plugin',
+  install(ctx) {
+    const off = ctx.on('node:added', ({ node }) => log(node))
+    return () => off()
+  },
+}
+editor.use(myPlugin)
+```

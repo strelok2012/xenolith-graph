@@ -1,0 +1,133 @@
+---
+title: Events, commands, history
+description: Listen for changes, veto destructive actions, register named commands with hotkeys, group history into transactions.
+---
+
+Three intertwined APIs for hooking host code into the editor lifecycle: **events** (broadcast what happened, plus preventable variants that ask permission first), **commands** (named actions with hotkeys, registry-style), and **command-bus transactions** (group many mutations into one undo step).
+
+## Listening for events
+
+```ts
+const off = editor.on('node:added', ({ node }) => console.log('added', node.id))
+off()  // remove the listener
+```
+
+Every editor instance dispatches:
+
+| Event | Payload | When |
+|---|---|---|
+| `node:added`         | `{ node }`            | Node mounted onto the graph |
+| `node:removed`       | `{ nodeId }`          | Node deleted (after the fact) |
+| `node:moved`         | `{ nodeId, position }`| Drag committed (no per-frame spam — once at drag end) |
+| `node:click`         | `{ nodeId }`          | Single click landed on a node |
+| `edge:connected`     | `{ edge }`            | Edge created |
+| `edge:disconnected`  | `{ edgeId }`          | Edge removed |
+| `selection:changed`  | `{ nodeIds }`         | Selection replaced |
+| `viewport:changed`   | `{ x, y, zoom }`      | Pan / zoom committed |
+| `widget:changed`     | `{ nodeId, widgetId, value }` | After `setWidgetValue` |
+| `widget:action`      | `{ nodeId, widgetId, action }` | Button widget pressed |
+| `graph:loaded`       | `{ nodeCount, edgeCount }`     | `loadJSON` finished |
+| `history:changed`    | `{ canUndo, canRedo }` | After any apply / undo / redo |
+| `dive:changed`       | `{ depth, definitionId }` | Dive in/out of a template |
+| `sidebar:opened`     | `{ nodeId }`          | Properties sidebar opened |
+| `sidebar:closed`     | `{}`                  | Properties sidebar closed |
+| `livemode:changed`   | `{ live }`            | `setLiveMode` toggled |
+| `node:drop`          | `{ nodeId, files, text, items, position }` | Files / DataTransfer items dropped on a node |
+
+## Preventable events (veto)
+
+Four destructive actions broadcast a "before" event whose payload includes a `cancel()` closure. Calling it stops the action — useful for confirmation modals, validation, dirty-state guards.
+
+```ts
+editor.on('node:removing', ({ nodeId, cancel }) => {
+  if (importantNodes.has(nodeId)) cancel()
+})
+
+editor.on('edge:connecting', ({ edge, cancel }) => {
+  if (!host.allowsType(edge.from.pin)) cancel()
+})
+
+editor.on('edge:disconnecting', ({ edgeId, cancel }) => {
+  if (locked.has(edgeId)) cancel()
+})
+
+editor.on('node:clicking', ({ nodeId, cancel }) => {
+  if (lockedNodes.has(nodeId)) cancel()
+})
+```
+
+Any single listener calling `cancel()` is enough — the action doesn't run, no follow-up `*-ed` event fires.
+
+## Named commands + hotkeys
+
+`editor.commands` is a CommandRegistry — hosts register actions with optional hotkeys and Xenolith routes matching key chords through them. Listener fires BEFORE built-in shortcuts, so hosts can override.
+
+```ts
+import { Commands } from '@xenolith/editor'
+
+editor.commands.register({
+  id: Commands.Undo,
+  label: 'Undo',
+  hotkey: 'Mod+Z',                   // Mod = Cmd on macOS, Ctrl elsewhere
+  execute: () => editor.undo(),
+  canExecute: () => editor.canUndo(),
+})
+
+editor.commands.register({
+  id: 'app.deploy',                  // plugin-specific ids are fine — strings or Commands constants
+  label: 'Deploy graph',
+  hotkey: 'Cmd+Shift+D',
+  execute: () => myDeploy(editor.toJSON()),
+})
+
+editor.commands.execute(Commands.Undo)
+```
+
+The `Commands` object exposes stable string ids for well-known actions (Undo, Redo, SelectAll, DeleteSelected, Copy, Paste, FitView, OpenPalette, DiveIn, GroupSelection, …). They're conventional names — `CommandSpec.id` accepts any string.
+
+### Hotkey grammar
+
+`Cmd+Z`, `Mod+Shift+K`, `Ctrl+Alt+J`, `Option+P`, `Shift+/`. Recognised synonyms: `cmd|command|meta|⌘`, `ctrl|control`, `alt|option|⌥`, `shift|⇧`, `mod` (cross-platform).
+
+## History grouping
+
+Every mutation flows through a command bus. By default each apply gets its own undo entry. Wrap related work in a **group** to coalesce them into one — Ctrl+Z then rolls back the whole batch atomically.
+
+```ts
+editor.commandBus.beginGroup({ label: 'rename + recolor' })
+editor.commandBus.apply(new SetNodeState(id, { title: 'New' }))
+editor.commandBus.apply(new SetNodeState(id, { color: '#9f69ff' }))
+editor.commandBus.endGroup()
+```
+
+Groups also support an idle timeout — useful for text editing where you want a string of keystrokes coalesced if they happen within N ms of each other:
+
+```ts
+editor.commandBus.beginGroup({ label: 'type', idleTimeoutMs: 800 })
+// keystroke handlers call commandBus.apply() one by one;
+// the group auto-closes 800 ms after the last apply.
+```
+
+`transaction(fn)` is the simpler form for one-shot blocks (no idle timeout):
+
+```ts
+editor.commandBus.transaction(() => {
+  editor.commandBus.apply(new AddNode(a))
+  editor.commandBus.apply(new AddNode(b))
+  editor.commandBus.apply(new ConnectPins(edge))
+})  // a + b + edge → one undo entry
+```
+
+## Connection validation
+
+For lighter use than `edge:connecting`, set a single validator:
+
+```ts
+editor.setIsValidConnection((c) => {
+  if (c.fromNode === c.toNode) return false        // forbid self-loops
+  if (wouldCreateCycle(editor.graph, c)) return false
+  return true
+})
+```
+
+This runs both for ghost-edge feedback during a pin-drag AND at the actual `apply` moment. Returning `false` colours the ghost edge red and rejects the drop.

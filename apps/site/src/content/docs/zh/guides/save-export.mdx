@@ -1,0 +1,103 @@
+---
+title: Save, load, export, migrate
+description: Versioned JSON round-trips, per-schema migrate hooks, custom serialize/deserialize, full-graph PNG/JPEG export, ComfyUI importer.
+---
+
+The on-disk format is `xenolith.v1` — a single JSON object with `nodes`, `edges`, `comments`, `templates`, plus optional `viewport`, `categories`, and per-node `renderOpts`. Output is ID-sorted (deterministic — great for git diffs).
+
+## Save / load
+
+```ts
+const data = editor.toJSON()                     // → XenolithGraphV1 object
+const blob = editor.exportJSON()                 // → Blob (`application/json`)
+
+await editor.loadJSON(savedData)                 // replaces the whole graph
+```
+
+`loadJSON` clears the current graph, restores nodes / edges / comments / templates, applies any saved `viewport`, and re-builds views.
+
+## Per-schema serialize / deserialize
+
+The default round-trip writes `state` as-is. If a node owns non-serializable runtime state (Maps, class instances, RAF handles), provide a custom serializer:
+
+```ts
+editor.registry.register({
+  type: 'Sampler',
+  title: 'Sampler',
+  pins: [...],
+  serialize: (node) => ({
+    samples: Array.from(node.state.samples as Map<string, number>),
+  }),
+  deserialize: (json) => ({
+    samples: new Map(json.samples as [string, number][]),
+  }),
+})
+```
+
+`serialize` returns the payload to store under the node's `state` slot. `deserialize` is its inverse — called by `loadJSON` to restore the live `state` object.
+
+## Schema versioning + `migrate`
+
+Bump `NodeSchema.version` when the on-disk shape of `state` / `widgets` / `pins` changes incompatibly. `loadJSON` reads the stored `node.version` on every node and routes outdated payloads through `migrate(oldNode, oldVersion)`:
+
+```ts
+editor.registry.register({
+  type: 'HTTPRequest',
+  title: 'HTTP request',
+  pins: [...],
+  version: 2,
+
+  migrate: (oldNode, fromVersion) => {
+    if (fromVersion === 1) {
+      // v1 stored `urlSegments: string[]`; v2 stores `url: string`.
+      const segs = (oldNode.state?.urlSegments ?? []) as string[]
+      return { state: { url: segs.join('/'), method: oldNode.state?.method } }
+    }
+    return {}
+  },
+})
+```
+
+Returned partial is merged over the old payload and `node.version` is bumped to current. Pure: `oldNode` is not mutated. Branch on `fromVersion` to chain multiple migrations in one function — no need for separate `v1→v2→v3` files.
+
+`instantiate()` stamps the current `schema.version` on every fresh node.
+
+## Custom data: `meta`
+
+Every node has an optional `meta: Record<string, unknown>` field — round-tripped untouched by the core. Use it for host bookkeeping (tags, lock state, last-modified-by) without touching `state` (which is the user-facing widget store).
+
+## Export to image
+
+`editor.exportImage()` renders the **whole graph** (not the viewport) into a Blob at any resolution:
+
+```ts
+const png  = await editor.exportImage({ format: 'png', scale: 2, padding: 60 })
+const jpeg = await editor.exportImage({ format: 'jpeg', quality: 0.9 })
+
+const url = URL.createObjectURL(png)
+download(url, 'my-graph.png')
+```
+
+Options:
+- `format`: `'png'` (transparent) or `'jpeg'` (filled with the theme's canvas colour).
+- `scale`: pixel density multiplier; `2` gives a retina-grade asset.
+- `padding`: world-space margin around the bounding box.
+- `quality`: 0–1, JPEG only.
+
+Heavy on big graphs — pair with `editor.withOverlay('Exporting…', async () => …)` for a busy curtain.
+
+## ComfyUI import
+
+The `@xenolith/runtime` package ships a workflow importer that consumes the JSON ComfyUI writes when you save a workflow:
+
+```ts
+import { importComfyWorkflow } from '@xenolith/runtime/comfy'
+const graph = importComfyWorkflow(json)
+editor.loadJSON(graph)
+```
+
+Pin types, widget defaults, and node positions are translated into `xenolith.v1` shape. Reroutes are preserved as inline knots.
+
+## Deterministic output
+
+`toJSON` sorts nodes, edges, comments, and templates by id before writing. Round-tripping a graph then diffing it against the original produces a clean diff — no churn from internal hash order.

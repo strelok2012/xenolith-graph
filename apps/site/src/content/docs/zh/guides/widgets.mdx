@@ -1,0 +1,146 @@
+---
+title: In-node widgets
+description: Declarative number/slider/combo/text/toggle/color/button controls, custom canvas + DOM controllers, conditional visibility, properties sidebar.
+---
+
+Widgets are the controls that live inside a node — number inputs, sliders, combos, toggles, color swatches, and your own canvas or DOM controllers. They're declared on the schema; values live on `node.state`; the editor handles layout, hit-testing, and serialization.
+
+## Built-in widgets
+
+```ts
+editor.registry.register({
+  type: 'Material',
+  title: 'Material',
+  pins: [
+    { kind: 'data', direction: 'in', type: 'float', label: 'intensity' },
+  ],
+  widgets: [
+    { id: 'intensity', type: 'slider', key: 'intensity', label: '', min: 0, max: 1, step: 0.01 },
+    { id: 'mode',      type: 'combo',  key: 'mode',      label: 'mode',  values: ['Add', 'Multiply', 'Screen'] },
+    { id: 'tint',      type: 'color',  key: 'tint',      label: 'tint' },
+    { id: 'enabled',   type: 'toggle', key: 'enabled',   label: 'enabled' },
+    { id: 'notes',     type: 'text',   key: 'notes',     label: 'notes', multiline: true },
+    { id: 'reset',     type: 'button', label: '+ reset', action: 'reset' },
+  ],
+})
+```
+
+Widget types: `number`, `slider`, `combo`, `text` (single or `multiline`), `toggle`, `color`, `button`, `custom`. Every value-holding widget needs a `key` — that's the field on `node.state` where its value lives, and the implicit pin-binding key.
+
+### Pin binding
+
+When a widget's `key` matches a data IN-pin's `label` (or `id`), the widget renders **inline on that pin's row** and disappears when the pin gets a wire (UE-Blueprint default-value behaviour). Override the implicit binding with `pinKey`:
+
+```ts
+{ id: 'value', type: 'number', key: 'value', pinKey: 'amount' }
+```
+
+### Display widgets (always visible)
+
+Set `visibility: 'always'` to make the widget render even when its pin is wired — useful for read-only displays. When connected, the widget reads the live upstream value:
+
+```ts
+{ id: 'out', type: 'number', key: 'out', label: 'value', visibility: 'always' }
+```
+
+### Reading and writing values
+
+```ts
+editor.getWidgetValue(nodeId, 'intensity')
+editor.setWidgetValue(nodeId, 'intensity', 0.4)
+editor.setWidgetValue(nodeId, 'intensity', 0.4, { ephemeral: true }) // skip command bus (no undo entry)
+```
+
+## Conditional visibility (`displayOptions.show`)
+
+Toggle widgets on and off from another widget's value — no imperative `setNodeWidgets` plumbing on the host side. The callback runs against `node.state` after every `setWidgetValue`; returning `false` hides the widget AND its pin row (only if disconnected — wired pins stay so the edge doesn't dangle).
+
+```ts
+widgets: [
+  { id: 'method', type: 'combo', key: 'method', label: '', values: ['GET', 'POST', 'PUT'] },
+  { id: 'body',   type: 'text',  key: 'body',   label: '', multiline: true,
+    displayOptions: { show: (state) => state.method !== 'GET' } },
+  { id: 'auth',   type: 'combo', key: 'auth',   label: '', values: ['none', 'basic', 'bearer'] },
+  { id: 'token',  type: 'text',  key: 'token',  label: '',
+    displayOptions: { show: (state) => state.auth === 'bearer' } },
+]
+```
+
+Fail-open: a `show` callback that throws is treated as visible — a schema bug must not blank the node.
+
+## Free-floating widgets (no pin)
+
+By default, a non-`custom` widget without a matching pin is dropped silently (it's probably a typo). To intentionally render an orphan widget — config fields with no external input (HTTP body, secret tokens, schema editors) — set `freeFloating: true`. It renders as a full-width body-band row under the pins:
+
+```ts
+{ id: 'apiKey', type: 'text', key: 'apiKey', label: '', placeholder: 'sk-…',
+  freeFloating: true }
+```
+
+`custom` widgets are free-floating automatically when their `key` doesn't match any pin.
+
+## Properties sidebar
+
+Flag any widget with `showInSidebar: true` to make it appear in the editor's docked properties panel as well. The SAME widget instance renders inline AND in the panel — no separate component:
+
+```ts
+widgets: [
+  { id: 'name',      type: 'text',   key: 'name',      label: '', showInSidebar: true },
+  { id: 'intensity', type: 'slider', key: 'intensity', label: '', min: 0, max: 1, showInSidebar: true },
+]
+```
+
+Open / close from your host UI:
+
+```ts
+editor.openSidebar(nodeId)
+editor.closeSidebar()
+editor.isSidebarOpen()
+editor.refreshSidebar()         // force a redraw after structural mutation
+```
+
+The sidebar is fully themable via `--xeno-*` CSS variables; it lives in `editor.overlayRoot`.
+
+## Custom widgets
+
+Two flavours: `canvas-draw` controllers (you paint into a 2D context, we render that to a sprite) and `dom-mount` controllers (you own a DOM element layered over the widget rect — great for React, Vue, Svelte islands).
+
+### Canvas-draw
+
+```ts
+editor.registerWidget('sparkline', {
+  draw(ctx, { value, node, width, height, accent, text }) {
+    const points = (value as number[]) ?? []
+    ctx.strokeStyle = accent
+    ctx.beginPath()
+    points.forEach((y, i) => {
+      const x = (i / (points.length - 1 || 1)) * width
+      const cy = height - y * height
+      if (i === 0) ctx.moveTo(x, cy); else ctx.lineTo(x, cy)
+    })
+    ctx.stroke()
+  },
+})
+
+// Reference it on the schema:
+widgets: [{ id: 'spark', type: 'custom', renderer: 'sparkline', key: 'samples', height: 80 }]
+```
+
+### DOM-mount (React / Vue / Svelte)
+
+```ts
+editor.registerWidget('reactPicker', {
+  isDom: true,
+  mount(host, { value, onCommit, accent }) {
+    const root = createRoot(host)
+    root.render(<MyPicker initial={value} accent={accent} onPick={onCommit} />)
+    return () => root.unmount()
+  },
+})
+```
+
+The host element is positioned over the widget rect and stays in sync as the node moves. `onCommit(newValue)` writes through `setWidgetValue` (with undo).
+
+## Live values on display widgets
+
+`visibility: 'always'` widgets read the live value from their wired upstream pin. Built-in widgets do this automatically; custom widgets receive it via the `value` arg every redraw. No subscription wiring on your side.
