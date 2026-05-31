@@ -11,16 +11,20 @@ export function getStaticPaths() {
 const { example } = Astro.props
 const base = import.meta.env.BASE_URL
 
-// Raw source for the "Show code" tabs, loaded at build time from two roots:
-//  - demo-react/src      → framework (React) wrapper components, referenced as `demos/Foo.tsx`
+// Raw source for the "Show code" tabs, loaded at build time from three roots:
+//  - demo-react/src      → React wrapper components, referenced as `demos/Foo.tsx`
 //  - shared (@xenolith/demo) → framework-agnostic cores reused by every framework, referenced as
 //    `shared/foo.ts` so the same source shows under each framework's Show Code.
-const REACT_RAW  = import.meta.glob('../../../../demo-react/src/**/*.{tsx,ts,css}', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
-const SHARED_RAW = import.meta.glob('../../../../shared/**/*.{ts,tsx,json}',        { query: '?raw', import: 'default', eager: true }) as Record<string, string>
+//  - apps/site/src/examples/vanilla → vanilla mounters, referenced as `vanilla/foo.ts`.
+const REACT_RAW   = import.meta.glob('../../../../demo-react/src/**/*.{tsx,ts,css}', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
+const SHARED_RAW  = import.meta.glob('../../../../shared/**/*.{ts,tsx,json}',        { query: '?raw', import: 'default', eager: true }) as Record<string, string>
+const VANILLA_RAW = import.meta.glob('../../examples/vanilla/**/*.{ts,tsx,css}',     { query: '?raw', import: 'default', eager: true }) as Record<string, string>
 const codeFor = (rel: string): string => {
   const raw = rel.startsWith('shared/')
     ? SHARED_RAW[`../../../../shared/${rel.slice('shared/'.length)}`]
-    : REACT_RAW[`../../../../demo-react/src/${rel}`]
+    : rel.startsWith('vanilla/')
+      ? VANILLA_RAW[`../../examples/vanilla/${rel.slice('vanilla/'.length)}`]
+      : REACT_RAW[`../../../../demo-react/src/${rel}`]
   return (raw ?? `// missing: ${rel}`).trimEnd()
 }
 const langOf = (rel: string): string => {
@@ -35,6 +39,9 @@ const files = Object.entries(example.impls).flatMap(([fw, impl]) =>
     lang: langOf(rel),
   })),
 )
+
+const hasReact   = !!example.impls.react
+const hasVanilla = !!example.impls.vanilla
 ---
 <ExamplesLayout title={`${example.title} — Examples`} activeId={example.id}>
   <a href={`${base}/examples/`} style="font-size:13px;color:#9a9a9a;text-decoration:none;">← All examples</a>
@@ -42,8 +49,32 @@ const files = Object.entries(example.impls).flatMap(([fw, impl]) =>
   <p style="margin:0 0 18px;color:#9a9a9a;max-width:70ch;">{example.blurb}</p>
 
   <DemoFrame example={example} files={files}>
-    <div data-fw="react" style="position:absolute;inset:0;">
-      <ReactExample id={example.id} client:only="react" />
-    </div>
+    {hasVanilla && (
+      <div data-fw="vanilla" style="position:absolute;inset:0;">
+        <div id={`xen-vanilla-${example.id}`} style="position:absolute;inset:0;"></div>
+      </div>
+    )}
+    {hasReact && (
+      <div data-fw="react" style="position:absolute;inset:0;">
+        <ReactExample id={example.id} client:only="react" />
+      </div>
+    )}
   </DemoFrame>
+
+  {hasVanilla && (
+    <script define:vars={{ id: example.id }}>
+      import('../../examples/VanillaMount.ts').then(async ({ mountVanillaExample }) => {
+        const target = document.getElementById(`xen-vanilla-${id}`)
+        if (!target) return
+        let dispose = await mountVanillaExample(id, target)
+        document.addEventListener('xeno:reset', async (e) => {
+          const detail = (e).detail
+          if (detail?.id && detail.id !== id) return
+          if (typeof dispose === 'function') dispose()
+          target.innerHTML = ''
+          dispose = await mountVanillaExample(id, target)
+        })
+      })
+    </script>
+  )}
 </ExamplesLayout>

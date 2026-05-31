@@ -40,6 +40,15 @@ export class CommandBus {
   readonly #log: LogEntry[] = []
   #cursor = 0
   #txBuffer: AppliedCommand[] | null = null
+  // Open group (G10 — Baklava rete-history-plugin parity). Unlike a transaction (synchronous
+  // scope via a fn), a group spans multiple top-level apply() calls and is closed either by an
+  // explicit `endGroup()` OR by an idle timer (every apply resets it). All applies between
+  // beginGroup → endGroup commit as ONE undo entry, even when interleaved with caller code
+  // returning to the event loop (drag-move per-frame ticks, rapid widget edits, etc.).
+  #groupBuffer: AppliedCommand[] | null = null
+  #groupLabel: string | undefined = undefined
+  #groupIdleMs = 0
+  #groupTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(ctx: CommandContext, opts: CommandBusOptions = {}) {
     this.#ctx = ctx
@@ -51,6 +60,9 @@ export class CommandBus {
     const applied: AppliedCommand = { command: command as Command<unknown>, result }
     if (this.#txBuffer) {
       this.#txBuffer.push(applied)
+    } else if (this.#groupBuffer) {
+      this.#groupBuffer.push(applied)
+      this.#bumpGroupIdle()
     } else {
       this.#truncateRedo()
       this.#log.push({ kind: 'single', entry: applied })
@@ -59,6 +71,42 @@ export class CommandBus {
     }
     this.#ctx.events.emit('command:applied', { command: applied.command, result })
     return result
+  }
+
+  /** Open a manual undo group: subsequent applies collapse into one entry until `endGroup()` or
+   *  the idle timer fires. Re-entrant: a second call while a group is open is a no-op (does NOT
+   *  reset the buffer). `idleTimeoutMs > 0` auto-flushes after that many ms of inactivity
+   *  (every apply resets the timer); `0` means "explicit endGroup only". */
+  beginGroup(opts: { label?: string; idleTimeoutMs?: number } = {}): void {
+    if (this.#groupBuffer || this.#txBuffer) return
+    this.#groupBuffer = []
+    this.#groupLabel = opts.label
+    this.#groupIdleMs = opts.idleTimeoutMs ?? 0
+    this.#bumpGroupIdle()
+  }
+
+  /** Close the active group. No-op if none open. Empty group leaves history untouched (no
+   *  zero-command entry). Idempotent — calling twice is safe. */
+  endGroup(): void {
+    if (!this.#groupBuffer) return
+    const buffer = this.#groupBuffer
+    this.#groupBuffer = null
+    this.#groupLabel = undefined
+    this.#groupIdleMs = 0
+    if (this.#groupTimer) { clearTimeout(this.#groupTimer); this.#groupTimer = null }
+    if (buffer.length === 0) return
+    this.#truncateRedo()
+    this.#log.push({ kind: 'tx', entries: buffer })
+    this.#cursor++
+    this.#enforceHistoryBound()
+    this.#ctx.events.emit('transaction:committed', { commands: buffer.map((e) => e.command) })
+  }
+
+  /** Auto-flush group after inactivity. Setting groupIdleMs:0 (or no timer source) opts out. */
+  #bumpGroupIdle(): void {
+    if (this.#groupIdleMs <= 0) return
+    if (this.#groupTimer) clearTimeout(this.#groupTimer)
+    this.#groupTimer = setTimeout(() => { this.endGroup() }, this.#groupIdleMs)
   }
 
   undo(): boolean {
@@ -99,6 +147,12 @@ export class CommandBus {
     // and still produce a SINGLE undoable history entry. Inner errors propagate so the outermost
     // handler rolls everything back atomically.
     if (this.#txBuffer) {
+      return fn()
+    }
+    // A group is the outer scope when one's open — fold the transaction's applies into the
+    // group buffer so endGroup() commits everything as ONE history entry. apply() already
+    // routes to #groupBuffer when no #txBuffer exists.
+    if (this.#groupBuffer) {
       return fn()
     }
     const buffer: AppliedCommand[] = []

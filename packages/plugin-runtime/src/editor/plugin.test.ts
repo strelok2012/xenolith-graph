@@ -122,8 +122,10 @@ describe('runtimePlugin', () => {
 
   it('pure math/array primitives carry the pure flag; flow/domain nodes do not', () => {
     const pure = PRIMITIVE_SCHEMAS.filter((s) => s.pure).map((s) => s.type).sort()
-    expect(pure).toEqual(['Add', 'Append', 'ArgMax', 'ArrayWrite', 'Const', 'Eq', 'FilterIndices', 'Gather', 'GatherFromInputs', 'GatherRecords', 'GetField', 'GetVar', 'Gt', 'Gte', 'Includes', 'Index', 'IndexAll', 'Length', 'MapField', 'Mean', 'Mul', 'ObjectGet', 'ScaleArray', 'Schema', 'Struct', 'Sub', 'ToMap', 'ZipAdd'])
+    expect(pure).toEqual(['Add', 'Append', 'ArgMax', 'ArrayWrite', 'Concat', 'Const', 'Eq', 'FilterIndices', 'Floor', 'Gather', 'GatherFromInputs', 'GatherRecords', 'GetField', 'GetVar', 'GraphInput', 'Gt', 'Gte', 'Includes', 'Index', 'IndexAll', 'Length', 'MapField', 'Mean', 'Mul', 'ObjectGet', 'ObjectSet', 'Repeat', 'ScaleArray', 'Schema', 'Struct', 'Sub', 'ToMap', 'ZipAdd'])
     expect(PRIMITIVE_SCHEMAS.find((s) => s.type === 'Output')?.pure).toBeUndefined()
+    expect(PRIMITIVE_SCHEMAS.find((s) => s.type === 'GraphOutput')?.pure).toBeUndefined()
+    expect(PRIMITIVE_SCHEMAS.find((s) => s.type === 'Local')?.pure).toBeUndefined() // Local has BOTH pure read and exec write — schema not marked pure (so write pins render)
     expect(PRIMITIVE_SCHEMAS.find((s) => s.type === 'Allocate')?.pure).toBeUndefined()
     expect(PRIMITIVE_SCHEMAS.find((s) => s.type === 'Tick')?.pure).toBeUndefined()
   })

@@ -33,7 +33,7 @@ export type { PlacedNode, CommentRect } from './comment-spatial.js'
 export { Selection } from './selection.js'
 export type { SelectionMode, SelectionChange } from './selection.js'
 
-export { NodeRegistry } from './node-registry.js'
+export { NodeRegistry, migrateNodePayload } from './node-registry.js'
 export type { NodeSchema, PinSchema, NodeSearchResult } from './node-registry.js'
 
 export { TypeRegistry } from './types-registry.js'
@@ -43,7 +43,7 @@ export { fuzzyMatch } from './fuzzy.js'
 export type { FuzzyMatch } from './fuzzy.js'
 
 export { REROUTE_TYPE, isReroute, createReroute, REROUTE_NODE_TYPE, rerouteNodeSchema } from './reroute.js'
-export { MACRO_TYPE, isMacro, createMacro, macroMembers, boundaryEdges, macroProxyPins, planMacroCollapse, planMacroExpand, flattenMacroProxies } from './macro.js'
+export { MACRO_TYPE, isMacro, createMacro, macroMembers, boundaryEdges, macroProxyPins, planMacroCollapse, planMacroExpand, flattenMacroProxies, disconnectedWidgetBoundPins } from './macro.js'
 export type { MacroBoundary, MacroProxyPin, MacroProxyRecord, MacroCollapsePlan, MacroExpandPlan, Minters } from './macro.js'
 
 export {
@@ -70,5 +70,5 @@ export type {
 export { flattenTemplateInstance, flattenAllTemplateInstances } from './template-flatten.js'
 export type { FlattenedTemplate, PinRef } from './template-flatten.js'
 
-export { defaultWidgetValue, widgetValue, clampWidgetValue, comboOptions, widgetVisibility, widgetBindKey } from './widget.js'
+export { defaultWidgetValue, widgetValue, clampWidgetValue, comboOptions, widgetVisibility, widgetBindKey, widgetIsVisible } from './widget.js'
 export type { WidgetSpec, WidgetType, WidgetStyle, ComboOption, ComboOptionResolved } from './widget.js'

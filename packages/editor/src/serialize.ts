@@ -156,20 +156,32 @@ function serializeComment(c: Readonly<Comment>): XenolithCommentV1 {
 }
 
 export function serializeXenolithGraph(input: SerializeInput): XenolithGraphV1 {
+  // H3 — deterministic output for clean git diffs. Sort every id-keyed collection by id BEFORE
+  // mapping to JSON. The runtime treats nodes/edges as sets, so order is semantically irrelevant
+  // — but insertion order leaked into the file, churning diffs whenever the user reordered nodes
+  // visually (move, paste, undo). Sort once at write time and noise vanishes.
+  const sortedNodes = [...input.nodes].sort((a, b) => String(a.id).localeCompare(String(b.id)))
+  const sortedEdges = [...input.edges].sort((a, b) => String(a.id).localeCompare(String(b.id)))
   const out: XenolithGraphV1 = {
     version: XENOLITH_GRAPH_VERSION,
-    nodes: input.nodes.map((n) => serializeNode(n, input.renderOpts.get(String(n.id) as NodeId))),
-    edges: input.edges.map((e) => serializeEdge(e, input.edgeOpts.get(String(e.id) as EdgeId))),
+    nodes: sortedNodes.map((n) => serializeNode(n, input.renderOpts.get(String(n.id) as NodeId))),
+    edges: sortedEdges.map((e) => serializeEdge(e, input.edgeOpts.get(String(e.id) as EdgeId))),
   }
-  if (input.comments && input.comments.length > 0) out.comments = input.comments.map(serializeComment)
+  if (input.comments && input.comments.length > 0) {
+    out.comments = [...input.comments].sort((a, b) => String(a.id).localeCompare(String(b.id))).map(serializeComment)
+  }
   if (input.categories && Object.keys(input.categories).length > 0) out.categories = { ...input.categories }
   if (input.templates && input.templates.length > 0) {
     const templates: Record<string, XenolithTemplateV1> = {}
-    for (const def of input.templates) {
+    // Sort template ids too — Records preserve insertion order in JSON.stringify so this matters.
+    const sortedDefs = [...input.templates].sort((a, b) => String(a.id).localeCompare(String(b.id)))
+    for (const def of sortedDefs) {
+      const defNodes = [...def.nodes].sort((a, b) => String(a.id).localeCompare(String(b.id)))
+      const defEdges = [...def.edges].sort((a, b) => String(a.id).localeCompare(String(b.id)))
       templates[String(def.id)] = {
         title: def.title,
-        nodes: def.nodes.map((n) => serializeNode(n, input.renderOpts.get(String(n.id) as NodeId))),
-        edges: def.edges.map((e) => serializeEdge(e, input.edgeOpts.get(String(e.id) as EdgeId))),
+        nodes: defNodes.map((n) => serializeNode(n, input.renderOpts.get(String(n.id) as NodeId))),
+        edges: defEdges.map((e) => serializeEdge(e, input.edgeOpts.get(String(e.id) as EdgeId))),
       }
     }
     out.templates = templates

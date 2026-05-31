@@ -78,6 +78,17 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Features',
+          translations: { ru: 'Возможности', zh: '功能' },
+          items: [
+            { slug: 'guides/widgets' },
+            { slug: 'guides/macros-templates' },
+            { slug: 'guides/events-commands' },
+            { slug: 'guides/save-export' },
+            { slug: 'guides/plugins' },
+          ],
+        },
+        {
           label: 'Customisation',
           translations: { ru: 'Кастомизация', zh: '自定义' },
           items: [

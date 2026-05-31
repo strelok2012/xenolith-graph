@@ -13,8 +13,9 @@ import '../styles/theme.css'
       html, body { margin: 0; padding: 0; height: 100%; background: #1A1A1A; color: #FFFFFF; overflow: hidden; }
       body { font-family: var(--xn-sans); }
       #app { position: fixed; inset: 0; }
+      /* Sits BELOW the hint (top-left was occluding the breadcrumb when diving into a template). */
       .playground-toolbar {
-        position: fixed; top: 16px; left: 16px; z-index: 10;
+        position: fixed; bottom: 64px; left: 16px; z-index: 10;
         display: flex; gap: 12px; align-items: center;
         font-family: var(--xn-display);
         font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;

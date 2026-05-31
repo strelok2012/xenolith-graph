@@ -8,6 +8,8 @@ export { asNumber, asBool, asArray } from './vm/value.js'
 export type { VmValue } from './vm/value.js'
 
 export { Allocate } from './model/allocate.js'
+export { mandelbrotPixelGraph, mandelbrotPixelReference } from './model/mandelbrot-graph.js'
+export { codegen } from './vm/codegen.js'
 
 export { runtimePlugin } from './editor/plugin.js'
 export { attachRuntimeBridge } from './editor/runtime-bridge.js'

@@ -16,7 +16,7 @@ import {
   type Node,
   type Edge,
 } from '@xenolith/core'
-import { createGraphEventBridge, type EditorEvents } from './events.js'
+import { createGraphEventBridge, firePreventable, type EditorEvents } from './events.js'
 
 function makeNode(): Node {
   return {
@@ -146,5 +146,45 @@ describe('createGraphEventBridge', () => {
     const h = harness(); h.record('node:added'); h.off()
     h.cmdBus.apply(new AddNode(makeNode()))
     expect(h.log).toEqual([])
+  })
+})
+
+describe('firePreventable (G3 — Baklava-style PreventableEvent)', () => {
+  it('returns true when no listener cancels (mutation should proceed)', () => {
+    const bus = new EventEmitter<EditorEvents>()
+    const proceed = firePreventable(bus, 'node:removing', { nodeId: 'n1' as never })
+    expect(proceed).toBe(true)
+  })
+
+  it('returns false when ANY listener calls cancel() (mutation must abort)', () => {
+    const bus = new EventEmitter<EditorEvents>()
+    bus.on('node:removing', (p) => p.cancel())
+    expect(firePreventable(bus, 'node:removing', { nodeId: 'n1' as never })).toBe(false)
+  })
+
+  it('per-call cancel is isolated — a previous emit cancelling does not poison the next', () => {
+    const bus = new EventEmitter<EditorEvents>()
+    bus.on('edge:connecting', (p) => {
+      if ((p.edge as unknown as { id: string }).id === 'bad') p.cancel()
+    })
+    const bad = firePreventable(bus, 'edge:connecting', { edge: { id: 'bad' } as never })
+    const good = firePreventable(bus, 'edge:connecting', { edge: { id: 'ok' } as never })
+    expect(bad).toBe(false)
+    expect(good).toBe(true)
+  })
+
+  it('cancel is idempotent — multiple listeners cancelling is the same as one', () => {
+    const bus = new EventEmitter<EditorEvents>()
+    bus.on('edge:disconnecting', (p) => p.cancel())
+    bus.on('edge:disconnecting', (p) => p.cancel())
+    expect(firePreventable(bus, 'edge:disconnecting', { edgeId: 'e1' as never })).toBe(false)
+  })
+
+  it('payload is passed through to the listener (plus a cancel() method)', () => {
+    const bus = new EventEmitter<EditorEvents>()
+    let seen: { nodeId: unknown; cancel: unknown } | null = null
+    bus.on('node:removing', (p) => { seen = { nodeId: p.nodeId, cancel: typeof p.cancel } })
+    firePreventable(bus, 'node:removing', { nodeId: 'abc' as never })
+    expect(seen).toEqual({ nodeId: 'abc', cancel: 'function' })
   })
 })

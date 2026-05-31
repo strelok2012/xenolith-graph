@@ -39,6 +39,13 @@ export interface RtEdge {
 export interface RtGraph {
   nodes: ReadonlyArray<RtNode>
   edges: ReadonlyArray<RtEdge>
+  /** Optional codegen hint: which vars are inputs (passed as fn args), which are outputs (returned).
+   *  Enables the AS-WASM emitter to expose an extra `tickArgs(...inputs): firstOutput` entry point
+   *  that bypasses set/getVar — measurable win when host calls tick per-pixel in a hot loop. */
+  meta?: {
+    inputs?: ReadonlyArray<string>
+    outputs?: ReadonlyArray<string>
+  }
 }
 
 /** Context for a pure node: read the i-th data input (pulled), widget literals, and variables.
@@ -69,6 +76,10 @@ export interface NodeDef {
   evalPure?(io: PureIO): Array<VmValue | undefined>
   /** Impure node: perform effects and drive exec flow via `io.flow(...)`. */
   run?(io: ExecIO): void
+  /** Optional pre-tick hook — invoked once per node BEFORE any exec entries fire this tick. Used by
+   *  `Local` to reset its var slot to `state.initial` (tick-scoped state semantics). Receives an
+   *  ExecIO restricted to var writes (input/output/flow are no-ops at this stage). */
+  onTickBegin?(io: ExecIO): void
 }
 
 const MAX_PULL_DEPTH = 100_000
@@ -170,6 +181,19 @@ export class Runtime {
           const target = pin && execTarget.get(`${node.id}:${pin.id}`)
           if (target) runExec(target)
         },
+      })
+    }
+
+    // Pre-tick pass: fire `onTickBegin` for every node whose def declares one. Used by `Local` to
+    // reset its var slot to `state.initial` before any exec entry runs.
+    for (const node of graph.nodes) {
+      const def = this.#defs.get(node.type)
+      if (!def?.onTickBegin) continue
+      def.onTickBegin({
+        ...this.#pureIO(node, resolveInput, resolveInputAll, 0),
+        setVar: (name, value) => this.#vars.set(name, value),
+        setOutput: () => { /* no-op pre-tick */ },
+        flow:      () => { /* no-op pre-tick */ },
       })
     }
 

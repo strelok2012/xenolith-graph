@@ -29,7 +29,7 @@ export { renderWidgets, computeWidgetRects, resolveWidgetStyle, widgetCssVars, t
 export type { WidgetRect, WidgetHit, WidgetsView, WidgetLayoutTokens, ComputeWidgetRectsCtx, ResolvedWidgetStyle, CustomWidgetController, CanvasWidgetController, DomWidgetController, CustomWidgetContext } from './widget-renderer.js'
 
 export { renderEdge, drawEdge } from './edge-renderer.js'
-export type { RenderEdgeOptions } from './edge-renderer.js'
+export type { RenderEdgeOptions, EdgePathStyle } from './edge-renderer.js'
 
 export {
   screenToWorld,

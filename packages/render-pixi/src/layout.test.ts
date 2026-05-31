@@ -294,6 +294,48 @@ describe('measureNodeSize — widgets (canon: every widget binds to a pin; butto
     expect(measureNodeSize(orphan, 'X', WIDGET_TOKENS, fakeMeasure).y)
       .toBe(measureNodeSize(bare, 'X', WIDGET_TOKENS, fakeMeasure).y)
   })
+
+  // A1 — displayOptions.show. A pin-bound widget that's currently hidden by displayOptions takes
+  // its pin row with it (when the pin is disconnected — a wired pin stays visible so the edge
+  // doesn't dangle in space).
+  it('a widget hidden by displayOptions.show collapses its (disconnected) pin row entirely', () => {
+    const pins = [labelledPin('in', 'always'), labelledPin('in', 'sometimes'), labelledPin('out', 'self')]
+    const node3rows: Node = {
+      ...base, pins,
+      widgets: [
+        { id: 'a', type: 'text', label: '', key: 'always' },
+        { id: 's', type: 'text', label: '', key: 'sometimes',
+          displayOptions: { show: () => true } },
+      ],
+    }
+    const nodeHidden: Node = {
+      ...base, pins,
+      widgets: [
+        { id: 'a', type: 'text', label: '', key: 'always' },
+        { id: 's', type: 'text', label: '', key: 'sometimes',
+          displayOptions: { show: () => false } },
+      ],
+    }
+    const h3 = measureNodeSize(node3rows, 'X', WIDGET_TOKENS, fakeMeasure).y
+    const h2 = measureNodeSize(nodeHidden, 'X', WIDGET_TOKENS, fakeMeasure).y
+    // One full pin row's worth of height should be reclaimed (widget rowHeight + rowSpacing).
+    expect(h3).toBeGreaterThan(h2)
+  })
+
+  it('a wired hidden widget keeps its pin row (we never orphan an edge endpoint visually)', () => {
+    // Two inputs so an extra row truly adds a vertical slot (not just pairs with an output).
+    const pins = [labelledPin('in', 'always'), labelledPin('in', 'wired')]
+    const widgets = [
+      { id: 'a', type: 'text' as const, label: '', key: 'always' },
+      { id: 'w', type: 'text' as const, label: '', key: 'wired',
+        displayOptions: { show: (): boolean => false } },
+    ]
+    const n: Node = { ...base, pins, widgets }
+    const onlyWiredConnected = (k: string): boolean => k === 'wired'
+    const hDisconnected = measureNodeSize(n, 'X', WIDGET_TOKENS, fakeMeasure, () => false).y
+    const hConnected    = measureNodeSize(n, 'X', WIDGET_TOKENS, fakeMeasure, onlyWiredConnected).y
+    expect(hConnected).toBeGreaterThan(hDisconnected)
+  })
 })
 
 describe('computeNodeLayout — exec pins at top (UE layout)', () => {

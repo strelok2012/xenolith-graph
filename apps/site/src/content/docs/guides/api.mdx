@@ -60,7 +60,11 @@ editor.insertNode('Transform', midpoint, { center: true })  // centre on the poi
 // Split an edge with an inline reroute knot at a world point.
 editor.insertRerouteOnEdge(edgeId, worldPos)
 
-// Remove just one edge; dangling inline reroutes are cleaned up automatically.
+// Disconnect an edge — preventable through the `edge:disconnecting` event (no cleanup of dangling
+// inline reroutes; use `deleteEdge` for that destructive variant).
+editor.disconnectEdge(edgeId)
+
+// Hard-delete one edge; dangling inline reroutes are removed too.
 editor.deleteEdge(edgeId)
 ```
 

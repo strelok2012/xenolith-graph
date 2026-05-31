@@ -13,14 +13,25 @@ import {
 
 /** The public event surface of the editor — observe these via `editor.on(name, handler)`.
  *  Graph-mutation events fire on every path that changes the graph (programmatic API, palette
- *  insert, paste, drag-commit, AND undo/redo), because they are bridged off the command bus. */
+ *  insert, paste, drag-commit, AND undo/redo), because they are bridged off the command bus.
+ *  Names ending with `-ing` (`edge:connecting`, `node:removing`) are PRE-mutation and accept a
+ *  veto: any listener that calls `payload.cancel()` aborts the mutation before it lands in the
+ *  command bus. They fire ONLY on user-driven paths (public API + interactive commit), not on
+ *  internal machinery (macro re-collapse, undo/redo of an already-vetoed nothing). */
 export type EditorEvents = {
   'node:added': { node: Readonly<Node> }
   'node:removed': { nodeId: NodeId }
+  'node:removing': PreventablePayload<{ nodeId: NodeId }>
   'node:moved': { nodeId: NodeId; position: Vec2 }
   'node:click': { nodeId: NodeId }
+  /** Pre-click hook (H7 — Rete `addPipe` interception parity). Listeners can `cancel()` to
+   *  suppress the click and its side effects (selection change, drag init, dive-on-instance).
+   *  Fires only for interactive clicks; programmatic `setSelection` doesn't go through this. */
+  'node:clicking': PreventablePayload<{ nodeId: NodeId }>
   'edge:connected': { edge: Readonly<Edge> }
   'edge:disconnected': { edgeId: EdgeId }
+  'edge:connecting': PreventablePayload<{ edge: Readonly<Edge> }>
+  'edge:disconnecting': PreventablePayload<{ edgeId: EdgeId }>
   'selection:changed': { nodeIds: readonly NodeId[] }
   'viewport:changed': { x: number; y: number; zoom: number }
   'widget:changed': { nodeId: NodeId; widgetId: string; value: unknown }
@@ -30,6 +41,45 @@ export type EditorEvents = {
   /** Fired when diving into / out of a template definition. `depth` 0 is the root document;
    *  `definitionId` is the definition currently displayed (null at the root). */
   'dive:changed': { depth: number; definitionId: string | null }
+  /** Properties sidebar opened — `nodeId` is the node whose widgets the panel now shows. */
+  'sidebar:opened': { nodeId: NodeId }
+  /** Properties sidebar closed (close button OR programmatic). */
+  'sidebar:closed': Record<string, never>
+  /** Files / DataTransfer items dropped on a node (HTML5 DnD). `nodeId` is the node under the
+   *  drop point (null if the drop landed on empty canvas). Hosts wire image / file uploaders
+   *  through this — e.g. dropping a PNG on a `LoadImage` node sets its state from the file. */
+  'node:drop': {
+    nodeId: NodeId | null
+    files: readonly File[]
+    /** Plain-text payload from `DataTransfer.getData('text/plain')` when the user drops text. */
+    text: string | null
+    /** Every `DataTransfer.types` entry with its `getData()` payload — useful when the user drags
+     *  a URL (text/uri-list), HTML snippet (text/html), or app-specific MIME (application/json).
+     *  Files live in `files` instead; this map only carries string types. */
+    items: Readonly<Record<string, string>>
+    /** World-space drop coordinates so hosts can spawn a new node when nodeId is null. */
+    position: { x: number; y: number }
+  }
+  /** Live Mode flipped (G12). Hosts watching this hide their own panels (palette, toolbars). */
+  'livemode:changed': { live: boolean }
+}
+
+/** Common shape for `*-ing` preventable events. Listeners call `cancel()` to abort. */
+export type PreventablePayload<T> = T & { cancel: () => void }
+
+/** Emit a preventable event and report whether ANY listener cancelled it. The caller passes the
+ *  base payload; this helper attaches a fresh `cancel()` closure, so a single listener calling
+ *  cancel can't accidentally affect a subsequent emit. Returns `true` when the mutation should
+ *  proceed, `false` when at least one listener vetoed. */
+export function firePreventable<E extends 'edge:connecting' | 'edge:disconnecting' | 'node:removing' | 'node:clicking'>(
+  bus: EventEmitter<EditorEvents>,
+  event: E,
+  payload: Omit<EditorEvents[E], 'cancel'>,
+): boolean {
+  let cancelled = false
+  const full = { ...payload, cancel: () => { cancelled = true } } as EditorEvents[E]
+  bus.emit(event, full)
+  return !cancelled
 }
 
 interface BridgeOptions {

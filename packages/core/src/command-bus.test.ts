@@ -318,3 +318,94 @@ describe('CommandBus — context', () => {
 let _beforeEach: typeof beforeEach
 _beforeEach = beforeEach
 void _beforeEach
+
+describe('CommandBus — groups (G10 — Baklava rete-history-plugin parity)', () => {
+  it('beginGroup + endGroup collapses N applies into ONE undo entry', () => {
+    const { ctx, ops } = makeContext()
+    const bus = new CommandBus(ctx)
+    bus.beginGroup({ label: 'drag-move' })
+    bus.apply(makeOpCmd('A', ops))
+    bus.apply(makeOpCmd('B', ops))
+    bus.apply(makeOpCmd('C', ops))
+    bus.endGroup()
+    expect(bus.canUndo()).toBe(true)
+    // One undo restores all three (in reverse order).
+    bus.undo()
+    expect(ops.undone).toEqual(['C', 'B', 'A'])
+    expect(bus.canUndo()).toBe(false)
+  })
+
+  it('endGroup with no applies leaves the history untouched (no empty entry)', () => {
+    const { ctx } = makeContext()
+    const bus = new CommandBus(ctx)
+    bus.beginGroup()
+    bus.endGroup()
+    expect(bus.canUndo()).toBe(false)
+  })
+
+  it('redundant beginGroup is a no-op (re-entrant safe — does NOT reset the buffer)', () => {
+    const { ctx, ops } = makeContext()
+    const bus = new CommandBus(ctx)
+    bus.beginGroup()
+    bus.apply(makeOpCmd('A', ops))
+    bus.beginGroup()                                     // ignored — group already open
+    bus.apply(makeOpCmd('B', ops))
+    bus.endGroup()
+    bus.undo()
+    expect(ops.undone).toEqual(['B', 'A'])
+  })
+
+  it('idleTimeoutMs auto-flushes the group after inactivity', async () => {
+    const { ctx, ops } = makeContext()
+    const bus = new CommandBus(ctx)
+    bus.beginGroup({ idleTimeoutMs: 10 })
+    bus.apply(makeOpCmd('A', ops))
+    bus.apply(makeOpCmd('B', ops))
+    // No more applies → group auto-flushes when the idle timer fires.
+    await new Promise((r) => setTimeout(r, 30))
+    expect(bus.canUndo()).toBe(true)
+    // A fresh apply AFTER the auto-flush should land in its OWN entry, not piggyback on the group.
+    bus.apply(makeOpCmd('C', ops))
+    bus.undo()                                           // restores C
+    expect(ops.undone).toEqual(['C'])
+    bus.undo()                                           // restores the AB group
+    expect(ops.undone).toEqual(['C', 'B', 'A'])
+  })
+
+  it('each apply resets the idle timer (rapid drag stays in one group)', async () => {
+    const { ctx, ops } = makeContext()
+    const bus = new CommandBus(ctx)
+    bus.beginGroup({ idleTimeoutMs: 20 })
+    for (let i = 0; i < 5; i++) {
+      bus.apply(makeOpCmd(`M${i}`, ops))
+      await new Promise((r) => setTimeout(r, 10))        // shorter than the idle window
+    }
+    bus.endGroup()
+    bus.undo()
+    expect(ops.undone.length).toBe(5)
+  })
+
+  it('transaction() inside an open group still merges (transactions win — single nesting policy)', () => {
+    const { ctx, ops } = makeContext()
+    const bus = new CommandBus(ctx)
+    bus.beginGroup()
+    bus.apply(makeOpCmd('A', ops))
+    bus.transaction(() => {
+      bus.apply(makeOpCmd('B', ops))
+      bus.apply(makeOpCmd('C', ops))
+    })
+    bus.endGroup()
+    bus.undo()
+    expect(ops.undone).toEqual(['C', 'B', 'A'])
+  })
+
+  it('endGroup is idempotent — calling it twice doesn’t double-emit or crash', () => {
+    const { ctx, ops } = makeContext()
+    const bus = new CommandBus(ctx)
+    bus.beginGroup()
+    bus.apply(makeOpCmd('A', ops))
+    bus.endGroup()
+    expect(() => bus.endGroup()).not.toThrow()
+    expect(bus.canUndo()).toBe(true)
+  })
+})

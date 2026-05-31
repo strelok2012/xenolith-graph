@@ -220,6 +220,59 @@ describe('planTemplateUnpack', () => {
     // No outer edges → no rewired edges (the internal w1/w2 are boundary wires, dropped).
     expect(r.addEdges).toEqual([])
   })
+
+  // Regression for image #35 — two consecutive unpacks lose cross-group edges.
+  // When a definition contains a nested $templateInstance, inlining it mints fresh ids for the
+  // member node + its pins. The nested instance's `state.pinBoundary` is keyed by its OWN instance
+  // pin ids (which just got reminted). If we don't remap those keys via pinRemap, a follow-up unpack
+  // of the inlined nested instance can't translate its outer edges through pinBoundary → cross-group
+  // edges that previously bridged the two instances silently vanish.
+  it('remaps pinBoundary keys of an inlined nested $templateInstance to its fresh pin ids', () => {
+    // Outer definition contains ONE nested template instance with its own pinBoundary referencing
+    // the nested def's boundary nodes by id.
+    const nestedInstance: Node = {
+      id: 'nest' as NodeId, type: TEMPLATE_INSTANCE_TYPE,
+      position: { x: 0, y: 0 },
+      state: { definitionId: 'inner-def', pinBoundary: { nest_in: 'inner_ti', nest_out: 'inner_to' } },
+      pins: [
+        { id: 'nest_in' as PinId, kind: 'data', direction: 'in', type: 'float', multiple: false },
+        { id: 'nest_out' as PinId, kind: 'data', direction: 'out', type: 'float', multiple: true },
+      ],
+    }
+    const outerDef: TemplateDefinition = {
+      id: 'd_outer' as TemplateDefId, title: 'Outer',
+      nodes: [
+        nestedInstance,
+        node('ti', TEMPLATE_INPUT_TYPE, [{ id: 'ti_o', dir: 'out' }]),
+        node('to', TEMPLATE_OUTPUT_TYPE, [{ id: 'to_i', dir: 'in' }]),
+      ],
+      edges: [
+        edge('w1', ['ti', 'ti_o'], ['nest', 'nest_in']),
+        edge('w2', ['nest', 'nest_out'], ['to', 'to_i']),
+      ],
+    }
+    const outerInstance: Node = {
+      id: 'inst' as NodeId, type: TEMPLATE_INSTANCE_TYPE,
+      position: { x: 0, y: 0 },
+      state: { definitionId: 'd_outer', pinBoundary: { inP: 'ti', outP: 'to' } },
+      pins: [
+        { id: 'inP' as PinId, kind: 'data', direction: 'in', type: 'float', multiple: false },
+        { id: 'outP' as PinId, kind: 'data', direction: 'out', type: 'float', multiple: true },
+      ],
+    }
+    const r = planTemplateUnpack(outerInstance, outerDef, [], minters())
+    const inlinedNest = r.addNodes.find((n) => n.type === TEMPLATE_INSTANCE_TYPE)
+    expect(inlinedNest).toBeDefined()
+    // Fresh pin ids on the inlined nested instance:
+    const freshInPin = inlinedNest!.pins.find((pp) => pp.direction === 'in')!.id
+    const freshOutPin = inlinedNest!.pins.find((pp) => pp.direction === 'out')!.id
+    const remappedBoundary = inlinedNest!.state['pinBoundary'] as Record<string, string>
+    // Keys must use the FRESH pin ids, not the old ones. Values still point at the nested def's
+    // boundary node ids (those live in a different namespace and don't change).
+    expect(Object.keys(remappedBoundary).sort()).toEqual([String(freshInPin), String(freshOutPin)].sort())
+    expect(remappedBoundary[String(freshInPin)]).toBe('inner_ti')
+    expect(remappedBoundary[String(freshOutPin)]).toBe('inner_to')
+  })
 })
 
 describe('templateInterface + materializeInterface', () => {

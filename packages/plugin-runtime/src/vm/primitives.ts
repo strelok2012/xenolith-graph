@@ -65,6 +65,25 @@ const ForEach: NodeDef = {
   },
 }
 
+/** Counted loop with optional cond gate. Inputs: (max iterations, cond — re-evaluated per iter).
+ *  Outputs: (index = current iteration). Exec-outs: body (per iter), done (after).
+ *  Pseudocode: `for (i=0; i<max; i++) { if (!cond) break; emit(i); flow(body) }; flow(done)`.
+ *  The cond is a DATA pin — its source is re-pulled (and any pure deps re-evaluated) every iter,
+ *  so a cond reading vars/Output overrides reflects the body's writes. */
+const Loop: NodeDef = {
+  type: 'Loop',
+  run: (io) => {
+    const max = Math.floor(asNumber(io.input(0)))
+    for (let i = 0; i < max; i++) {
+      // Re-pull cond each iter — picks up vars the body may have just written.
+      if (!asBool(io.input(1))) break
+      io.setOutput(0, i)
+      io.flow(0)
+    }
+    io.flow(1)
+  },
+}
+
 /** Write a variable (name from the `name` widget) = input 0; then continue (exec-out 0). */
 const SetVar: NodeDef = {
   type: 'SetVar',
@@ -81,6 +100,57 @@ const GetVar: NodeDef = {
   type: 'GetVar',
   pure: true,
   evalPure: (io) => [io.getVar(String(io.state('name') ?? '')) ?? 0],
+}
+
+/** Declared graph input. Semantically identical to `GetVar` (reads the var named `state.name`) —
+ *  the distinction lets the AS-WASM codegen auto-collect the graph's input list for `tickArgs(...)`
+ *  without the caller having to populate `RtGraph.meta.inputs` by hand. Host can set the var
+ *  before tick via `runtime.setVar(name, value)` exactly like GetVar; codegen path is unchanged. */
+const GraphInput: NodeDef = {
+  type: 'GraphInput',
+  pure: true,
+  evalPure: (io) => [io.getVar(String(io.state('name') ?? '')) ?? 0],
+}
+
+/** Declared graph output. Semantically `SetVar` — writes input(0) to the var named `state.name`,
+ *  then continues. AS-WASM codegen treats every GraphOutput as an entry in `meta.outputs`. */
+const GraphOutput: NodeDef = {
+  type: 'GraphOutput',
+  run: (io) => {
+    const name = String(io.state('name') ?? '')
+    if (name) io.setVar(name, io.input(0) ?? 0)
+    io.flow(0)
+  },
+}
+
+/** Tick-scoped state cell — one visible node that owns a named slot. Pure read pin + exec write
+ *  pin live on the same node, so every read/write of `zx` (etc.) is wired to the SAME box, instead
+ *  of being scattered across 8 `GetVar("zx")` nodes the reader has to mentally union.
+ *
+ *  Resets to `state.initial ?? 0` at the start of every tick — semantics for loop-local accumulators
+ *  (the common case). Use `SetVar`/`GetVar` if you need state that survives across ticks.
+ *
+ *  Pin order (contract for index-addressed interpreter):
+ *    0: ein  (exec write)        1: din 'set'  (write value)
+ *    2: eo  (continue)           3: dout 'value' (pure read) */
+const Local: NodeDef = {
+  type: 'Local',
+  // Pre-tick: seed the var slot to `initial`. Runs once before any exec entry so the body of
+  // this tick sees a fresh cell — regardless of what was written last tick.
+  onTickBegin: (io) => {
+    const name = String(io.state('name') ?? '')
+    if (name) io.setVar(name, Number(io.state('initial') ?? 0))
+  },
+  evalPure: (io) => {
+    const name = String(io.state('name') ?? '')
+    if (!name) return [0]
+    return [io.getVar(name) ?? Number(io.state('initial') ?? 0)]
+  },
+  run: (io) => {
+    const name = String(io.state('name') ?? '')
+    if (name) io.setVar(name, io.input(0) ?? 0)
+    io.flow(0)
+  },
 }
 
 /** Literal from the `value` widget. */
@@ -249,6 +319,52 @@ const FilterIndices: NodeDef = {
   },
 }
 
+/** Math.floor(n). Non-number → 0. */
+const Floor: NodeDef = {
+  type: 'Floor',
+  pure: true,
+  evalPure: (io) => [Math.floor(asNumber(io.input(0)))],
+}
+
+/** Repeat `item` `count` times → array. Non-integer count is floored. Negative/zero → []. */
+const Repeat: NodeDef = {
+  type: 'Repeat',
+  pure: true,
+  evalPure: (io) => {
+    const item = io.input(0) as VmValue
+    const count = Math.floor(asNumber(io.input(1)))
+    if (count <= 0 || !Number.isFinite(count)) return [[]]
+    const out: VmValue[] = new Array(count)
+    for (let i = 0; i < count; i++) out[i] = item
+    return [out as VmValue]
+  },
+}
+
+/** Immutable `{...obj, [key]: value}`. Non-object → `{[key]: value}`. */
+const ObjectSet: NodeDef = {
+  type: 'ObjectSet',
+  pure: true,
+  evalPure: (io) => {
+    const obj = io.input(0)
+    const key = io.input(1)
+    const value = io.input(2) as VmValue
+    const k = String(key)
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return [{ [k]: value } as VmValue]
+    return [{ ...(obj as Record<string, VmValue>), [k]: value }]
+  },
+}
+
+/** Concatenate two arrays. Non-array sides treated as empty. */
+const Concat: NodeDef = {
+  type: 'Concat',
+  pure: true,
+  evalPure: (io) => {
+    const a = Array.isArray(io.input(0)) ? (io.input(0) as VmValue[]) : []
+    const b = Array.isArray(io.input(1)) ? (io.input(1) as VmValue[]) : []
+    return [[...a, ...b]]
+  },
+}
+
 /** a > b → bool. Numeric compare. */
 const Gt: NodeDef = {
   type: 'Gt',
@@ -322,6 +438,7 @@ const Mean: NodeDef = {
 
 /** The starter primitive set. */
 export const BUILTIN_PRIMITIVES: NodeDef[] = [
-  Tick, Init, Spawn, Sequence, Branch, ForEach, SetVar, GetVar, Const, Struct, Schema, Add, Sub, Mul, ZipAdd, ScaleArray, Length, Mean,
+  Tick, Init, Spawn, Sequence, Branch, ForEach, Loop, SetVar, GetVar, Local, GraphInput, GraphOutput, Const, Struct, Schema, Add, Sub, Mul, ZipAdd, ScaleArray, Length, Mean,
   Index, ArrayWrite, Includes, ArgMax, FilterIndices, ObjectGet, IndexAll, Append, Gt, Gte, Eq,
+  Floor, Repeat, ObjectSet, Concat,
 ]

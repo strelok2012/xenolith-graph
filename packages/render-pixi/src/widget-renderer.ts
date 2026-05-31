@@ -1,5 +1,5 @@
 import { BitmapText, Container, Graphics, Sprite, Text, Texture } from 'pixi.js'
-import { comboOptions, widgetValue, widgetVisibility, widgetBindKey, type Node, type WidgetSpec, type WidgetStyle } from '@xenolith/core'
+import { comboOptions, widgetValue, widgetVisibility, widgetBindKey, widgetIsVisible, type Node, type WidgetSpec, type WidgetStyle } from '@xenolith/core'
 import type { XenTokens } from '@xenolith/theme-xen'
 import { pinRowCount, pinRowHeights, pinBandHeight, pinRowCenterY, pinRowIndexFor, isFreeFloating } from './layout.js'
 
@@ -156,6 +156,20 @@ export interface ComputeWidgetRectsCtx {
   pinLiveValue?: (pinKey: string) => unknown
 }
 
+/** Pick the value a widget should display this frame. The contract: a widget bound to an IN-pin
+ *  with `visibility:'always'` is a DISPLAY widget — when the pin is wired it shows the upstream
+ *  runtime value (via the host's `pinLiveValue` callback); otherwise it shows its stored state.
+ *  Applies to BOTH custom and built-in widgets (slider/number/text/combo/color/toggle) — the
+ *  promise is the same regardless of widget type. */
+export function resolveDisplayValue(spec: WidgetSpec, node: Node, ctx?: { isPinConnected: (k: string) => boolean; pinLiveValue?: (k: string) => unknown }): unknown {
+  const bind = widgetBindKey(spec)
+  if (bind && widgetVisibility(spec) === 'always' && ctx?.isPinConnected(bind) && ctx?.pinLiveValue) {
+    const live = ctx.pinLiveValue(bind)
+    if (live !== undefined) return live
+  }
+  return widgetValue(node, spec)
+}
+
 /** Local-space rects for every visible widget. The canon: every widget is bound to one IN-pin
  *  (via `widgetBindKey`) and renders INSIDE that pin's row — pin dot + label on the left, control
  *  on the right. `button` widgets aren't pin-bound — they stack in an "actions row" under the pin
@@ -180,6 +194,7 @@ export function computeWidgetRects(node: Node, width: number, tokens: WidgetLayo
   // Pass 1 — free-floating custom widgets (body band).
   for (const w of node.widgets) {
     if (!isFreeFloating(node, w)) continue
+    if (!widgetIsVisible(w, node)) continue
     const h = w.type === 'custom' ? (w.height ?? tokens.widget.rowHeight) : tokens.widget.rowHeight
     out.push({ id: w.id, x: padX, y: bandY, width: width - padX * 2, height: h })
     bandY += h + tokens.widget.gap
@@ -188,6 +203,7 @@ export function computeWidgetRects(node: Node, width: number, tokens: WidgetLayo
   let actionsY = bandY
   for (const w of node.widgets) {
     if (w.type !== 'button') continue
+    if (!widgetIsVisible(w, node)) continue
     const h = tokens.widget.rowHeight
     out.push({ id: w.id, x: padX, y: actionsY, width: width - padX * 2, height: h })
     actionsY += h + tokens.widget.gap
@@ -197,7 +213,7 @@ export function computeWidgetRects(node: Node, width: number, tokens: WidgetLayo
     if (w.type === 'button' || isFreeFloating(node, w)) continue
     const bindKey = widgetBindKey(w)
     if (bindKey === undefined) continue
-    const visible = widgetVisibility(w) === 'always' || !(ctx?.isPinConnected(bindKey))
+    const visible = (widgetVisibility(w) === 'always' || !(ctx?.isPinConnected(bindKey))) && widgetIsVisible(w, node)
     if (!visible) continue
     const rowIdx = pinRowIndexFor(node, bindKey)
     if (rowIdx === undefined) continue // pin not found OR hoisted into header — nowhere to host it
@@ -295,18 +311,7 @@ export function renderWidgets(
         c2d.restore()
         tex.source.update()
       }
-      // Display widgets read live pin values when their bound pin is wired (visibility:'always'
-      // + pin connected → upstream runtime value); fall back to stored state otherwise. Default
-      // value-input customs still use state.
-      const initial = (() => {
-        const bind = widgetBindKey(spec)
-        if (bind && widgetVisibility(spec) === 'always' && ctx?.isPinConnected(bind) && ctx?.pinLiveValue) {
-          const live = ctx.pinLiveValue(bind)
-          if (live !== undefined) return live
-        }
-        return widgetValue(node, spec)
-      })()
-      redraw(initial)
+      redraw(resolveDisplayValue(spec, node, ctx))
       byId.set(rect.id, { spec, redraw })
       continue
     }
@@ -441,7 +446,7 @@ export function renderWidgets(
           break
       }
     }
-    redraw(widgetValue(node, spec))
+    redraw(resolveDisplayValue(spec, node, ctx))
     byId.set(rect.id, { spec, redraw })
   }
 

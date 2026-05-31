@@ -487,3 +487,71 @@ describe('Append', () => {
   })
   it('non-array input treated as empty', () => expect(run1(null, 'x')).toEqual(['x']))
 })
+
+describe('Floor', () => {
+  const run1 = (v: number): unknown => {
+    const g: RtGraph = {
+      nodes: [tick(), constN('v', v), node('x', 'Floor', [din('v'), dout('out')]), setVar('s', 'r')],
+      edges: [edge('tick', 'out', 's', 'in'), edge('v', 'out', 'x', 'v'), edge('x', 'out', 's', 'value')],
+    }
+    return run(g).getVar('r')
+  }
+  it('positive: rounds toward 0', () => expect(run1(3.7)).toBe(3))
+  it('integer: unchanged',         () => expect(run1(5)).toBe(5))
+  it('negative: rounds toward -∞', () => expect(run1(-1.2)).toBe(-2))
+  it('zero',                       () => expect(run1(0)).toBe(0))
+})
+
+describe('Repeat', () => {
+  const run1 = (item: unknown, count: number): unknown => {
+    const g: RtGraph = {
+      nodes: [tick(), constN('i', item), constN('c', count),
+        node('x', 'Repeat', [din('i'), din('c'), dout('out')]), setVar('s', 'r')],
+      edges: [edge('tick', 'out', 's', 'in'),
+        edge('i', 'out', 'x', 'i'), edge('c', 'out', 'x', 'c'),
+        edge('x', 'out', 's', 'value')],
+    }
+    return run(g).getVar('r')
+  }
+  it('repeats item N times', () => expect(run1('gift', 3)).toEqual(['gift', 'gift', 'gift']))
+  it('zero count → empty',   () => expect(run1('gift', 0)).toEqual([]))
+  it('negative count → empty', () => expect(run1('gift', -1)).toEqual([]))
+  it('non-integer count: floored', () => expect(run1('gift', 2.7)).toEqual(['gift', 'gift']))
+})
+
+describe('ObjectSet', () => {
+  const run1 = (obj: unknown, key: unknown, value: unknown): unknown => {
+    const g: RtGraph = {
+      nodes: [tick(), constN('o', obj), constN('k', key), constN('v', value),
+        node('x', 'ObjectSet', [din('o'), din('k'), din('v'), dout('out')]), setVar('s', 'r')],
+      edges: [edge('tick', 'out', 's', 'in'),
+        edge('o', 'out', 'x', 'o'), edge('k', 'out', 'x', 'k'), edge('v', 'out', 'x', 'v'),
+        edge('x', 'out', 's', 'value')],
+    }
+    return run(g).getVar('r')
+  }
+  it('sets a new field immutably', () => {
+    const before = { a: 1 }
+    expect(run1(before, 'b', 2)).toEqual({ a: 1, b: 2 })
+    expect(before).toEqual({ a: 1 }) // unchanged
+  })
+  it('overrides an existing field', () => expect(run1({ a: 1 }, 'a', 99)).toEqual({ a: 99 }))
+  it('non-object input treated as {}', () => expect(run1(null, 'a', 1)).toEqual({ a: 1 }))
+})
+
+describe('Concat', () => {
+  const run1 = (a: unknown, b: unknown): unknown => {
+    const g: RtGraph = {
+      nodes: [tick(), constN('a', a), constN('b', b),
+        node('x', 'Concat', [din('a'), din('b'), dout('out')]), setVar('s', 'r')],
+      edges: [edge('tick', 'out', 's', 'in'),
+        edge('a', 'out', 'x', 'a'), edge('b', 'out', 'x', 'b'),
+        edge('x', 'out', 's', 'value')],
+    }
+    return run(g).getVar('r')
+  }
+  it('merges two arrays', () => expect(run1([1, 2], [3, 4])).toEqual([1, 2, 3, 4]))
+  it('empty + arr',       () => expect(run1([], [3, 4])).toEqual([3, 4]))
+  it('arr + empty',       () => expect(run1([1, 2], [])).toEqual([1, 2]))
+  it('non-array sides treated as empty', () => expect(run1(null, [1])).toEqual([1]))
+})

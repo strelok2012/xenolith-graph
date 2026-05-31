@@ -19,7 +19,7 @@ import {
 } from 'pixi.js'
 import type { StateStyle } from '@xenolith/theme-xen'
 import type { Node, Pin, TypeRegistry } from '@xenolith/core'
-import { widgetBindKey, widgetVisibility } from '@xenolith/core'
+import { widgetBindKey, widgetVisibility, widgetIsVisible } from '@xenolith/core'
 import { pinRowIndexFor } from './layout.js'
 import type { XenTokens } from '@xenolith/theme-xen'
 import { computeNodeLayout } from './layout.js'
@@ -248,7 +248,7 @@ function bakeGlowTexture(
   return rt
 }
 
-function makeGlowLayer(
+export function makeGlowLayer(
   style: StateStyle,
   w: number, h: number, radius: number,
   renderer: Renderer | null,
@@ -267,25 +267,47 @@ function makeGlowLayer(
   // edge length.
   if (renderer) {
     const sig = glowSignature(style, w, h, radius)
-    let tex = glowTextureCache.get(sig)
-    if (!tex) {
-      tex = bakeGlowTexture(renderer, style as StateStyle & { glow: string }, w, h, radius)
-      glowTextureCache.set(sig, tex)
+    const tex = glowTextureCache.get(sig)
+    if (tex) {
+      const strength = style.glowBlur ?? 10
+      const pad = glowPadding(strength)
+      const sprite = new Sprite(tex)
+      sprite.position.set(-pad, -pad)
+      layer.addChild(sprite)
+      return layer
     }
-    const strength = style.glowBlur ?? 10
-    const pad = glowPadding(strength)
-    const sprite = new Sprite(tex)
-    sprite.position.set(-pad, -pad)
-    layer.addChild(sprite)
-    return layer
+    // CACHE MISS: do NOT bake mid-frame. `bakeGlowTexture` calls `renderer.render()` into a fresh
+    // RenderTexture; if we're currently INSIDE the editor's render frame (and we typically are —
+    // makeGlowLayer is called from view materialisation which runs on first paint of new nodes,
+    // e.g. template-dive surfacing ~30 nodes at once), PIXI v8's FilterSystem races itself and
+    // throws "Cannot read properties of null (reading '2')" on BindGroup.setResource. Worse,
+    // the throw aborts the current render pass so edges never paint that frame.
+    //
+    // Fix: paint a LIVE-BlurFilter fallback this frame (filter chains on stage-mounted graphics
+    // go through the OUTER render pipeline, no nesting), AND schedule the bake at microtask
+    // boundary so the cache fills before the next frame. Future nodes of the same signature
+    // get the cheap sprite path. The CURRENT node keeps its live filter for its lifetime —
+    // worth the extra per-frame blur on a handful of nodes to avoid a crash.
+    queueMicrotask(() => {
+      if (glowTextureCache.has(sig)) return // someone else baked the same signature first
+      try {
+        const baked = bakeGlowTexture(renderer, style as StateStyle & { glow: string }, w, h, radius)
+        glowTextureCache.set(sig, baked)
+      } catch {
+        // Leave the cache empty; the next miss will retry. Don't let a bake failure crash render.
+      }
+    })
+    // Fall through to live-filter fallback below.
   }
 
-  // Fallback path for environments without a renderer (unit tests etc.) — live BlurFilter.
+  // Live BlurFilter — used for unit tests (no renderer) AND as the safe cache-miss fallback above.
+  // `antialias: 'on'` stripped on purpose: the blur kernel already hides aliasing, and the option
+  // routes through a code path that's caused trouble historically (see #117).
   const strength = style.glowBlur ?? 10
   const glow = new Graphics()
     .roundRect(0, 0, w, h, radius)
     .stroke({ color: style.glow, width: style.glowWidth ?? 3, alignment: 0.5 })
-  const blur = new BlurFilter({ strength, quality: 4, antialias: 'on' })
+  const blur = new BlurFilter({ strength, quality: 4 })
   blur.padding = glowPadding(strength)
   glow.filters = [blur]
   layer.addChild(glow)
@@ -561,7 +583,7 @@ export function renderNode(
     if (bind === undefined) continue
     const pin = node.pins.find((p) => p.label === bind || String(p.id) === bind)
     if (!pin) continue
-    const visible = widgetVisibility(w) === 'always' || !(isPinConnected(bind))
+    const visible = (widgetVisibility(w) === 'always' || !(isPinConnected(bind))) && widgetIsVisible(w, node)
     if (!visible) continue
     const rowIdx = pinRowIndexFor(node, bind)
     if (rowIdx !== undefined) rowsWithWidget.add(rowIdx)

@@ -6,6 +6,7 @@ import {
   comboOptions,
   widgetVisibility,
   widgetBindKey,
+  widgetIsVisible,
   type WidgetSpec,
 } from './widget.js'
 import type { Node } from './graph.js'
@@ -115,6 +116,25 @@ describe('widgetVisibility', () => {
   it('explicit visibility wins over the default', () => {
     expect(widgetVisibility({ id: 'w', type: 'number', label: 'N', key: 'n', visibility: 'always' })).toBe('always')
     expect(widgetVisibility({ id: 'w', type: 'custom', renderer: 'foo', key: 'k', label: '', visibility: 'whenDisconnected' })).toBe('whenDisconnected')
+  })
+})
+
+describe('widgetIsVisible (A1 — n8n-style displayOptions.show)', () => {
+  it('returns true when displayOptions is absent (the default — every widget is visible)', () => {
+    expect(widgetIsVisible(number(), node({}))).toBe(true)
+    expect(widgetIsVisible({ id: 'b', type: 'button', label: '+', action: 'a' }, node({}))).toBe(true)
+  })
+  it('show callback evaluates against node.state — true keeps the widget, false hides it', () => {
+    const body: WidgetSpec = { id: 'body', type: 'text', label: 'Body', key: 'body',
+      displayOptions: { show: (s) => s['method'] === 'POST' } }
+    expect(widgetIsVisible(body, node({ method: 'POST' }))).toBe(true)
+    expect(widgetIsVisible(body, node({ method: 'GET' }))).toBe(false)
+    expect(widgetIsVisible(body, node({}))).toBe(false)
+  })
+  it('a throwing show callback fails OPEN (treats the widget as visible) — schema bug must not blank the node', () => {
+    const broken: WidgetSpec = { id: 'x', type: 'number', label: 'X', key: 'x',
+      displayOptions: { show: () => { throw new Error('boom') } } }
+    expect(widgetIsVisible(broken, node({}))).toBe(true)
   })
 })
 

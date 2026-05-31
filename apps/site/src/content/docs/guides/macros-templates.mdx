@@ -1,0 +1,103 @@
+---
+title: Macros, templates, subgraphs
+description: Group nodes inline, extract reusable subgraphs, dive in and out, navigate with a breadcrumb.
+---
+
+Two complementary ways to organise big graphs: **macros** (inline collapse — the members live on the same canvas behind a pill) and **templates** (reusable subgraph definitions — instances reference a shared interior you can dive into).
+
+## Macros — inline collapse
+
+A macro wraps a selection in a single collapsible node. Members stay on the current canvas; collapsing hides their box and routes their boundary edges through synthesised proxy pins on the macro.
+
+```ts
+const macroId = editor.createMacroFromSelection(undefined, 'My group')   // wraps current selection
+editor.expandMacro(macroId)    // unhide members
+editor.collapseMacro(macroId)  // hide again — pin proxies stay
+editor.toggleMacro(macroId)
+editor.ungroupMacro(macroId)   // dissolve the macro back into raw members
+```
+
+The macro auto-derives proxy pins from boundary-crossing edges plus disconnected widget-bound IN-pins (so they remain reachable for wiring). Expand → drag a wire onto a member pin → re-collapse: the macro grows a new proxy pin to match.
+
+## Templates — reusable definitions
+
+A template definition lives once in `editor.definitions`; instance nodes (`$templateInstance`) reference it by id. Editing the shared definition propagates to every instance. There are no per-instance values — instance pins mirror the definition's `$templateInput` / `$templateOutput` boundary nodes.
+
+```ts
+// Extract the current selection into a template + leave an instance behind.
+const instanceId = editor.createTemplateFromSelection(undefined, 'Pipeline')
+
+// Rename the underlying definition (affects every instance).
+const defId = (editor.graph.getNode(instanceId)!.state.definitionId as string)
+editor.renameTemplate(defId, 'Pipeline v2')
+
+// Inline an instance back into the graph (one-off). Definition + other instances untouched.
+editor.unpackTemplateInstance(instanceId)
+
+// Convert an instance into an editable Macro group (drops the link to the shared def).
+editor.convertTemplateInstanceToMacro(instanceId)
+
+// Convert an editable Macro into a Template (one definition, many instances).
+const newInstance = editor.convertMacroToTemplate(macroId)
+```
+
+## Diving in / out
+
+Double-click a `$templateInstance` (or call `editor.diveInto(nodeId)`) to swap the canvas for the definition's interior. `editor.diveOut()` pops one level; `editor.diveOut(0)` returns to the root.
+
+```ts
+editor.diveInto(instanceId)
+editor.diveDepth          // 0 at the root
+editor.diveOut()          // up one
+editor.diveOut(0)         // straight to root
+```
+
+Nested instances dive recursively — the breadcrumb shows the path.
+
+## Breadcrumb
+
+A DOM panel that auto-appears in the top-left when `diveDepth > 0`, listing every segment (`Root › Pipeline › Stage`). Each segment is clickable to pop back to that level.
+
+```ts
+editor.setBreadcrumbVisible(false)   // opt out
+```
+
+Theme-aware via `--xeno-*` vars. Lives in `editor.overlayRoot`.
+
+## Events
+
+```ts
+editor.on('dive:changed', ({ depth, definitionId }) => {
+  console.log('now at depth', depth, definitionId ?? '(root)')
+})
+```
+
+## A round-trip example
+
+```ts
+// Group + extract + share + reuse:
+editor.setSelection(['n1', 'n2', 'n3'])
+const inst1 = editor.createTemplateFromSelection(undefined, 'Mixer')
+
+// Spawn a second instance of the same definition somewhere else:
+const def = editor.graph.getNode(inst1)!.state.definitionId as string
+const inst2 = editor.addNode({
+  id: createNodeId(), type: '$templateInstance',
+  position: { x: 600, y: 0 }, state: { definitionId: def, pinBoundary: {} }, pins: [],
+})
+
+// Edit the shared definition by diving in: both instances now reflect the change:
+editor.diveInto(inst1)
+//  ...mutate...
+editor.diveOut()
+```
+
+## Why macros vs templates?
+
+| Use a **macro** when… | Use a **template** when… |
+|---|---|
+| You just want to tuck members away into a single tidy pill | You'll use this subgraph in more than one place |
+| You'll edit the members in place (expand → tweak → collapse) | You want a single source of truth — edit once, all instances follow |
+| You don't need to dive | You want navigable subgraphs with a breadcrumb |
+
+Both are first-class — convert either direction at any time.

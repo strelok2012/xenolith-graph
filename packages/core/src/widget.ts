@@ -55,6 +55,24 @@ interface WidgetBase {
    *    when the pin has a wire, the widget reads the runtime's LIVE value and renders read-only.
    *    Default for `custom` widgets — most custom controls are visualisations. */
   visibility?: 'whenDisconnected' | 'always'
+  /** Opt-in: include this widget in the editor's properties sidebar when one is open for the
+   *  containing node (G4 — Baklava `displayInSidebar` parity). The SAME widget renders both
+   *  inline on the node and in the sidebar — no separate component to author. Default: omit
+   *  (widget appears only inline). */
+  showInSidebar?: boolean
+  /** Declarative conditional rendering keyed off OTHER widgets' values in the same node (n8n
+   *  `displayOptions.show` parity). `show(state)` is evaluated against `node.state` after every
+   *  `setWidgetValue` — return `false` to hide the widget (renderer skips layout, sidebar skips
+   *  the row). Fails OPEN if the callback throws (a schema bug must not blank the node). */
+  displayOptions?: {
+    show?: (state: Readonly<Record<string, unknown>>) => boolean
+  }
+  /** Render this widget as a body-band row even if there's no matching pin. Use for node-level
+   *  config fields that aren't connectable from outside (HTTP body, secret tokens, schema editor)
+   *  — they get a full-width row under the pin band. Without this, non-custom orphan widgets are
+   *  silently dropped. Always combines with `displayOptions.show`: hidden widgets disappear
+   *  entirely, no leftover pin row. */
+  freeFloating?: boolean
 }
 
 export type WidgetSpec =
@@ -161,6 +179,19 @@ export function widgetValue(node: Node, spec: WidgetSpec): unknown {
  *  explicitly. `button` widgets aren't pin-bound — they live in the actions row. */
 export function widgetVisibility(spec: WidgetSpec): 'whenDisconnected' | 'always' {
   return spec.visibility ?? 'whenDisconnected'
+}
+
+/** Resolve `displayOptions.show(state)` against a node — true (visible) unless the callback exists
+ *  and explicitly returns false. Defensive: a throwing callback fails OPEN so a schema bug doesn't
+ *  blank the node entirely. */
+export function widgetIsVisible(spec: WidgetSpec, node: Node): boolean {
+  const show = spec.displayOptions?.show
+  if (!show) return true
+  try {
+    return show(node.state) !== false
+  } catch {
+    return true
+  }
 }
 
 /** The lookup key used to bind a widget to its pin: explicit `pinKey`, else the widget's `key`.

@@ -70,17 +70,30 @@ export function buildAllocateTemplateDefinition(): TemplateDefinition {
 
 /** Pin ids the editor mints on a `$templateInstance` MUST be stable — they're the values the
  *  outer-graph wires reference. We use the boundary-node id (which is also stable) as the pin
- *  id; the editor matches by boundary identity on dive/re-sync. */
+ *  id; the editor/flattener matches by `state.pinBoundary` (instance pinId → boundary node id). */
 export function buildAllocateInstance(
   instanceId: string,
   x: number,
   y: number,
 ): XenolithNodeV1 {
   const def = buildAllocateTemplateDefinition()
+  // Pin id → boundary node id. MUST match what `flattenTemplateInstance` reads from
+  // `state.pinBoundary` to map outer-graph wires onto the right internal pin.
+  const pinBoundary: Record<string, string> = {
+    [`${instanceId}:exec`]:           'tplIn:exec',
+    [`${instanceId}:priorities`]:     'tplIn:priorities',
+    [`${instanceId}:subs`]:           'tplIn:subs',
+    [`${instanceId}:arrivals`]:       'tplIn:arrivals',
+    [`${instanceId}:costs`]:          'tplIn:costs',
+    [`${instanceId}:execOut`]:        'tplOut:exec',
+    [`${instanceId}:priorities_out`]: 'tplOut:priorities',
+    [`${instanceId}:awards`]:         'tplOut:awards',
+    [`${instanceId}:leftovers`]:      'tplOut:leftovers',
+  }
   return {
     id: instanceId, type: TPL_INSTANCE, position: { x, y },
     render: { title: 'Allocate', category: 'domain' },
-    state: { definitionId: def.id },
+    state: { definitionId: def.id, pinBoundary },
     pins: [
       // Order MUST match templateInterface (boundary appearance in def.nodes).
       { id: `${instanceId}:exec`,       kind: 'exec', direction: 'in',  type: 'exec',   multiple: false, label: '' },

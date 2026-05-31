@@ -43,6 +43,10 @@ export interface Node {
   meta?: Record<string, unknown>
   /** A header glyph icon for this node (auto-positioned in the header by the renderer). */
   glyph?: NodeGlyph
+  /** Schema version this node was instantiated under (defaults to its NodeSchema's `version`, or
+   *  1). Serialized to JSON so `loadJSON` can route stale payloads through the schema's
+   *  `migrate(oldNode, oldVersion)` hook. */
+  version?: number
 }
 
 export interface Edge {

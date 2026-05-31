@@ -15,6 +15,15 @@ export interface PluginContext {
   readonly icons: IconRegistry
   /** The PIXI application — for plugins that need the ticker, renderer, or canvas. */
   readonly app: Application
+  /** Mark the editor's scene dirty so the render-on-demand ticker repaints next frame. Use after
+   *  any non-command mutation (ephemeral positions, animation tweens, etc.) — the command bus
+   *  path requests render on its own. */
+  requestRender(): void
+  /** Move a node without touching the command bus — bypasses undo history AND repaints all
+   *  incident edges. The intended use is for per-frame animation tweens that commit the FINAL
+   *  position via a normal MoveNode at the end (so the user has one clean undo entry). Calling
+   *  this on a non-live node is a no-op. */
+  setNodePositionEphemeral(nodeId: NodeId, x: number, y: number): void
   /** The active (displayed) graph — the root document, or a template definition while dived. */
   readonly graph: Graph
   /** The active (displayed) command bus. */
@@ -26,8 +35,8 @@ export interface PluginContext {
   // ---- Simulation/runtime surface (delegates to the editor) ------------------------------------
   /** Per-frame clock for a host evaluator. `cb` gets the frame delta in ms. Returns an unsubscribe. */
   onTick(cb: (dtMs: number) => void): () => void
-  /** Begin firing `onTick` every animation frame. */
-  startLoop(): void
+  /** Begin firing `onTick`. Optional `{fps}` throttles to that many ticks/sec. */
+  startLoop(opts?: { fps?: number }): void
   /** Stop the per-frame loop (`step` still works). */
   stopLoop(): void
   /** Fire one tick manually with a fixed delta (deterministic stepping). */

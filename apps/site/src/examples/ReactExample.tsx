@@ -19,6 +19,14 @@ import { ImagePipelineDemo } from '../../../demo-react/src/demos/ImagePipelineDe
 import { ConnectionValidationDemo } from '../../../demo-react/src/demos/ConnectionValidationDemo'
 import { ExportImageDemo } from '../../../demo-react/src/demos/ExportImageDemo'
 import { DiagramDemo } from '../../../demo-react/src/demos/DiagramDemo'
+import { AutoLayoutDemo } from '../../../demo-react/src/demos/AutoLayoutDemo'
+import { NestedLayoutDemo } from '../../../demo-react/src/demos/NestedLayoutDemo'
+import { TypeConversionsDemo } from '../../../demo-react/src/demos/TypeConversionsDemo'
+import { PreviewNodesDemo } from '../../../demo-react/src/demos/PreviewNodesDemo'
+import { EdgePathsDemo } from '../../../demo-react/src/demos/EdgePathsDemo'
+import { PropertiesSidebarDemo } from '../../../demo-react/src/demos/PropertiesSidebarDemo'
+import { BreadcrumbDiveDemo } from '../../../demo-react/src/demos/BreadcrumbDiveDemo'
+import { ConditionalWidgetsDemo } from '../../../demo-react/src/demos/ConditionalWidgetsDemo'
 // StressTestDemo hidden from the gallery for now (perf trap with mass-clear); file kept for later.
 
 const MAP: Record<string, ComponentType> = {
@@ -31,6 +39,14 @@ const MAP: Record<string, ComponentType> = {
   'two-way': TwoWayBindingDemo, theming: ThemingDemo, viewport: ViewportDemo,
   'connection-validation': ConnectionValidationDemo, 'export-image': ExportImageDemo,
   diagram: DiagramDemo,
+  'auto-layout': AutoLayoutDemo,
+  'nested-layout': NestedLayoutDemo,
+  'type-conversions': TypeConversionsDemo,
+  'preview-nodes': PreviewNodesDemo,
+  'edge-paths': EdgePathsDemo,
+  'properties-sidebar': PropertiesSidebarDemo,
+  'breadcrumb-dive': BreadcrumbDiveDemo,
+  'conditional-widgets': ConditionalWidgetsDemo,
   'builtin-widgets': BuiltinWidgetsDemo, 'canvas-widget': CanvasWidgetDemo, 'custom-widgets': CustomWidgetsDemo,
 }
 

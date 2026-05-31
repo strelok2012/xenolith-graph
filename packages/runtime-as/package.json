@@ -1,0 +1,37 @@
+{
+  "name": "@xenolith/runtime-as",
+  "version": "0.0.0",
+  "description": "AssemblyScript-based WASM code generator for the XenolithGraph Blueprint runtime. Emits AS source from an RtGraph + NodeDef set, compiles to a WebAssembly module via asc, exposes the same call surface as the JS codegen.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "dependencies": {
+    "@xenolith/plugin-runtime": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc -b --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "assemblyscript": "^0.28.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

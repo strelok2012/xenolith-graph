@@ -1,5 +1,5 @@
 import type { Node, Pin, PinId, WidgetSpec } from '@xenolith/core'
-import { widgetBindKey, widgetVisibility } from '@xenolith/core'
+import { widgetBindKey, widgetVisibility, widgetIsVisible } from '@xenolith/core'
 
 export interface WidgetGeometry {
   rowHeight: number
@@ -18,23 +18,52 @@ function actionsRowHeight(node: Node, geo: WidgetGeometry | undefined): number {
   return geo.gap + buttons.length * geo.rowHeight + geo.gap * (buttons.length - 1)
 }
 
-/** A widget is "free-floating" (rides in the body band, not a pin row) when it's a `custom`
- *  widget whose declared bind key doesn't resolve to any pin on the node. These are node-level
- *  editors (schema editor, color palette, multi-field panel) that legitimately don't belong to
- *  one specific pin — they get their own row stack below the pin band. Standard input widgets
- *  with no matching pin are still orphans (silently dropped). */
+/** A widget is "free-floating" (rides in the body band, not a pin row) in two cases:
+ *  1. `custom` widget whose declared bind key doesn't resolve to any pin — these are node-level
+ *     editors (schema editor, color palette, multi-field panel) that legitimately don't belong
+ *     to one specific pin.
+ *  2. Any widget with explicit `freeFloating: true` — n8n-style config fields (HTTP body, auth
+ *     token, etc.) that aren't connectable from outside but still need rendering. Bypasses the
+ *     usual "non-custom widget needs a pin to render" rule.
+ *  Standard non-custom widgets without a pin or the explicit flag are still silently dropped. */
 export function isFreeFloating(node: Node, w: WidgetSpec): boolean {
+  if (w.type === 'button') return false // buttons live in the actions row, not the body band
+  if (w.freeFloating === true) return true
   if (w.type !== 'custom') return false
   const bind = widgetBindKey(w)
   if (bind === undefined) return false
   return findPinByKey(node, bind) === undefined
 }
 
-/** Height of the body band reserved for free-floating custom widgets: leading gap, each
- *  widget's declared height, gaps between. Zero when there are none. */
+/** A pin is "hidden" when its bound widget evaluates `displayOptions.show=false` AND the pin has
+ *  no incident edge. The edge clause prevents an active wire from dangling: once a pin is wired,
+ *  hiding it would orphan the edge visually. Pins without a widget never hide. */
+function pinIsHidden(node: Node, pin: Pin, isPinConnected?: (pinKey: string) => boolean): boolean {
+  if (!node.widgets) return false
+  // Find the widget bound to this pin (by label or id, mirroring widgetBindKey resolution).
+  const w = node.widgets.find((ww) => {
+    const bind = widgetBindKey(ww)
+    return bind !== undefined && (bind === pin.label || bind === String(pin.id))
+  })
+  if (!w) return false
+  if (widgetIsVisible(w, node)) return false
+  const bind = widgetBindKey(w)
+  if (bind === undefined) return true
+  return !isPinConnected?.(bind)
+}
+
+/** Filter out pins whose widget is `displayOptions.show=false` and aren't wired — see `pinIsHidden`.
+ *  Use this everywhere layout reads `node.pins` so a conditionally-hidden field collapses cleanly. */
+function visiblePins(node: Node, isPinConnected?: (pinKey: string) => boolean): Pin[] {
+  return node.pins.filter((p) => !pinIsHidden(node, p, isPinConnected))
+}
+
+/** Height of the body band reserved for free-floating widgets that are CURRENTLY visible: leading
+ *  gap, each visible widget's declared height, gaps between. Zero when nothing is visible (so a
+ *  node with conditional widgets shrinks back to compact when all of them are hidden). */
 function freeWidgetsBandHeight(node: Node, geo: WidgetGeometry | undefined): number {
   if (!geo || !node.widgets || node.widgets.length === 0) return 0
-  const free = node.widgets.filter((w) => isFreeFloating(node, w))
+  const free = node.widgets.filter((w) => isFreeFloating(node, w) && widgetIsVisible(w, node))
   if (free.length === 0) return 0
   let h = geo.gap
   for (let i = 0; i < free.length; i++) {
@@ -132,7 +161,7 @@ export function pinRowHeights(
   widgetRowHeight: number,
   isPinConnected?: (pinKey: string) => boolean,
 ): number[] {
-  const rows = pinRowCount(node.pins)
+  const rows = pinRowCount(visiblePins(node, isPinConnected))
   // Step 1 — uniform base. Bumped to widget.rowHeight when any standard pin-bound widget is visible.
   let base = pinRowHeight
   const perRow: (number | undefined)[] = new Array(rows).fill(undefined)
@@ -141,7 +170,7 @@ export function pinRowHeights(
       const bind = widgetBindKey(w)
       if (bind === undefined) continue // button — actions row
       if (!findPinByKey(node, bind)) continue // orphan
-      const visible = widgetVisibility(w) === 'always' || !(isPinConnected?.(bind))
+      const visible = (widgetVisibility(w) === 'always' || !(isPinConnected?.(bind))) && widgetIsVisible(w, node)
       if (!visible) continue
       const rowIdx = pinRowIndexFor(node, bind)
       if (rowIdx === undefined) continue
@@ -208,7 +237,7 @@ export function findPinByKey(node: Node, pinKey: string): Pin | undefined {
  *  widget inside the row that contains its pin. Returns undefined when the pin is hoisted onto
  *  the header line (no body row to place the widget in). */
 export function pinRowIndexFor(node: Node, pinKey: string): number | undefined {
-  const { execIn, execOut, dataIn, dataOut } = sectionPins(node.pins)
+  const { execIn, execOut, dataIn, dataOut } = sectionPins(visiblePins(node))
   const { hoistIn, hoistOut } = hoisted(execIn, execOut)
   const bodyExecIn  = hoistIn  ? [] : execIn
   const bodyExecOut = hoistOut ? [] : execOut
@@ -224,7 +253,7 @@ export function pinRowIndexFor(node: Node, pinKey: string): number | undefined {
  *  free-floating custom widgets body band + optional actions row of button widgets + bottom
  *  padding mirroring the header→pins gap. */
 function naturalHeight(node: Node, tokens: HeightTokens, isPinConnected?: (k: string) => boolean): number {
-  const rows = pinRowCount(node.pins)
+  const rows = pinRowCount(visiblePins(node, isPinConnected))
   const freeBand = freeWidgetsBandHeight(node, tokens.widget)
   const actions  = actionsRowHeight(node, tokens.widget)
   if (rows === 0 && actions === 0 && freeBand === 0) return tokens.node.headerHeight + tokens.header.toPinsGap
@@ -268,7 +297,7 @@ function naturalWidth(
   // ellipsised by the renderer instead of stretching the node forever. Pin/widget rows still drive
   // width uncapped, so a long PIN label always fits.
   const titleW = Math.min(measure(title, tokens.typography.titleSize, tokens.typography.titleWeight), TITLE_MAX_WIDTH)
-  const { execIn, execOut, dataIn, dataOut } = sectionPins(node.pins)
+  const { execIn, execOut, dataIn, dataOut } = sectionPins(visiblePins(node, isPinConnected))
   const { hoistIn, hoistOut } = hoisted(execIn, execOut)
   // A hoisted exec-out sits at the header's right edge — reserve room so the title can't collide with it.
   const headerExecReserve = hoistOut ? tokens.pin.diameter + tokens.header.titleGap : 0
@@ -308,11 +337,12 @@ function naturalWidth(
       if (bind === undefined) continue
       // Free-floating custom widget: full-width band row, just declared height (square not required).
       if (isFreeFloating(node, w)) {
+        if (!widgetIsVisible(w, node)) continue
         const h = w.type === 'custom' ? (w.height ?? tokens.widget.rowHeight) : tokens.widget.rowHeight
         widgetNeed = Math.max(widgetNeed, sidePad + h + sidePad) // square-ish min so the body looks balanced
         continue
       }
-      const visible = widgetVisibility(w) === 'always' || !isPinConnected?.(bind)
+      const visible = (widgetVisibility(w) === 'always' || !isPinConnected?.(bind)) && widgetIsVisible(w, node)
       if (!visible) continue
       const pinLabel = node.pins.find((p) => p.label === bind || String(p.id) === bind)?.label ?? ''
       const lblW = measure(pinLabel, tokens.typography.labelSize, tokens.typography.labelWeight)
@@ -365,7 +395,7 @@ export function computeNodeLayout(node: Node, tokens: LayoutTokens, isPinConnect
   // UE-Blueprint placement. A single label-less exec pin is HOISTED onto the header line (exec-in at
   // the header's left edge, exec-out at the right, centred on the title). Otherwise exec pins form the
   // top body band (exec-in left / exec-out right), with data pins below — independent of declaration order.
-  const { execIn, execOut, dataIn, dataOut } = sectionPins(node.pins)
+  const { execIn, execOut, dataIn, dataOut } = sectionPins(visiblePins(node, isPinConnected))
   const { hoistIn, hoistOut } = hoisted(execIn, execOut)
   const headerY = node.position.y + tokens.node.headerHeight / 2
   const pins: PinLayout[] = []

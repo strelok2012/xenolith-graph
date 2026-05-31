@@ -1,11 +1,10 @@
-// Regenerate the Examples-gallery thumbnails. Requires the SITE dev server running:
-//   pnpm --filter @xenolith/site dev            (defaults to http://localhost:4321/xenolith-graph)
+// Regenerate Examples-gallery thumbnails using `editor.exportImage()` — renders the WHOLE graph
+// off-screen (independent of viewport/panels) to a clean JPEG. Requires the site dev server:
+//   pnpm --filter @xenolith/site dev    (http://localhost:4321/xenolith-graph)
 // then, from apps/demo-react:
-//   pnpm thumbs                                 (or: BASE_URL=… node scripts/gen-thumbs.mjs)
-// It scrapes the example ids off the gallery index, fits each graph, and shoots the preview at 2×
-// into apps/site/public/examples/thumbs/<id>.png.
+//   pnpm thumbs                          (or: BASE_URL=… node scripts/gen-thumbs.mjs)
 import { chromium } from '@playwright/test'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
@@ -27,7 +26,6 @@ const ids = await page.$$eval('a[href*="/examples/"]', (as) =>
 )
 if (ids.length === 0) throw new Error('no example ids found — is the site dev server running?')
 
-// Examples whose thumbnail looks best in the Liquid Glass theme.
 const SHOOT_LG = new Set(['theming'])
 
 for (const id of ids) {
@@ -38,18 +36,20 @@ for (const id of ids) {
     const lg = page.getByRole('button', { name: 'Liquid Glass' })
     if (await lg.count()) { await lg.first().click(); await page.waitForTimeout(700) }
   }
-  // Clean framing — click the built-in "Fit view" control (each demo also fits itself on load), then
-  // zoom out two notches for generous thumbnail margins. Falls back gracefully if a demo has no controls.
-  const fit = page.getByRole('button', { name: 'Fit view' })
-  if (await fit.count()) await fit.first().click()
-  const zoomOut = page.getByRole('button', { name: 'Zoom out' })
-  if (await zoomOut.count()) { await zoomOut.first().click(); await zoomOut.first().click() }
-  await page.waitForTimeout(500)
-  // Remove ONLY Astro's dev toolbar (it sits fixed at the bottom and creeps into the shot). Our own
-  // in-editor controls/panels stay — they're part of the demo.
-  await page.evaluate(() => document.querySelector('astro-dev-toolbar')?.remove())
-  await page.waitForTimeout(100)
-  await page.locator('.dfr-preview').screenshot({ path: `${OUT}/${id}.png` })
+  // editor.exportImage renders the WHOLE graph at high res, padded — independent of viewport
+  // pan/zoom and DOM panel overlays. Returns a JPEG blob; we serialize to base64 and write the
+  // raw bytes (no DOM rendering pipeline involved).
+  const base64 = await page.evaluate(async () => {
+    const editor = /** @type {any} */ (globalThis).__xenoEditor
+    if (!editor) throw new Error('no __xenoEditor on globalThis — demo did not mount?')
+    const blob = await editor.exportImage({ format: 'jpeg', scale: 2, padding: 80, quality: 0.88 })
+    return await new Promise((resolve) => {
+      const r = new FileReader()
+      r.onload = () => resolve(/** @type {string} */ (r.result).split(',')[1])
+      r.readAsDataURL(blob)
+    })
+  })
+  await writeFile(`${OUT}/${id}.jpg`, Buffer.from(base64, 'base64'))
   console.log('✓', id)
 }
 

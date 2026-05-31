@@ -30,6 +30,7 @@ export const PRIMITIVE_SCHEMAS: NodeSchema[] = [
   { type: 'Sequence', title: 'Sequence', category: 'flow', description: 'Fire outputs in order', pins: [ei(), eo('then 0'), eo('then 1')] },
   { type: 'Branch', title: 'Branch', category: 'flow', description: 'If / else on a bool', pins: [ei(), di('cond', 'bool'), eo('true'), eo('false')] },
   { type: 'ForEach', title: 'For Each', category: 'flow', description: 'Loop over an array', pins: [ei(), di('array', 'array'), dobj('element', 'any'), dobj('index', 'scalar'), eo('body'), eo('completed')] },
+  { type: 'Loop',    title: 'Loop',     category: 'flow', description: 'Counted loop with cond — runs body while cond is true, up to `max` times', pins: [ei(), di('max', 'scalar'), di('cond', 'bool'), dobj('idx', 'scalar'), eo('body'), eo('done')] },
   // state
   // Every widget MUST be pinKey-bound (core's layout reserves no body band for non-bound widgets).
   // KNOWN VISUAL ISSUE: widget rect spans the full row width, so it overlaps the bound pin's label
@@ -37,6 +38,21 @@ export const PRIMITIVE_SCHEMAS: NodeSchema[] = [
   // (see docs/widget-pin-label-overlap.md); for now we accept the overlap.
   { type: 'SetVar', title: 'Set Variable', category: 'state', description: 'Write a variable (persists across ticks)', pins: [ei(), di('value', 'any'), eo()], widgets: [{ id: 'name', type: 'text', key: 'name', label: '', pinKey: 'value', visibility: 'always' }] },
   { type: 'GetVar', title: 'Get Variable', category: 'state', description: 'Read a variable',                          pure: true, pins: [dobj('value', 'any')],                widgets: [{ id: 'name',  type: 'text',   key: 'name',  label: '', pinKey: 'value', visibility: 'always' }] },
+  // First-class declared I/O — used by AS-WASM codegen to derive tickArgs signature automatically.
+  // Visually distinct (`io` category, amber) so a reader sees graph boundary at a glance.
+  { type: 'GraphInput',  title: 'Input',  category: 'io', description: 'Declared graph input — passed in as a tickArgs parameter.',  pure: true, pins: [dobj('value', 'scalar')], widgets: [{ id: 'name', type: 'text', key: 'name', label: '', pinKey: 'value', visibility: 'always' }] },
+  { type: 'GraphOutput', title: 'Output', category: 'io', description: 'Declared graph output — returned by tickArgs (first Output) or read via getVar.', pins: [ei(), di('value', 'scalar'), eo()], widgets: [{ id: 'name', type: 'text', key: 'name', label: '', pinKey: 'value', visibility: 'always' }] },
+  // Tick-scoped state cell. ONE node = ONE physical storage slot. Reset to `initial` each tick.
+  // Reads via `value` pin (pure), writes via the exec path (`set` data-in + ein/eo). Multi-reader
+  // friendly — wire `value` to as many consumers as you like; the visual "all roads lead here"
+  // makes loop state legible without scattering 8 GetVar("zx") nodes.
+  { type: 'Local', title: 'Local', category: 'state', description: 'Tick-scoped state cell — read via `value`, write via `set`. Resets to `initial` each tick.',
+    pins: [ei(), di('set', 'scalar'), eo(), dobj('value', 'scalar')],
+    widgets: [
+      { id: 'name',    type: 'text',   key: 'name',    label: '', pinKey: 'value', visibility: 'always' },
+      { id: 'initial', type: 'number', key: 'initial', label: 'init = ', pinKey: 'set', visibility: 'always' },
+    ],
+  },
   { type: 'Const',  title: 'Const',        category: 'state', description: 'A literal number',                          pure: true, pins: [dobj('out', 'scalar')],               widgets: [{ id: 'value', type: 'number', key: 'value', label: '', pinKey: 'out',   visibility: 'always' }] },
   {
     type: 'Struct', title: 'Struct', category: 'state',
@@ -79,6 +95,10 @@ export const PRIMITIVE_SCHEMAS: NodeSchema[] = [
   { type: 'Gt',            title: 'Greater',        category: 'math',  description: 'a > b → bool',                        pure: true, pins: [di('a', 'scalar'), di('b', 'scalar'),                                dobj('out', 'bool')]   },
   { type: 'Gte',           title: 'Greater or Eq',  category: 'math',  description: 'a >= b → bool',                       pure: true, pins: [di('a', 'scalar'), di('b', 'scalar'),                                dobj('out', 'bool')]   },
   { type: 'Eq',            title: 'Equal',          category: 'math',  description: 'a === b → bool',                      pure: true, pins: [di('a', 'any'),    di('b', 'any'),                                  dobj('out', 'bool')]   },
+  { type: 'Floor',         title: 'Floor',          category: 'math',  description: 'Math.floor(n)',                       pure: true, pins: [di('n', 'scalar'),                                                     dobj('out', 'scalar')] },
+  { type: 'Repeat',        title: 'Repeat',         category: 'array', description: '[item, item, …] × count',             pure: true, pins: [di('item', 'any'), di('count', 'scalar'),                              dobj('out', 'array')]  },
+  { type: 'ObjectSet',     title: 'Object Set',     category: 'array', description: 'Immutable {...obj, [key]: value}',    pure: true, pins: [di('obj', 'object'), di('key', 'any'), di('value', 'any'),            dobj('out', 'object')] },
+  { type: 'Concat',        title: 'Concat',         category: 'array', description: 'Merge two arrays',                    pure: true, pins: [di('a', 'array'), di('b', 'array'),                                   dobj('out', 'array')]  },
   // domain
   {
     type: 'Allocate', title: 'Allocate', category: 'domain',
@@ -160,12 +180,15 @@ export const PRIMITIVE_SCHEMAS: NodeSchema[] = [
 export const PRIMITIVE_ICONS: Record<string, string> = {
   Tick: 'play', Init: 'flag',
   GetVar: 'database', SetVar: 'database', Const: 'square',
+  GraphInput: 'arrow-right', GraphOutput: 'arrow-right',
+  Local: 'box',
   Add: 'cpu', Sub: 'cpu', Mul: 'cpu',
   ZipAdd: 'layers', ScaleArray: 'layers', Length: 'layers', Mean: 'layers',
   Index: 'layers', ArrayWrite: 'layers', Includes: 'layers', ArgMax: 'layers', FilterIndices: 'layers',
   ObjectGet: 'layers', IndexAll: 'layers', Append: 'layers',
   Gt: 'cpu', Gte: 'cpu', Eq: 'cpu',
-  Branch: 'branch', Sequence: 'code', ForEach: 'code',
+  Floor: 'cpu', Repeat: 'layers', ObjectSet: 'layers', Concat: 'layers',
+  Branch: 'branch', Sequence: 'code', ForEach: 'code', Loop: 'code',
   Allocate: 'box', Spawn: 'zap',
   Gather: 'database', Scatter: 'database',
   GatherFromInputs: 'database', ScatterToOutputs: 'database',
@@ -183,4 +206,5 @@ export const PRIMITIVE_CATEGORY_COLORS = {
   math: { color: '#4FC08D' },
   array: { color: '#3FB6FF' },
   domain: { color: '#FFB020' },
+  io: { color: '#E6C87A' }, // amber — graph boundary (Input/Output)
 } as const

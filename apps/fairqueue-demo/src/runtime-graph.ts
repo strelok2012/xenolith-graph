@@ -16,11 +16,13 @@ import type { Agent, GoodieSpec } from './fairqueue.js'
 import { CATEGORY_COLORS } from './sim-to-graph.js'
 import { buildAllocateSubgraphV1 } from './allocate-graph-v1.js'
 import { buildAllocateTemplateDefinition, buildAllocateInstance } from './allocate-template-v1.js'
+import { buildSpawnSubgraphV1 } from './spawn-graph-v1.js'
+import { buildSpawnTemplateDefinition, buildSpawnInstance } from './spawn-template-v1.js'
 
 export const FAIRQUEUE_DEFS: NodeDef[] = [...BUILTIN_PRIMITIVES, Allocate]
 /** Full def set incl. the Gather/Scatter collection bridge — used by the merged graph. */
-// MERGED engine uses ZERO native domain verbs — Allocate is now a sub-graph of primitives (see
-// `allocate-graph-v1.ts`). Spawn stays native for now (next macro target).
+// MERGED engine uses ZERO native domain verbs — Allocate AND Spawn are now sub-graphs of
+// primitives (see `allocate-graph-v1.ts`, `spawn-graph-v1.ts`).
 export const MERGED_DEFS: NodeDef[] = [...BUILTIN_PRIMITIVES, ...COLLECTION_PRIMITIVES]
 // Other engines (JS step / Runtime view) still ship `Allocate` as a single black-box verb.
 void Allocate
@@ -222,6 +224,7 @@ const goodieSchemaPin = (id: string): XenolithPinV1 =>
  *  the VM directly without an editor (and therefore without `graphSnapshot({ expandTemplates })`). */
 export interface MergedGraphOpts {
   flatAllocate?: boolean
+  flatSpawn?: boolean
 }
 export function fairqueueMergedGraph(agents: Agent[], goodies: GoodieSpec[], opts: MergedGraphOpts = {}): XenolithGraphV1 {
   // Two parallel columns: agents far left, goodies just right. Schema nodes sit at the very top of
@@ -303,7 +306,9 @@ export function fairqueueMergedGraph(agents: Agent[], goodies: GoodieSpec[], opt
     node('one',   'Const', -640, 300, 'Const', 'state', [dout('one:out',   'out', 'scalar')], { value: 1   }, [{ id: 'value', type: 'number', key: 'value', label: '', pinKey: 'out', visibility: 'always' }]),
     node('alpha', 'Const', -640, 430, 'Const', 'state', [dout('alpha:out', 'out', 'scalar')], { value: 0.1 }, [{ id: 'value', type: 'number', key: 'value', label: '', pinKey: 'out', visibility: 'always' }]),
     node('tick', 'Tick', -380, 440, 'Tick', 'flow', [eo('tick:out')]),
-    node('spawn', 'Spawn', -380, 580, 'Spawn', 'domain', [ei('spawn:in'), di('spawn:specs', 'specs', 'array'), dout('spawn:units', 'units', 'array'), eo('spawn:out')]),
+    // `Spawn` is now a SUB-GRAPH of primitives (Sequence + ForEach + GetField + Add + Floor + Sub +
+    // Repeat + Concat + ObjectGet + ObjectSet). See `spawn-graph-v1.ts`. Same per-type fractional
+    // rate-accumulator behaviour as the native `Spawn`, proven by `plugin-runtime/.../spawn-graph.test.ts`.
     node('zip', 'ZipAdd', -120, -260, 'Zip Add', 'array', [di('zip:a', 'a', 'array'), di('zip:b', 'b', 'array'), dout('zip:out', 'out', 'array')]),
     node('gain', 'Sub', -120, 360, 'Subtract', 'math', [di('gain:a', 'a', 'scalar'), di('gain:b', 'b', 'scalar'), dout('gain:out', 'out', 'scalar')]),
     // `Allocate` is now a SUB-GRAPH of primitives (ForEach + FilterIndices + ArgMax + Index +
@@ -335,6 +340,22 @@ export function fairqueueMergedGraph(agents: Agent[], goodies: GoodieSpec[], opt
     ], {}, [{ id: 'value', type: 'custom', renderer: 'output', key: 'value', label: '', height: 40, pinKey: 'value', visibility: 'always' }]),
   ]
 
+  // Spawn: same template/flat split as Allocate. Outer pins (instance): `spawn:exec` (in exec),
+  // `spawn:specs` (in array), `spawn:execOut` (out exec), `spawn:units` (out array).
+  const spawnSub = opts.flatSpawn
+    ? buildSpawnSubgraphV1('spawn', -380, 580, {
+        specs: { node: 'gGoodies', pin: 'gGoodies:out' },
+        exec:  { node: 'tick',     pin: 'tick:out' },
+      })
+    : null
+  const spawnInst = opts.flatSpawn ? null : buildSpawnInstance('spawn', -380, 580)
+  const spawnUnitsSrc = spawnSub
+    ? { node: spawnSub.out.units.node, pin: spawnSub.out.units.pin }
+    : { node: 'spawn', pin: 'spawn:units' }
+  const spawnExecSrc = spawnSub
+    ? { node: spawnSub.out.exec.node, pin: spawnSub.out.exec.pin }
+    : { node: 'spawn', pin: 'spawn:execOut' }
+
   // Allocate: ONE `$templateInstance` on the canvas (dive in to see primitives). The runtime
   // flattens templates pre-tick via `editor.graphSnapshot({ expandTemplates: true })`.
   // Headless tests pass `flatAllocate: true` to get an inline sub-graph (no template path).
@@ -342,14 +363,16 @@ export function fairqueueMergedGraph(agents: Agent[], goodies: GoodieSpec[], opt
     ? buildAllocateSubgraphV1('alloc', 160, -200, {
         priorities: { node: 'zip',   pin: 'zip:out' },
         subs:       { node: 'mSub',  pin: 'mSub:out' },
-        arrivals:   { node: 'spawn', pin: 'spawn:units' },
+        arrivals:   spawnUnitsSrc,
         costs:      { node: 'toMap', pin: 'toMap:out' },
-        exec:       { node: 'spawn', pin: 'spawn:out' },
+        exec:       spawnExecSrc,
       })
     : null
   const allocInst = opts.flatAllocate ? null : buildAllocateInstance('alloc', 160, -200)
 
   const nodes = [agentSchemaNode, goodieSchemaNode, ...agentNodes, ...goodieNodes, ...rest,
+    ...(spawnInst ? [spawnInst] : []),
+    ...(spawnSub ? spawnSub.nodes : []),
     ...(allocInst ? [allocInst] : []),
     ...(allocSub ? allocSub.nodes : []),
   ]
@@ -372,21 +395,21 @@ export function fairqueueMergedGraph(agents: Agent[], goodies: GoodieSpec[], opt
     // Algorithm wiring (now sourced from MapField outs instead of by-type Gather).
     e('zp_a', 'mPri', 'mPri:out', 'zip', 'zip:a'),
     e('zp_b', 'mSal', 'mSal:out', 'zip', 'zip:b'),
-    e('gr_sp', 'gGoodies', 'gGoodies:out', 'spawn', 'spawn:specs'),
+    ...(spawnInst ? [e('gr_sp', 'gGoodies', 'gGoodies:out', 'spawn', 'spawn:specs')] : []),
     e('gr_tm', 'gGoodies', 'gGoodies:out', 'toMap', 'toMap:in'),
     e('o', 'one', 'one:out', 'gain', 'gain:a'),
     e('al', 'alpha', 'alpha:out', 'gain', 'gain:b'),
     e('gk', 'gain', 'gain:out', 'scale', 'scale:k'),
     e('sv', 'scale', 'scale:out', 'scatter', 'scatter:value'),
     // exec: Tick → Spawn → Allocate → Scatter
-    e('t', 'tick', 'tick:out', 'spawn', 'spawn:in'),
+    ...(spawnInst ? [e('t', 'tick', 'tick:out', 'spawn', 'spawn:exec')] : []),
     // Allocate wiring depends on whether we're using the template (instance pins) or the inline
     // sub-graph (allocSub pin handles directly). Same logical topology either way.
     ...(allocInst ? [
-      e('al_in_exec', 'spawn', 'spawn:out',   'alloc', 'alloc:exec'),
+      e('al_in_exec', spawnExecSrc.node,  spawnExecSrc.pin,  'alloc', 'alloc:exec'),
       e('al_in_p',    'zip',   'zip:out',     'alloc', 'alloc:priorities'),
       e('al_in_s',    'mSub',  'mSub:out',    'alloc', 'alloc:subs'),
-      e('al_in_arr',  'spawn', 'spawn:units', 'alloc', 'alloc:arrivals'),
+      e('al_in_arr',  spawnUnitsSrc.node, spawnUnitsSrc.pin, 'alloc', 'alloc:arrivals'),
       e('al_in_c',    'toMap', 'toMap:out',   'alloc', 'alloc:costs'),
       e('ap', 'alloc', 'alloc:priorities_out', 'scale',   'scale:array'),
       e('as', 'alloc', 'alloc:execOut',        'scatter', 'scatter:in'),
@@ -396,6 +419,9 @@ export function fairqueueMergedGraph(agents: Agent[], goodies: GoodieSpec[], opt
       e('ap', allocSub.out.priorities.node, allocSub.out.priorities.pin, 'scale',   'scale:array'),
       e('as', allocSub.out.exec.node,       allocSub.out.exec.pin,       'scatter', 'scatter:in'),
     ] : []),
+    // Inline Spawn sub-graph edges (flatSpawn). Already includes wiring from tick.tick:out and
+    // gGoodies.gGoodies:out into the sub-graph's seq/fe entry points.
+    ...(spawnSub ? spawnSub.edges : []),
     // Subscription wires: each agent's initial `subscriptions[]` becomes one wire per subscribed
     // goodie type — Goodie.self → Agent.subscribe. Wires ARE the subscriptions; the host keeps
     // `state.data.subs` in sync by re-deriving it from the edge set on every add/remove.
@@ -428,13 +454,19 @@ export function fairqueueMergedGraph(agents: Agent[], goodies: GoodieSpec[], opt
     comment('cGoodies', GOODIE_X - 30, -370, 280,  940, 'Goodies · editable nodes',                 '#4A3A18'),
     comment('cAlgo', -160, -300, 1000, 900, 'Algorithm · Gather → salary → Spawn → Allocate → tax → Scatter', '#244035'),
   ]
-  // Embed the Allocate TemplateDefinition keyed by id; the `alloc` $templateInstance references it.
+  // Embed the Allocate + Spawn TemplateDefinitions; their `$templateInstance` nodes reference these.
   const allocDef = buildAllocateTemplateDefinition()
+  const spawnDef = buildSpawnTemplateDefinition()
   const templates: Record<string, { title: string; nodes: XenolithNodeV1[]; edges: XenolithEdgeV1[] }> = {
     [allocDef.id]: {
       title: allocDef.title,
       nodes: allocDef.nodes as unknown as XenolithNodeV1[],
       edges: allocDef.edges as unknown as XenolithEdgeV1[],
+    },
+    [spawnDef.id]: {
+      title: spawnDef.title,
+      nodes: spawnDef.nodes as unknown as XenolithNodeV1[],
+      edges: spawnDef.edges as unknown as XenolithEdgeV1[],
     },
   }
   return { version: 'xenolith.v1', categories: MERGED_CATEGORY_COLORS, nodes, edges, comments, templates } as XenolithGraphV1

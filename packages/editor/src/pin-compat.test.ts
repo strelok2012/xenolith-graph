@@ -139,4 +139,36 @@ describe('canConnect', () => {
       expect(canConnect(b, a, false, { sourceEdges: 0, targetEdges: 1 })).toBe(false)
     })
   })
+
+  describe('type conversions (G2)', () => {
+    const out = pin({ id: 'o' as any, direction: 'out', type: 'number', multiple: true  })
+    const inn = pin({ id: 'i' as any, direction: 'in',  type: 'text',   multiple: false })
+
+    it('refuses mismatched types when no conversion is registered (default behaviour)', () => {
+      const types = new TypeRegistry()
+      types.register({ id: 'number', color: '#FCB400' })
+      types.register({ id: 'text',   color: '#9F69FF' })
+      expect(canConnect(out, inn, false, { types })).toBe(false)
+    })
+
+    it('accepts mismatched types when a registered conversion bridges them (either direction)', () => {
+      const types = new TypeRegistry()
+      types.register({ id: 'number', color: '#FCB400' })
+      types.register({ id: 'text',   color: '#9F69FF' })
+      types.registerConversion('number', 'text', (v) => String(v))
+      expect(canConnect(out, inn, false, { types })).toBe(true)                  // OUT(number) → IN(text)
+      // canConnect is orientation-agnostic — swapping args still lifts because compatible() is.
+      expect(canConnect(inn, out, false, { types })).toBe(true)
+    })
+
+    it('unregistering the conversion drops back to refusal (no stale lift)', () => {
+      const types = new TypeRegistry()
+      types.register({ id: 'number', color: '#FCB400' })
+      types.register({ id: 'text',   color: '#9F69FF' })
+      types.registerConversion('number', 'text', (v) => String(v))
+      expect(canConnect(out, inn, false, { types })).toBe(true)
+      types.unregisterConversion('number', 'text')
+      expect(canConnect(out, inn, false, { types })).toBe(false)
+    })
+  })
 })

@@ -54,4 +54,49 @@ describe('TypeRegistry', () => {
     expect(reg.compatible('scalar', 'mystery')).toBe(false)
     expect(reg.compatible('mystery', 'scalar')).toBe(false)
   })
+
+  describe('conversions (G2 — Baklava parity)', () => {
+    it('registerConversion + getConversion round-trip; missing pairs return undefined', () => {
+      const fn = (v: unknown): string => String(v)
+      reg.registerConversion('scalar', 'struct:Agent', fn)
+      expect(reg.getConversion('scalar', 'struct:Agent')).toBe(fn)
+      expect(reg.getConversion('struct:Agent', 'scalar')).toBeUndefined()        // directional
+      expect(reg.getConversion('scalar', 'nope')).toBeUndefined()
+    })
+
+    it('conversions are DIRECTIONAL — number→text registered does not imply text→number', () => {
+      reg.registerConversion('scalar', 'struct:Agent', (v) => v)
+      expect(reg.hasConversion('scalar', 'struct:Agent')).toBe(true)
+      expect(reg.hasConversion('struct:Agent', 'scalar')).toBe(false)
+    })
+
+    it('compatible() picks up a registered conversion (lifts to "can connect")', () => {
+      // Without conversion: not compatible.
+      expect(reg.compatible('scalar', 'struct:Agent')).toBe(false)
+      // After registering scalar→Agent: compatible direction-aware (compatible() stays symmetric
+      // because connection direction is decided by canConnect's IN/OUT, not by the type pair).
+      reg.registerConversion('scalar', 'struct:Agent', (v) => v)
+      expect(reg.compatible('scalar', 'struct:Agent')).toBe(true)
+      expect(reg.compatible('struct:Agent', 'scalar')).toBe(true)
+    })
+
+    it('convert() applies the registered fn; returns input unchanged for matching types', () => {
+      reg.registerConversion('scalar', 'struct:Agent', (v) => ({ wrapped: v }))
+      expect(reg.convert(7, 'scalar', 'struct:Agent')).toEqual({ wrapped: 7 })
+      expect(reg.convert(7, 'scalar', 'scalar')).toBe(7)                          // same type → identity
+    })
+
+    it('convert() throws on a missing conversion (helps surface bad wiring early)', () => {
+      expect(() => reg.convert('x', 'a', 'b')).toThrow(/no conversion/i)
+    })
+
+    it('unregisterConversion / clear removes them', () => {
+      reg.registerConversion('scalar', 'struct:Agent', (v) => v)
+      expect(reg.unregisterConversion('scalar', 'struct:Agent')).toBe(true)
+      expect(reg.unregisterConversion('scalar', 'struct:Agent')).toBe(false)
+      reg.registerConversion('scalar', 'struct:Agent', (v) => v)
+      reg.clear()
+      expect(reg.hasConversion('scalar', 'struct:Agent')).toBe(false)
+    })
+  })
 })

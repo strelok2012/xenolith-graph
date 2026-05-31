@@ -1,6 +1,7 @@
 import { createNodeId } from './ids.js'
 import type { Edge, Node, Pin, Vec2 } from './graph.js'
 import type { NodeId, PinId, EdgeId } from './ids.js'
+import { widgetBindKey } from './widget.js'
 
 /** Reserved node type for a macro — a group of nodes that collapses into a single compact node and
  *  expands back in place (inline, no drill-in subgraph). The graph stays flat: members live in the
@@ -71,8 +72,12 @@ export function macroProxyPins(boundary: MacroBoundary): MacroProxyPin[] {
 /** One restored-on-expand record per macro proxy edge: which fresh macro edge stands in for which
  *  original external↔member connection. Stored on the macro's state so expand can rebuild exactly. */
 export interface MacroProxyRecord {
-  /** Id of the macro proxy edge (external↔macro) created on collapse. */
-  edgeId: EdgeId
+  /** Id of the macro proxy edge (external↔macro) created on collapse. `null` for a LIFTED pin —
+   *  a widget-bound member IN-pin that wasn't wire-fed at collapse time but was surfaced anyway
+   *  so the user can wire to it later (UX parity with Template's open boundary pins). On a future
+   *  connect-to-macro-pin while collapsed, the editor fills this in with the real edge id so
+   *  expand rewires it correctly; while it stays null the pin is a no-op on expand. */
+  edgeId: EdgeId | null
   /** The macro's own proxy pin this crossing uses — fixed for the macro's lifetime, so collapse and
    *  expand just re-point the edge between this pin and the member pin without re-deriving pins. */
   macroPin: PinId
@@ -99,6 +104,15 @@ export interface MacroCollapsePlan {
   proxyMap: MacroProxyRecord[]
 }
 
+export interface PlanMacroCollapseOpts {
+  /** Member IN-pins to expose on the macro even though no external edge crosses them yet —
+   *  typically the widget-bound IN-pins discovered via `disconnectedWidgetBoundPins`. Each entry
+   *  becomes a proxy IN-pin with a sentinel `proxyMap` record (`edgeId: null`) so the editor can
+   *  finalise the bridge when the user later connects to it. Entries that overlap a wire-fed
+   *  boundary pin are silently de-duplicated. */
+  liftPins?: ReadonlyArray<{ node: NodeId; pin: PinId }>
+}
+
 /** Plan a collapse: derive proxy pins from boundary crossings and rewire each boundary edge onto the
  *  macro (external↔member becomes external↔macro.proxyPin). Pure — the caller applies it through the
  *  command bus and persists `proxyMap` on the macro. `typeOf` resolves a member pin's wire type so
@@ -109,6 +123,7 @@ export function planMacroCollapse(
   edges: ReadonlyArray<Edge>,
   pinInfo: (node: NodeId, pin: PinId) => { type: string; label?: string },
   mint: Minters,
+  opts: PlanMacroCollapseOpts = {},
 ): MacroCollapsePlan {
   const boundary = boundaryEdges(new Set(members), edges)
   const proxies = macroProxyPins(boundary)
@@ -149,7 +164,59 @@ export function planMacroCollapse(
       })
     }
   }
+
+  // Lifted pins: surface free widget-bound IN-pins as macro IN proxies even though no boundary
+  // edge crosses them. De-dupe against wire-fed proxies so a pin that's already exposed via a
+  // real edge isn't doubled. `edgeId: null` marks the entry pending — editor finalises it on the
+  // first connect-to-macro-pin while collapsed.
+  const wiredMemberPins = new Set(proxies.filter((p) => p.direction === 'in').map((p) => String(p.memberPin)))
+  for (const lift of opts.liftPins ?? []) {
+    if (wiredMemberPins.has(String(lift.pin))) continue
+    wiredMemberPins.add(String(lift.pin))
+    const pinId = mint.pin()
+    const info = pinInfo(lift.node, lift.pin)
+    pins.push({
+      id: pinId,
+      kind: 'data',
+      direction: 'in',
+      type: info.type,
+      multiple: false,
+      ...(info.label !== undefined ? { label: info.label } : {}),
+    })
+    proxyMap.push({
+      edgeId: null,
+      macroPin: pinId,
+      direction: 'in',
+      externalNode: '' as NodeId,                                                  // filled in when user wires it
+      externalPin: '' as PinId,
+      memberNode: lift.node,
+      memberPin: lift.pin,
+    })
+  }
   return { pins, disconnect, connect, proxyMap }
+}
+
+/** Find every widget-bound IN-pin on `member` that isn't already fed by an incoming edge — the
+ *  set that needs to be LIFTED onto a macro on collapse so the widget surface survives. Pure;
+ *  pass `hasIncomingEdge(pinId)` so the caller drives boundary-awareness from whatever index it
+ *  has (graph.edges() pass, edge-by-node cache, anything cheap). Skips button widgets (no pin
+ *  binding) and OUT-pins (display widgets — macro pins lift inputs only). */
+export function disconnectedWidgetBoundPins(
+  member: Node,
+  hasIncomingEdge: (pinId: PinId) => boolean,
+): Array<{ node: NodeId; pin: PinId }> {
+  const widgets = member.widgets
+  if (!widgets || widgets.length === 0) return []
+  const out: Array<{ node: NodeId; pin: PinId }> = []
+  for (const w of widgets) {
+    const key = widgetBindKey(w)
+    if (key === undefined) continue
+    const pin = member.pins.find((p) => p.label === key || String(p.id) === key)
+    if (!pin || pin.direction !== 'in') continue
+    if (hasIncomingEdge(pin.id)) continue
+    out.push({ node: member.id, pin: pin.id })
+  }
+  return out
 }
 
 export interface MacroExpandPlan {
@@ -165,6 +232,9 @@ export function planMacroExpand(proxyMap: ReadonlyArray<MacroProxyRecord>, mint:
   const disconnect: EdgeId[] = []
   const connect: Edge[] = []
   for (const r of proxyMap) {
+    // Lifted-but-never-wired pin (edgeId stayed null): no external edge to drop, no member edge
+    // to restore — the macro pin just disappears with the rest on expand. Skip entirely.
+    if (r.edgeId === null) continue
     disconnect.push(r.edgeId)
     const ext = { node: r.externalNode, pin: r.externalPin }
     const mem = { node: r.memberNode, pin: r.memberPin }

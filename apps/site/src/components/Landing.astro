@@ -18,32 +18,38 @@ const examplesLabel = lang === 'ru' ? 'Примеры' : lang === 'zh' ? '示例
 
 const t = (() => {
   if (lang === 'ru') return {
-    eyebrow: ['Node-graph редактор', 'PIXI v8 + GLSL', 'swappable темы'],
-    h1a:     'Вызовите',
-    h1b:     'init',
-    h1c:     'один раз — и получите редактор, который полюбят.',
-    sub:     'Красивый редактор узловых графов для веба — из коробки, без сборки дизайна с нуля. Перетаскивайте ноды, тяните связи, переключайте темы в один клик. Откройте playground или примеры и попробуйте сами за 10 секунд.',
+    eyebrow: ['Node-graph редактор', 'WebGL рендер', 'MIT-лицензия'],
+    h1:      'Красивое нодовое редактирование — готово к встраиванию.',
+    sub:     'Полированный node-graph редактор для веба — добавьте его в своё приложение, темизируйте, сохраняйте и восстанавливайте. Перетаскивайте, соединяйте, ныряйте в подграфы, вставляйте по Tab. Всё уже подключено в момент монтирования. Откройте playground или галерею примеров — оцените за минуту.',
     ctaPrimary:   'Открыть документацию',
     ctaSecondary: 'GitHub',
     showcaseA: 'Xen — тема по умолчанию',
     showcaseB: 'Liquid Glass — вдохновлено новым дизайном Apple',
-    showcaseSub: 'Один и тот же граф, две совершенно разные темы — переключаются в рантайме одной строкой. Liquid Glass даёт нодам настоящий стеклянный материал с преломлением и размытием фона.',
+    showcaseSub: 'Один и тот же граф, отрисованный двумя совершенно разными способами — переключаются в рантайме одной строкой. Liquid Glass даёт нодам настоящий стеклянный материал с преломлением и размытием фона.',
     metrics: [
-      { v: '2', l: 'темы из коробки' },
-      { v: 'GLSL', l: 'custom рендер' },
-      { v: 'PIXI', l: 'v8 + backdrop RT' },
+      { v: '6',   l: 'фреймворк-адаптеров' },
+      { v: '60', l: 'fps на 500 нодах' },
+      { v: 'MIT', l: 'open-source лицензия' },
     ],
     featuresTitle: 'Что внутри',
-    featuresSub: 'Базовый UX-фундамент любого визуального редактора + swappable-тема архитектура. Всё работает с первого вызова init.',
+    featuresSub: 'Всё что нужно реальному редактору графов из коробки — UX, модель, темы, плагины. Берите то что нужно — остальное не мешает.',
     features: [
-      { n: '01', h: 'Drop-in PIXI v8',         p: 'Один npm-пакет, один await init. Retina, анти-алиасинг, WebGL и WebGPU авто-выбор, бесшовный resize.' },
-      { n: '02', h: 'Swappable темы',           p: 'XenolithTheme = tokens + renderNode + createGrid hooks. Liquid Glass подменяет рендер ноды на custom GLSL — не просто палитра, а другой материал. editor.setTheme() в рантайме.' },
-      { n: '03', h: 'Liquid Glass шейдер',      p: 'PIXI Mesh + GLSL: SDF rounded rect, edge refraction вдоль outward normal, 13×13 gaussian по backdrop snapshot, vertical tint, luminous rim. Темы без backdrop платят 0 extra-pass.' },
-      { n: '04', h: 'Collapse / Expand',        p: 'Любая нода сворачивается в pill-форму одним кликом по шеврону. Пины переезжают на дугу скругления.' },
-      { n: '05', h: 'Multi-drag со snap',       p: 'Marquee-selection, drag всей выборки сразу, snap к сетке 8px, anchor-based (не ломает relative offsets). Зажмите Alt — snap отключается.' },
-      { n: '06', h: 'Pin-drag / Alt-rewire',    p: 'Тащите с output пина на input — живой ghost edge с type-compat валидацией. Alt+drag за подключённый пин отрывает edge и продолжает как rewire. Esc / drop в пустоту восстанавливают оригинал.' },
-      { n: '07', h: 'Headless core',            p: 'Граф, команды, undo/redo, selection — zero runtime deps. Рендерер можно заменить без переписывания логики.' },
-      { n: '08', h: 'Mobile — скоро',           p: 'v0.3: полная поддержка touch с two-finger pan + pinch-zoom, finger-sized hit-area для пинов (уже в рендере), tap-to-tap connect режим. Ни один конкурент на iPad сегодня не работает нормально.' },
+      { n: '01', h: 'Две темы, runtime-смена',
+        p: 'Xen — production-ready по умолчанию; Liquid Glass — стеклянный материал с преломлением и размытием фона. setTheme() переключает между ними вживую. Берите готовое, пишите свою или подключайте третью.' },
+      { n: '02', h: 'Под любой фреймворк',
+        p: 'Первородные адаптеры для React, Vue, Svelte, Solid, Angular и Web Components — плюс vanilla-путь без зависимостей. Ядро framework-agnostic, zero-dep, headless.' },
+      { n: '03', h: 'Палитра вставки · команды · хоткеи',
+        p: 'Tab открывает fuzzy-поиск по палитре. Регистрируйте именованные команды и привязывайте хоткеи (Mod+Z, Cmd+Shift+K) — ваши шорткаты живут рядом со встроенными. Tab-drag с пустого пина создаёт совместимую ноду на drop.' },
+      { n: '04', h: 'Пины, рёбра, multi-drag',
+        p: 'Типизированные пины с проверкой совместимости и регистрируемыми конверсиями. Marquee-выбор, snap к сетке, Alt-rewire, лейблы на рёбрах, стрелки, анимированные рёбра, четыре стиля пути (bezier, smoothstep, step, linear).' },
+      { n: '05', h: 'Виджеты внутри нод',
+        p: 'Декларативные number, slider, combo, text, toggle, color, button — плюс кастомные canvas-draw и DOM-mounted контроллеры (React / Vue / Svelte тоже работают). Условная видимость по состоянию, properties-sidebar, live-значения на display-виджетах.' },
+      { n: '06', h: 'Макросы, шаблоны, подграфы',
+        p: 'Сгруппируйте выборку в inline-макро или вытащите как переиспользуемый template для повторных инстансов. Double-click — нырок внутрь, breadcrumb отслеживает путь. Конверсия макро ↔ template в обе стороны.' },
+      { n: '07', h: 'Save, restore, export',
+        p: 'Версионированный xenolith.v1 JSON с per-schema migrate-хуками — старые графы апгрейдятся автоматически. Встроен импортёр workflow ComfyUI. Экспорт ВСЕГО графа (а не viewport) в PNG или JPEG любого разрешения.' },
+      { n: '08', h: 'Auto-layout · minimap · большие графы',
+        p: 'Plug-in адаптеры для Dagre и ELK раскладывают граф одним вызовом (с анимацией tween). Встроенная мини-карта, виртуализация viewport после 300 нод, level-of-detail рендеринг, встроенная панель свойств которая следует за выборкой.' },
     ],
     quickStartTitle: 'Старт за 30 секунд',
     quickStartCode: `import { XenolithEditor } from '@xenolith/editor'
@@ -51,42 +57,47 @@ const t = (() => {
 // Один вызов — фонты, PIXI, viewport, grid, interaction уже подняты.
 const editor = await XenolithEditor.init('#app')
 
-// Добавляем ноды и связи.
-editor.addNode(myNode, { category: 'logic', title: 'Source' })
-editor.connect(a, 0, b, 1, { sourceType: 'float' })
+// Загрузите граф или соберите его — зарегистрируйте схемы и спавните из палитры.
+editor.loadJSON(myGraph)
 
-// Готово. Hover, select, drag, collapse, zoom, pan, marquee — работают.`,
+// Готово. Drag, connect, undo, dive, snap, save — всё уже работает.`,
     finalH:   'Готов к интеграции',
-    finalP:   'MIT-лицензия. Опубликован в npm. Открыт для PR и issues — fontend для AI-workflow, shader graph, dataflow ediotrs, любых нодовых UI.',
+    finalP:   'MIT-лицензия, опубликован в npm. Сделан для frontend AI-workflow, shader/материал-редакторов, dataflow-редакторов и любого нодового UI. PR и issues приветствуются.',
     finalCta: 'Документация →',
   }
   if (lang === 'zh') return {
-    eyebrow: ['节点图编辑器', 'PIXI v8 + GLSL', '可切换主题'],
-    h1a:     '调用一次',
-    h1b:     'init',
-    h1c:     '，即可交付让人喜爱的节点编辑器。',
-    sub:     '面向 Web 的精美节点图编辑器，开箱即用，无需从零搭建设计。拖拽节点、拉出连线、一键切换主题。打开 playground 或示例，10 秒上手。',
+    eyebrow: ['节点图编辑器', 'WebGL 渲染', 'MIT 许可证'],
+    h1:      '精美的节点编辑 — 为嵌入而生。',
+    sub:     '面向 Web 的精雕节点图编辑器 — 嵌入任意应用、自定义主题、保存与恢复。拖拽、连线、深入子图、按 Tab 插入节点。编辑器挂载即刻可用。访问 playground 或示例画廊，一分钟内即可上手。',
     ctaPrimary:   '查看文档',
     ctaSecondary: 'GitHub',
     showcaseA: 'Xen — 默认主题',
     showcaseB: 'Liquid Glass — 灵感源自苹果全新设计',
     showcaseSub: '同一个图，两种截然不同的主题，运行时一行切换。Liquid Glass 为节点赋予真实的玻璃材质，带折射与背景模糊。',
     metrics: [
-      { v: '2', l: '内置主题' },
-      { v: 'GLSL', l: '自定义渲染' },
-      { v: 'PIXI', l: 'v8 + backdrop RT' },
+      { v: '6',   l: '框架适配器' },
+      { v: '60', l: 'fps / 500 节点' },
+      { v: 'MIT', l: '开源许可证' },
     ],
     featuresTitle: '内置什么',
-    featuresSub:   '任何可视化编辑器的基础 UX + 可切换主题架构。init 后立即可用。',
+    featuresSub:   '真实图编辑器所需的一切，开箱即用 — UX、模型、主题、插件。需要什么就用什么，其余不挡路。',
     features: [
-      { n: '01', h: '即插即用的 PIXI v8',  p: '一个 npm 包，一次 await init。Retina、抗锯齿、WebGL/WebGPU 自动选择，无缝 resize。' },
-      { n: '02', h: '可切换主题',           p: 'XenolithTheme = tokens + renderNode + createGrid hooks。Liquid Glass 用自定义 GLSL 替换节点渲染——不仅是调色板，是不同的材质。editor.setTheme() 运行时切换。' },
-      { n: '03', h: 'Liquid Glass 着色器',  p: 'PIXI Mesh + GLSL：SDF 圆角矩形、沿外法线的边缘折射、13×13 高斯模糊基于背景快照、垂直渐变着色、发光边框。不需要 backdrop 的主题零额外开销。' },
-      { n: '04', h: '折叠 / 展开',         p: '任何节点一键折叠为胶囊形态。引脚沿圆角动画就位。' },
-      { n: '05', h: '多选拖动 + 吸附',     p: '框选、整体拖动，默认吸附 8px 网格，锚点对齐（不破坏相对偏移）。按住 Alt 关闭吸附。' },
-      { n: '06', h: '引脚拖拽 / Alt 重连', p: '从输出引脚拖到输入——实时幽灵线 + 类型兼容验证。Alt+拖已连接引脚，断开并继续重连。Esc / 空白拖放恢复原边。' },
-      { n: '07', h: '无头核心',            p: '图、命令、撤销/重做、选区——零运行时依赖。渲染器可替换。' },
-      { n: '08', h: '移动端 — 即将',       p: 'v0.3：完整 touch 支持，双指平移 + 捏合缩放，手指大小的引脚命中区（已在渲染器中），点击-点击连接模式。今天 iPad 上没有竞品能正常工作。' },
+      { n: '01', h: '两种主题，运行时切换',
+        p: 'Xen 是生产就绪的默认主题；Liquid Glass 提供真实玻璃材质，带折射与背景模糊。setTheme() 实时切换。选用其一、自定义或写第三套。' },
+      { n: '02', h: '任意框架皆可',
+        p: '为 React、Vue、Svelte、Solid、Angular 与 Web Components 提供官方适配器，也支持纯 vanilla。核心框架无关、零依赖、headless。' },
+      { n: '03', h: '插入面板 · 命令 · 快捷键',
+        p: 'Tab 打开模糊搜索面板。注册命名命令并绑定快捷键（Mod+Z、Cmd+Shift+K）— 您的快捷键与内置共存。从空引脚 Tab-drag 即可在松开时生成兼容节点。' },
+      { n: '04', h: '引脚、连线、多选拖动',
+        p: '类型化引脚带兼容检查与可注册的类型转换。框选、网格吸附、Alt 重连、连线标签、箭头、动画连线、四种路径风格（bezier、smoothstep、step、linear）。' },
+      { n: '05', h: '节点内置部件',
+        p: '声明式 number、slider、combo、text、toggle、color、button — 加上自定义 canvas 与 DOM 挂载控件（React / Vue / Svelte 都行）。基于状态的条件可见性、属性侧栏、display 部件实时取值。' },
+      { n: '06', h: '宏、模板、子图',
+        p: '将选区组合成内嵌宏，或抽取为可复用的 template 以批量实例化。双击进入；面包屑追踪路径。宏与 template 双向互转。' },
+      { n: '07', h: '保存、恢复、导出',
+        p: '版本化的 xenolith.v1 JSON，附带每个 schema 的 migrate 钩子 — 旧图自动升级。内置 ComfyUI workflow 导入器。导出整张图（而非视口）为任意分辨率的 PNG 或 JPEG。' },
+      { n: '08', h: '自动布局 · 缩略图 · 大图',
+        p: 'Dagre 与 ELK 适配器一次调用即可排版（带 tween 动画）。内置 minimap、超过 300 节点后启用视口虚拟化、LOD 渲染、随选区移动的属性面板。' },
     ],
     quickStartTitle: '30 秒上手',
     quickStartCode: `import { XenolithEditor } from '@xenolith/editor'
@@ -94,42 +105,47 @@ editor.connect(a, 0, b, 1, { sourceType: 'float' })
 // 一次调用——字体、PIXI、视口、栅格、交互全部就绪。
 const editor = await XenolithEditor.init('#app')
 
-// 添加节点与连接。
-editor.addNode(myNode, { category: 'logic', title: 'Source' })
-editor.connect(a, 0, b, 1, { sourceType: 'float' })
+// 加载图，或注册 schema 后从面板生成节点。
+editor.loadJSON(myGraph)
 
-// 完成。悬停、选择、拖动、折叠、缩放、平移、框选都已工作。`,
+// 完成。拖拽、连线、撤销、深入、吸附、保存——一切都已工作。`,
     finalH:   '可立即集成',
-    finalP:   'MIT 许可证。发布在 npm。欢迎 PR 与 issue——AI 工作流前端、shader 编辑器、数据流编辑器，任何节点 UI。',
+    finalP:   'MIT 许可证。发布在 npm。为 AI 工作流前端、shader 与材质编辑器、dataflow 编辑器以及任意节点 UI 打造。欢迎 PR 与 issue。',
     finalCta: '文档 →',
   }
   return {
-    eyebrow: ['Node-graph editor', 'PIXI v8 + GLSL', 'swappable themes'],
-    h1a:     'Call',
-    h1b:     'init',
-    h1c:     'once — and ship a node editor people love.',
-    sub:     'A beautiful node-graph editor for the web — gorgeous out of the box, no design work required. Drag nodes, pull connections, swap the whole look with one click. Open the playground or browse the examples and try it yourself in ten seconds.',
+    eyebrow: ['Node-graph editor', 'WebGL renderer', 'MIT licence'],
+    h1:      'Beautiful node editing. Built to embed.',
+    sub:     'A polished node-graph editor for the web — drop it in your app, theme it, save and restore it. Drag, connect, dive into subgraphs, hit Tab to insert. Everything is already wired the moment the editor mounts. Tour the playground or the example gallery to feel it in under a minute.',
     ctaPrimary:   'Open documentation',
     ctaSecondary: 'GitHub',
     showcaseA: 'Xen — the default theme',
     showcaseB: 'Liquid Glass — inspired by new Apple design',
-    showcaseSub: 'The same graph, two completely different looks — swapped at runtime in a single line. Liquid Glass gives every node a real glass material with refraction and a blurred backdrop.',
+    showcaseSub: 'The same graph rendered two completely different ways — swapped at runtime in a single line. Liquid Glass gives every node a real glass material with refraction and a blurred backdrop.',
     metrics: [
-      { v: '2', l: 'themes in the box' },
-      { v: 'GLSL', l: 'custom material' },
-      { v: 'PIXI', l: 'v8 + backdrop RT' },
+      { v: '6',   l: 'framework adapters' },
+      { v: '60', l: 'fps on 500 nodes' },
+      { v: 'MIT', l: 'open-source licence' },
     ],
     featuresTitle: 'What is inside',
-    featuresSub: 'The UX baseline any canvas editor needs plus a swappable-theme architecture. Everything works the moment init returns.',
+    featuresSub: 'Everything a real-world graph editor needs out of the box — UX, model, themes, plugins. Pick the parts you want, the rest stays out of the way.',
     features: [
-      { n: '01', h: 'Drop-in PIXI v8',     p: 'One npm package, one await init. Retina, anti-aliasing, WebGL/WebGPU auto-selected, seamless resize.' },
-      { n: '02', h: 'Swappable themes',    p: 'XenolithTheme = tokens + renderNode + createGrid hooks. Liquid Glass replaces renderNode with custom GLSL — not a palette swap, a different material. editor.setTheme() at runtime.' },
-      { n: '03', h: 'Liquid Glass shader', p: 'PIXI Mesh + GLSL: SDF rounded rect, edge refraction along the outward normal, 13×13 gaussian over a backdrop snapshot, vertical tint, luminous rim. Backdrop pass is opt-in per theme — Xen pays zero extra cost.' },
-      { n: '04', h: 'Collapse / Expand',   p: 'Any node folds to pill form with one chevron click. Pins reposition onto the rounded end-cap arcs.' },
-      { n: '05', h: 'Multi-drag with snap', p: 'Marquee, drag the whole selection at once, default 8 px snap-to-grid, anchor-based (preserves relative offsets). Alt disables snap.' },
-      { n: '06', h: 'Pin drag / Alt rewire', p: 'Drag from an output to an input — live ghost edge with type-compat validation. Alt+drag on a connected pin tears the edge off and continues as rewire. Esc / drop in void snaps the original back.' },
-      { n: '07', h: 'Headless core',        p: 'Graph, commands, undo/redo, selection — zero runtime deps. Renderer is swappable without rewriting the logic.' },
-      { n: '08', h: 'Mobile — coming',     p: 'v0.3 ships full touch support: two-finger pan + pinch-zoom, finger-sized pin hit-areas (already in the renderer), tap-to-tap connect mode. No competitor handles tablets well today.' },
+      { n: '01', h: 'Two themes, runtime swap',
+        p: 'Xen is the production-ready default; Liquid Glass adds a real glass material with refraction and a blurred backdrop. setTheme() switches between them live — pick one, ship your own, or write a third.' },
+      { n: '02', h: 'Built for any framework',
+        p: 'First-party adapters for React, Vue, Svelte, Solid, Angular and Web Components — and a vanilla path that needs nothing. The core is framework-agnostic, zero-dep, headless.' },
+      { n: '03', h: 'Insert palette · commands · hotkeys',
+        p: 'Tab opens a fuzzy-search palette. Register named commands and bind hotkeys (Mod+Z, Cmd+Shift+K) — your shortcuts coexist with built-ins. Tab-drag from an empty pin spawns a compatible node on drop.' },
+      { n: '04', h: 'Pins, edges, multi-drag',
+        p: 'Typed pins with compatibility checks and registerable conversions. Marquee-select, snap-to-grid, Alt-rewire, edge labels, arrowheads, animated edges, four path styles (bezier, smoothstep, step, linear).' },
+      { n: '05', h: 'Widgets inside nodes',
+        p: 'Declarative number, slider, combo, text, toggle, colour, button — plus custom canvas-drawn and DOM-mounted controllers (React / Vue / Svelte work too). Conditional visibility on widget state, properties sidebar, live values on display widgets.' },
+      { n: '06', h: 'Macros, templates, subgraphs',
+        p: 'Group a selection into an inline macro, or extract it as a reusable template you can instantiate elsewhere. Double-click to dive in; a breadcrumb tracks the path. Convert between macro and template either direction.' },
+      { n: '07', h: 'Save, restore, export',
+        p: 'Versioned xenolith.v1 JSON with per-schema migrate hooks — old graphs upgrade automatically. ComfyUI workflow importer included. Export the entire graph (not just the viewport) to PNG or JPEG at any resolution.' },
+      { n: '08', h: 'Auto-layout · minimap · large graphs',
+        p: 'Drop-in plugins for Dagre and ELK arrange any graph with one call (animated tweens included). Built-in minimap, viewport virtualisation past 300 nodes, level-of-detail rendering, and an in-editor properties panel that travels with your selection.' },
     ],
     quickStartTitle: '30-second start',
     quickStartCode: `import { XenolithEditor } from '@xenolith/editor'
@@ -137,13 +153,12 @@ editor.connect(a, 0, b, 1, { sourceType: 'float' })
 // One call — fonts, PIXI, viewport, grid, interactions are wired.
 const editor = await XenolithEditor.init('#app')
 
-// Add nodes and edges.
-editor.addNode(myNode, { category: 'logic', title: 'Source' })
-editor.connect(a, 0, b, 1, { sourceType: 'float' })
+// Load a graph, or build one by registering schemas + spawning from the palette.
+editor.loadJSON(myGraph)
 
-// Done. Hover, select, drag, collapse, zoom, pan, marquee — they all work.`,
+// Done. Drag, connect, undo, dive, snap, save — they all just work.`,
     finalH:   'Ready to embed',
-    finalP:   'MIT licence. Published on npm. PRs and issues welcome — AI workflow front-ends, shader graphs, dataflow editors, anything node-based.',
+    finalP:   'MIT licence, published on npm. Built for AI-workflow front-ends, shader and material editors, dataflow editors, anything node-based. PRs and issues welcome.',
     finalCta: 'Documentation →',
   }
 })()
@@ -156,9 +171,7 @@ editor.connect(a, 0, b, 1, { sourceType: 'float' })
       <div class="xn-eyebrow-row">
         {t.eyebrow.map((e) => <span class="xn-eyebrow">{e}</span>)}
       </div>
-      <h1 class="xn-h1">
-        {t.h1a} <code class="xn-h1-code">{t.h1b}('#app')</code> {t.h1c}
-      </h1>
+      <h1 class="xn-h1">{t.h1}</h1>
       <p class="xn-hero-sub">{t.sub}</p>
       <div class="xn-cta-row">
         <a class="xn-btn xn-btn-primary" href={docPath}>{t.ctaPrimary} <span aria-hidden="true">→</span></a>

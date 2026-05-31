@@ -34,6 +34,7 @@
     "pixi.js": "^8.6.0"
   },
   "devDependencies": {
+    "jsdom": "^25.0.0",
     "pixi.js": "^8.6.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"

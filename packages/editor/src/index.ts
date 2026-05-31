@@ -31,6 +31,7 @@ import {
   flattenMacroProxies,
   flattenAllTemplateInstances,
   planMacroCollapse,
+  disconnectedWidgetBoundPins,
   MACRO_TYPE,
   type MacroProxyRecord,
   planTemplateExtraction,
@@ -54,6 +55,7 @@ import {
   widgetValue,
   widgetBindKey,
   widgetVisibility,
+  migrateNodePayload,
   comboOptions,
   type CoreEvents,
   type WidgetStyle,
@@ -69,6 +71,7 @@ import {
   type PinDirection,
   type WidgetSpec,
   type NodeSchema,
+  type PinSchema,
   type NodeGlyph,
 } from '@xenolith/core'
 import {
@@ -140,6 +143,9 @@ import {
 } from '@xenolith/render-pixi'
 import { xenTokens, loadXenFonts, mergeTheme, type DeepPartial, type XenTokens } from '@xenolith/theme-xen'
 import { canConnect } from './pin-compat.js'
+import { CommandRegistry } from './commands-registry.js'
+import { SidebarManager } from './sidebar.js'
+import { PaletteSidebar, type PaletteSidebarOpts } from './palette-sidebar.js'
 import { computeRerouteBridges } from './reroute-bridge.js'
 import { spliceCompatible, danglingRerouteRemovalPlan } from './edge-insert.js'
 import { InsertPalette } from './palette.js'
@@ -148,7 +154,7 @@ import { EdgeContextMenu, type EdgeMenuItem } from './edge-menu.js'
 import { WidgetOverlay, type OverlayRect } from './widget-overlay.js'
 import { Minimap, type MinimapPosition } from './minimap.js'
 import { EditorControls, type ControlsOptions, type ControlsPosition } from './controls.js'
-import { createGraphEventBridge, type EditorEvents } from './events.js'
+import { createGraphEventBridge, firePreventable, type EditorEvents } from './events.js'
 import { PluginHost, type PluginContext, type XenolithPlugin } from './plugin.js'
 import {
   parseXenolithGraph,
@@ -176,7 +182,11 @@ export type { NodeSchema, PinSchema, NodeSearchResult, WidgetSpec, WidgetStyle, 
 export type { CustomWidgetController, CanvasWidgetController, DomWidgetController, CustomWidgetContext, ViewportState } from '@xenolith/render-pixi'
 export type { MinimapPosition } from './minimap.js'
 export type { ControlsOptions, ControlsPosition } from './controls.js'
-export type { EditorEvents } from './events.js'
+export type { EditorEvents, PreventablePayload } from './events.js'
+export { CommandRegistry, Commands } from './commands-registry.js'
+export type { CommandSpec, HotkeySpec, CommandId } from './commands-registry.js'
+export { SidebarManager } from './sidebar.js'
+export type { SidebarManagerOpts } from './sidebar.js'
 export { PluginHost } from './plugin.js'
 export type { XenolithPlugin, PluginContext } from './plugin.js'
 export type { FlattenedTemplate, PinRef } from '@xenolith/core'
@@ -357,6 +367,9 @@ export class XenolithEditor {
   /** The active (displayed) command bus — the root document's bus at depth 0. */
   get commandBus(): CommandBus { return this.#displayBus }
   readonly #app: Application
+  /** True after `destroy()` runs. PIXI's `app.screen` getter throws on a destroyed Application
+   *  instead of returning null, so we gate every access on this flag. */
+  #destroyed = false
   readonly #host: HTMLElement
   /** Toggleable stats overlay (FPS, nodes, edges, selection, zoom). Hidden by default; press
    *  backtick (`) to toggle, or call `setStatsVisible()`. */
@@ -431,6 +444,7 @@ export class XenolithEditor {
   #diveStack: { graph: Graph; bus: CommandBus; selectionIds: NodeId[]; viewport: ViewportState; defId: TemplateDefId | null }[] = []
   #currentDefId: TemplateDefId | null = null
   #breadcrumbEl: HTMLDivElement | null = null
+  #breadcrumbDisabled = false
   /** Measures label/title text so `addNode` can backfill a missing `node.size` from content.
    *  Bound to PIXI's CanvasTextMetrics; falls back to a char-width estimate if that throws (e.g.
    *  a headless environment without a 2D canvas). */
@@ -457,6 +471,9 @@ export class XenolithEditor {
   /** Custom pin-type descriptors (colour/shape/compatibility). Read by connection validation and the
    *  node renderer. Hosts/plugins populate it via `editor.types`. */
   readonly #types = new TypeRegistry()
+  readonly #commands = new CommandRegistry()
+  #sidebar: SidebarManager | null = null
+  #paletteSidebar: PaletteSidebar | null = null
   /** Header glyph icons by name (built-in Feather set + host/plugin-registered). A node's
    *  `glyph.icon` resolves through this. Populated via `editor.icons`. */
   readonly #icons = new IconRegistry()
@@ -497,6 +514,11 @@ export class XenolithEditor {
    *  runs, or once per `step()`. The editor itself never reads them — it's not a runtime. */
   readonly #tickListeners = new Set<(dtMs: number) => void>()
   #looping = false
+  /** Frame interval (ms) when the host requested an `startLoop({fps})` throttle. 0 = run every
+   *  animation frame (default 60 fps). Time since the last fired tick accumulates and only
+   *  releases when ≥ `#tickInterval` ms have passed. */
+  #tickInterval = 0
+  #tickAccum = 0
   #isValidConnection: ((c: ConnectionRequest) => boolean) | undefined
   #statusGfx: Graphics | null = null
   readonly #nodeStatus = new Map<NodeId, NodeStatus>()
@@ -590,6 +612,10 @@ export class XenolithEditor {
       ;(app.canvas as HTMLCanvasElement).addEventListener('contextmenu', this.#onContextMenu)
       ;(app.canvas as HTMLCanvasElement).addEventListener('pointerdown', this.#onRightDown)
       ;(app.canvas as HTMLCanvasElement).addEventListener('pointerup',   this.#onRightUp)
+      // G13 — HTML5 file/text DnD onto the canvas. preventDefault on dragover is required for
+      // drop to fire; on drop we hit-test the world point against nodes and emit `node:drop`.
+      ;(app.canvas as HTMLCanvasElement).addEventListener('dragover', this.#onDragOver)
+      ;(app.canvas as HTMLCanvasElement).addEventListener('drop',     this.#onDrop)
     } else {
       this.#interaction = null
     }
@@ -681,7 +707,19 @@ export class XenolithEditor {
     app.ticker.add(() => {
       // Drive the host loop first: a sim tick may mutate the graph (via the command bus), which sets
       // #needsRender below, so the frame it produces paints in the same pass. Cheap no-op when idle.
-      if (this.#looping && this.#tickListeners.size > 0) this.#emitTick(this.#app.ticker.deltaMS)
+      if (this.#looping && this.#tickListeners.size > 0) {
+        const dt = this.#app.ticker.deltaMS
+        if (this.#tickInterval <= 0) {
+          this.#emitTick(dt)
+        } else {
+          // Throttled tick — accumulate real frame time, fire onTick once per interval boundary.
+          this.#tickAccum += dt
+          if (this.#tickAccum >= this.#tickInterval) {
+            this.#emitTick(this.#tickAccum)
+            this.#tickAccum = 0
+          }
+        }
+      }
       if (this.#statsVisible) this.#tickStats()
       // Keep animated edges flowing: bump the dash phase and mark dirty each frame, but only while
       // at least one animated edge exists — otherwise the graph stays render-on-demand idle.
@@ -702,8 +740,15 @@ export class XenolithEditor {
         this.#theme.onFrame?.(this.#themeContext())
         this.#drawStatuses()
       }
-      this.#minimap?.setViewport(this.#viewport.state, this.#app.screen.width, this.#app.screen.height)
-      this.#app.render()
+      // Ticker may fire after destroy() — PIXI's `app.screen` getter THROWS on a destroyed
+      // Application (not null-return), so gate on the explicit flag.
+      if (this.#destroyed) return
+      const screen = this.#app.screen
+      this.#minimap?.setViewport(this.#viewport.state, screen.width, screen.height)
+      // Tolerate transient PIXI v8 filter races (BindGroup.setResource null in _applyFiltersToTexture
+      // when a bake-glow cache miss collides with a re-render). Logging > killing the ticker —
+      // the next frame is almost always fine.
+      try { this.#app.render() } catch (err) { console.warn('[editor] PIXI render frame failed (continuing)', err) }
       this.#positionDomWidgets()
     })
 
@@ -783,8 +828,12 @@ export class XenolithEditor {
     this.#resizeScheduled = true
     requestAnimationFrame(() => {
       this.#resizeScheduled = false
-      this.#minimap?.place(this.#app.screen.width, this.#app.screen.height)
-      this.#minimap?.setViewport(this.#viewport.state, this.#app.screen.width, this.#app.screen.height)
+      // Editor may have been destroyed between scheduling and the frame firing (React unmount,
+      // HMR, etc.). PIXI's `app.screen` getter throws on a destroyed Application — gate on flag.
+      if (this.#destroyed) return
+      const screen = this.#app.screen
+      this.#minimap?.place(screen.width, screen.height)
+      this.#minimap?.setViewport(this.#viewport.state, screen.width, screen.height)
       this.#updateGrid()
       this.#positionDomWidgets()
       this.#requestRender()
@@ -1261,6 +1310,32 @@ export class XenolithEditor {
     this.#openMenuAt({ x: e.offsetX, y: e.offsetY })
   }
 
+  /** HTML5 DnD — dragover MUST preventDefault to mark the area as a drop target. */
+  readonly #onDragOver = (e: DragEvent): void => {
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+  }
+  /** Translate a file/text drop into a `node:drop` event with the world-space drop position and
+   *  the node it landed on (if any). Hosts wire image uploaders, JSON loaders, etc. through this. */
+  readonly #onDrop = (e: DragEvent): void => {
+    e.preventDefault()
+    const dt = e.dataTransfer
+    if (!dt) return
+    const screen = { x: e.offsetX, y: e.offsetY }
+    const world = screenToWorld(screen, this.#viewport.state)
+    const nodeId = this.#pickNodeAt(world)
+    const files = Array.from(dt.files ?? [])
+    const items: Record<string, string> = {}
+    for (const t of dt.types) {
+      // Skip the synthetic "Files" entry (it isn't a string payload — files are surfaced via `files`).
+      if (t === 'Files') continue
+      const data = dt.getData(t)
+      if (data) items[t] = data
+    }
+    const text = items['text/plain'] ?? null
+    this.#events.emit('node:drop', { nodeId, files, text, items, position: world })
+  }
+
   /** Pick the deepest interactive target under `screen` (pin → node → edge midpoint) and open the
    *  matching context menu. Called from `#onRightUp` after confirming the gesture wasn't a pan. */
   #openMenuAt(screen: { x: number; y: number }): void {
@@ -1392,6 +1467,20 @@ export class XenolithEditor {
   /** Force a repaint on the next frame regardless of internal dirty tracking. Hosts can call
    *  this after mutating the canvas element / DPR or any state the editor can't observe. */
   requestRender(): void { this.#requestRender() }
+
+  /** Ephemeral position write — bypasses the command bus AND syncs the view + incident edges in
+   *  the same beat. The autolayout plugin's tween uses this per animation frame; the FINAL
+   *  position commits once through a normal MoveNode so undo stays clean. */
+  #setNodePositionEphemeral(nodeId: NodeId, x: number, y: number): void {
+    const node = this.graph.getNode(nodeId)
+    if (!node) return
+    ;(node as { position: { x: number; y: number } }).position = { x, y }
+    const view = this.#views.get(nodeId)
+    if (view) view.container.position.set(x, y)
+    const incident = this.#edgesByNode.get(nodeId)
+    if (incident) for (const eid of incident) this.#redrawEdge(eid)
+    this.#requestRender()
+  }
 
   /** Show or hide the stats overlay (FPS, node/edge/selection counts, zoom). Hotkey: backtick.
    *  No render cost when hidden — the overlay is detached from the DOM. */
@@ -1594,7 +1683,11 @@ export class XenolithEditor {
     if (opts.resizeToWindow !== false) initOpts.resizeTo = window
     await app.init(initOpts)
     el.appendChild(app.canvas)
-    return new XenolithEditor(app, el, theme, opts)
+    const editor = new XenolithEditor(app, el, theme, opts)
+    // Debug aid for screenshot tooling, e2e probes, perf measurements — always expose the most
+    // recently constructed editor on globalThis. Overwritten by next init, no leak.
+    ;(globalThis as { __xenoEditor?: XenolithEditor }).__xenoEditor = editor
+    return editor
   }
 
   // ----- theme hook wrappers ---------------------------------------------------------------
@@ -2170,7 +2263,20 @@ export class XenolithEditor {
     // not floating above the group).
     const macro = createMacro({ x: minX, y: minY }, members)
     const edges = [...this.graph.edges()] as Edge[]
-    const plan = planMacroCollapse(macro.id, members, edges, (n, p) => this.#pinInfo(n, p), { pin: createPinId, edge: createEdgeId })
+    // Lift free widget-bound IN-pins of every member onto the macro so the macro's pin surface
+    // matches Convert-to-Template (which exposes the same open boundary pins). Without this, the
+    // user collapsing a Transform+Validate group loses access to its `scale/mode/mirror/response`
+    // widget pins — the bug from 2026-05-30 (image #25/#26).
+    const incomingByPin = new Set<string>()
+    for (const e of edges) incomingByPin.add(String(e.to.pin))
+    const hasIncoming = (pinId: PinId): boolean => incomingByPin.has(String(pinId))
+    const liftPins: { node: NodeId; pin: PinId }[] = []
+    for (const id of members) {
+      const n = this.graph.getNode(id) as Node | undefined
+      if (!n) continue
+      for (const lift of disconnectedWidgetBoundPins(n, hasIncoming)) liftPins.push(lift)
+    }
+    const plan = planMacroCollapse(macro.id, members, edges, (n, p) => this.#pinInfo(n, p), { pin: createPinId, edge: createEdgeId }, { liftPins })
     macro.pins = plan.pins
     macro.state['proxyMap'] = plan.proxyMap as unknown
     // Collapsed macro reads as an ORDINARY node with pins (NOT a pill) — render.collapsed stays false;
@@ -2608,7 +2714,7 @@ export class XenolithEditor {
   /** Render (or remove) the dive breadcrumb in the overlay root: Root / DefTitle / … — each segment
    *  pops to that depth. Hidden at the root document. */
   #updateBreadcrumb(): void {
-    if (this.diveDepth === 0) {
+    if (this.diveDepth === 0 || this.#breadcrumbDisabled || this.#liveMode) {
       this.#breadcrumbEl?.remove()
       this.#breadcrumbEl = null
       return
@@ -2763,7 +2869,18 @@ export class XenolithEditor {
       const members = macroMembers(macro)
       if (members.length === 0) continue
       const edges = [...this.graph.edges()] as Edge[]
-      const plan = planMacroCollapse(macro.id, members, edges, (n, p) => this.#pinInfo(n, p), { pin: createPinId, edge: createEdgeId })
+      // Same widget-pin lift as `createMacroFromSelection` — keep both paths consistent so a macro
+      // built via group-from-selection and one rebuilt here (template extraction etc.) have the
+      // same pin surface for the same members.
+      const incomingByPin = new Set<string>()
+      for (const e of edges) incomingByPin.add(String(e.to.pin))
+      const liftPins: { node: NodeId; pin: PinId }[] = []
+      for (const id of members) {
+        const n = this.graph.getNode(id) as Node | undefined
+        if (!n) continue
+        for (const lift of disconnectedWidgetBoundPins(n, (pid) => incomingByPin.has(String(pid)))) liftPins.push(lift)
+      }
+      const plan = planMacroCollapse(macro.id, members, edges, (n, p) => this.#pinInfo(n, p), { pin: createPinId, edge: createEdgeId }, { liftPins })
       macro.pins = plan.pins
       macro.state['proxyMap'] = plan.proxyMap as unknown
       // Size was measured with the (then empty) pin list — recompute now that proxy pins exist, else
@@ -3163,19 +3280,32 @@ export class XenolithEditor {
     return true
   }
 
-  /** Remove a node and its incident edges (undoable). */
+  /** Remove a node and its incident edges (undoable). Listeners on `node:removing` may veto
+   *  via `payload.cancel()` — returns false in that case without touching the command bus. */
   removeNode(nodeId: NodeId): boolean {
     if (!this.graph.getNode(nodeId)) return false
+    if (!firePreventable(this.#events, 'node:removing', { nodeId })) return false
     this.commandBus.apply(new RemoveNode(nodeId))
     return true
   }
 
   /** Add a pre-built edge, preserving its id and pin endpoints (undoable). Unlike `connect`, which
    *  mints a fresh edge id, this keeps the caller's id — needed by the controlled layer to mirror an
-   *  `edges` prop without id drift. No-op if an edge with that id already exists. */
+   *  `edges` prop without id drift. No-op if an edge with that id already exists. Listeners on
+   *  `edge:connecting` may veto via `payload.cancel()`. */
   addEdge(edge: Edge): boolean {
     if (this.graph.getEdge(edge.id)) return false
+    if (!firePreventable(this.#events, 'edge:connecting', { edge })) return false
     this.commandBus.apply(new ConnectPins(edge))
+    return true
+  }
+
+  /** Disconnect an edge by id (undoable). Listeners on `edge:disconnecting` may veto. For destructive
+   *  removal that also cleans up dangling inline reroutes left behind, use `deleteEdge`. */
+  disconnectEdge(edgeId: EdgeId): boolean {
+    if (!this.graph.getEdge(edgeId)) return false
+    if (!firePreventable(this.#events, 'edge:disconnecting', { edgeId })) return false
+    this.commandBus.apply(new DisconnectEdge(edgeId))
     return true
   }
 
@@ -3270,8 +3400,9 @@ export class XenolithEditor {
     for (const [k, v] of Object.entries(vars)) el.style.setProperty(k, v)
   }
 
-  /** Resolve the value a custom widget should display: live runtime value when its bound pin is
-   *  wired AND visibility is 'always' (display widgets), else the stored state default. */
+  /** Resolve the value a widget should display: live runtime value when its bound pin is wired
+   *  AND visibility is 'always' (display widgets), else the stored state default. Applies to
+   *  BOTH custom and built-in widgets — display-mode contract is widget-type-agnostic. */
   #widgetDisplayValue(node: Node, w: WidgetSpec): unknown {
     const bind = widgetBindKey(w)
     if (bind && widgetVisibility(w) === 'always' && this.#isPinConnected(node.id, bind)) {
@@ -3279,6 +3410,12 @@ export class XenolithEditor {
       if (live !== undefined) return live
     }
     return widgetValue(node, w)
+  }
+  /** True when the widget is a "live readout" — bound IN-pin is wired AND visibility is 'always'.
+   *  Editing such widgets is suppressed (the next live update would clobber the change). */
+  #isDisplayModeWidget(node: Node, w: WidgetSpec): boolean {
+    const bind = widgetBindKey(w)
+    return !!bind && widgetVisibility(w) === 'always' && this.#isPinConnected(node.id, bind)
   }
 
   #syncDomWidgets(): void {
@@ -3463,8 +3600,84 @@ export class XenolithEditor {
     // A state-only change doesn't trigger a node re-render in #syncFromGraph, so refresh the
     // widget's visual directly (combo/number/text would otherwise show the stale value).
     this.#views.get(nodeId)?.updateWidget?.(widgetId, clamped)
+    // A1 — displayOptions.show: if any sibling widget conditions its visibility on this node's
+    // state, the change might toggle it on/off, which changes layout (height + widget rects). Do
+    // a full rerender ONLY when the node opts in (avoids the per-keystroke rebuild on plain nodes).
+    // CRITICAL: recompute node.size before the rerender — measureNodeSize is the single source for
+    // backdrop/edges/bounds, and the existing cached size doesn't know about the new visibility.
+    const node = this.graph.getNode(nodeId) as Node | undefined
+    if (node?.widgets?.some((w) => w.displayOptions?.show !== undefined)) {
+      const title = this.#renderOpts.get(nodeId)?.title ?? node.type
+      node.size = measureNodeSize(node, title, this.#sizeTokens(), this.#textMeasure, (k) => this.#isPinConnected(nodeId, k))
+      this.#rerenderNode(nodeId)
+    }
+    // Propagate to downstream display widgets: if THIS widget is bound to an OUT-pin, every IN-pin
+    // it feeds may host a `visibility:'always'` widget that needs to repaint with the new live
+    // value (built-in OR custom — display-mode contract is widget-type-agnostic). Without this,
+    // moving an upstream slider leaves downstream readouts stale until something else triggers a
+    // node re-render. Edges incident to the source are O(degree) via #edgesByNode.
+    this.#propagateToDisplayConsumers(nodeId, found.spec)
     this.#requestRender()
     this.#events.emit('widget:changed', { nodeId, widgetId, value: clamped })
+    // H2 — defineDynamicNode: if the node's schema declares a `dynamic` callback, let it
+    // recompute pins/widgets from the latest state. We do this AFTER emitting widget:changed
+    // so listeners observing the value see it before any structural pin/widget mutation lands.
+    this.#applyDynamicSchema(nodeId)
+  }
+
+  #applyDynamicSchema(nodeId: NodeId): void {
+    const node = this.graph.getNode(nodeId) as Node | undefined
+    if (!node) return
+    const dyn = this.#registry.get(node.type)?.dynamic
+    if (!dyn) return
+    let result: { pins?: PinSchema[]; widgets?: WidgetSpec[] } | undefined
+    try { result = dyn(node) } catch { return }
+    if (!result) return
+    if (result.pins) {
+      const pins: Pin[] = result.pins.map((p, i) => {
+        const existing = node.pins[i]
+        // Reuse existing pin id when possible (preserves incident edges); mint fresh otherwise.
+        const id = existing && existing.label === p.label && existing.direction === p.direction
+          ? existing.id
+          : createPinId()
+        const pin: Pin = {
+          id, kind: p.kind, direction: p.direction, type: p.type,
+          multiple: p.multiple ?? false,
+        }
+        if (p.label !== undefined) pin.label = p.label
+        if (p.default !== undefined) pin.default = p.default
+        return pin
+      })
+      this.setNodePins(nodeId, pins)
+    }
+    if (result.widgets) this.setNodeWidgets(nodeId, result.widgets)
+  }
+
+  #propagateToDisplayConsumers(srcNodeId: NodeId, srcSpec: WidgetSpec): void {
+    const bind = widgetBindKey(srcSpec)
+    if (!bind) return
+    const srcNode = this.graph.getNode(srcNodeId)
+    if (!srcNode) return
+    const srcPin = srcNode.pins.find((p) => p.label === bind || String(p.id) === bind)
+    if (!srcPin || srcPin.direction !== 'out') return
+    const out = this.#edgesByNode.get(srcNodeId)
+    if (!out) return
+    for (const eid of out) {
+      const edge = this.graph.getEdge(eid)
+      if (!edge || String(edge.from.pin) !== String(srcPin.id)) continue
+      const dstNode = this.graph.getNode(edge.to.node)
+      if (!dstNode || !dstNode.widgets) continue
+      const dstView = this.#views.get(edge.to.node)
+      if (!dstView?.updateWidget) continue
+      for (const w of dstNode.widgets) {
+        const dbind = widgetBindKey(w)
+        if (!dbind || widgetVisibility(w) !== 'always') continue
+        const dpin = dstNode.pins.find((p) => p.label === dbind || String(p.id) === dbind)
+        if (!dpin || String(dpin.id) !== String(edge.to.pin)) continue
+        const live = this.#widgetDisplayValue(dstNode as Node, w)
+        dstView.updateWidget(w.id, live)
+      }
+    }
   }
 
   /** Registry of node schemas. Hosts register their node types here; the insert palette searches
@@ -3474,6 +3687,77 @@ export class XenolithEditor {
   /** Registry of custom pin-type descriptors (colour/shape/compatibility). Drives connection
    *  validation and pin colours. e.g. `editor.types.register({ id: 'struct:Agent', color: '#9b59ff' })`. */
   get types(): TypeRegistry { return this.#types }
+
+  /** Toggle the dive breadcrumb (Root › Def1 › Def2 …) in the overlay root. Visible by default
+   *  whenever the editor is inside a template definition (`diveDepth > 0`). Hosts that render
+   *  their own navigation can `setBreadcrumbVisible(false)` to suppress. */
+  setBreadcrumbVisible(visible: boolean): void {
+    this.#breadcrumbDisabled = !visible
+    this.#updateBreadcrumb()
+  }
+
+  /** Named-commands registry — hosts register their own actions (`editor.commands.register({id,
+   *  label, execute, canExecute?, hotkey?})`) and Xenolith routes matching key chords through
+   *  it. Baklava commandHandler parity. The hotkey listener fires BEFORE built-in shortcuts so
+   *  hosts can override them. */
+  get commands(): CommandRegistry { return this.#commands }
+
+  /** Open the properties sidebar for `nodeId` — a DOM panel that lists every widget on that
+   *  node flagged with `showInSidebar: true`. Theme-aware (--xeno-* CSS vars). Lazy: the panel
+   *  is created on first open and reused. Programmatic only — there's no per-node cog button;
+   *  hosts wire their own trigger (toolbar button, double-click, palette command). No-op when
+   *  `nodeId` doesn't exist. Fires `sidebar:opened`. */
+  openSidebar(nodeId: NodeId): void {
+    this.#ensureSidebar()
+    this.#sidebar!.open(nodeId)
+  }
+  closeSidebar(): void { this.#sidebar?.close() }
+  isSidebarOpen(): boolean { return this.#sidebar?.isOpen() ?? false }
+  /** Re-read the open node's state and repaint the panel. Wired internally to widget:changed
+   *  + setNodeWidgets; hosts rarely call this directly. */
+  refreshSidebar(): void { this.#sidebar?.refresh() }
+
+  /** G6 — persistent palette sidebar. Docked DOM panel listing every registered NodeSchema
+   *  grouped by category, draggable onto the canvas. Off by default; toggle with `true`/`false`.
+   *  Drag-and-drop is wired through the canvas's existing `node:drop` event — the panel sets
+   *  `text/plain` to the schema's `type`, the editor inserts it at the drop point automatically. */
+  setPaletteSidebar(opts: boolean | PaletteSidebarOpts): void {
+    if (opts === false) {
+      this.#paletteSidebar?.unmount()
+      this.#paletteSidebar = null
+      return
+    }
+    const cfg = opts === true ? {} : opts
+    if (!this.#paletteSidebar) {
+      this.#paletteSidebar = new PaletteSidebar(this.#registry, this.overlayRoot, cfg)
+      this.#paletteSidebar.mount()
+      // Auto-insertNode when a palette item is dropped on the canvas. Host listeners can also
+      // observe `node:drop` to layer on validation / snapping; this default path keeps the
+      // panel useful out of the box.
+      this.on('node:drop', (e) => {
+        if (e.text && this.#registry.has(e.text)) this.insertNode(e.text, e.position)
+      })
+    } else {
+      this.#paletteSidebar.refresh()
+    }
+  }
+
+  #ensureSidebar(): void {
+    if (this.#sidebar) return
+    this.#sidebar = new SidebarManager({
+      overlayRoot: this.overlayRoot,
+      getNode: (id) => this.graph.getNode(id) as Node | undefined,
+      getNodeTitle: (id) => this.#renderOpts.get(id)?.title,
+      setWidgetValue: (nodeId, widgetId, value) => this.setWidgetValue(nodeId, widgetId, value),
+      onOpen: (nodeId) => this.#events.emit('sidebar:opened', { nodeId }),
+      onClose: () => this.#events.emit('sidebar:closed', {}),
+    })
+    // Keep the panel in sync with state mutations + structural changes. Cheap (no-op when closed).
+    this.on('widget:changed', () => this.#sidebar?.refresh())
+    this.on('node:removed', ({ nodeId }) => {
+      if (this.#sidebar?.currentNodeId() === nodeId) this.#sidebar.close()
+    })
+  }
 
   /** Registry of header glyph icons. Has a built-in Feather set (`layers`, `box`, `cpu`, `database`,
    *  `branch`, `code`, `play`, …); add your own via `editor.icons.register('name', '<path …/>')`.
@@ -3517,13 +3801,15 @@ export class XenolithEditor {
       types: self.#types,
       icons: self.#icons,
       app: self.#app,
+      requestRender: () => self.#requestRender(),
+      setNodePositionEphemeral: (nodeId, x, y) => self.#setNodePositionEphemeral(nodeId, x, y),
       get graph(): Graph { return self.#displayGraph },
       get commandBus(): CommandBus { return self.#displayBus },
       registerWidget: (name, controller) => self.registerWidget(name, controller),
       setIsValidConnection: (fn) => self.setIsValidConnection(fn),
       on: (event, handler) => self.on(event, handler),
       onTick: (cb) => self.onTick(cb),
-      startLoop: () => self.startLoop(),
+      startLoop: (opts) => self.startLoop(opts),
       stopLoop: () => self.stopLoop(),
       step: (dtMs) => self.step(dtMs),
       setWidgetValue: (nodeId, widgetId, value, opts) => self.setWidgetValue(nodeId, widgetId, value, opts),
@@ -3773,8 +4059,23 @@ export class XenolithEditor {
     // longer live in the display) with the live records (authoritative for displayed edges).
     const edgeOpts = new Map<EdgeId, RenderEdgeOptions>(this.#edgeOpts)
     for (const [id, r] of this.#edgeRecords) edgeOpts.set(id, r.opts)
+    // G5 — per-node custom serialize override. Schemas can opt into a `serialize(node)` callback
+    // when their state holds anything the default JSON shape can't round-trip (Maps, class
+    // instances, RAF handles). We materialise the node WITH the custom state BEFORE handing it
+    // to the generic serializer, so the override is transparent to the rest of the pipeline.
+    const rawNodes = Array.from(this.#rootGraph.nodes())
+    const serializedNodes = rawNodes.map((n) => {
+      const ser = this.#registry.get(n.type)?.serialize
+      if (!ser) return n
+      try {
+        const customState = ser(n as Node)
+        return { ...n, state: customState }
+      } catch {
+        return n                                             // fall back to default if user fn throws
+      }
+    })
     return serializeXenolithGraph({
-      nodes:      Array.from(this.#rootGraph.nodes()),
+      nodes:      serializedNodes,
       edges:      Array.from(this.#rootGraph.edges()),
       comments:   Array.from(this.#rootGraph.comments()),
       renderOpts: this.#renderOpts as ReadonlyMap<NodeId, RenderNodeOptions>,
@@ -3857,7 +4158,28 @@ export class XenolithEditor {
     const willVirtualize = shouldVirtualize(parsed.nodes.length, this.#theme.virtualizeThreshold ?? 300)
     // Add EVERYTHING as data first (no views yet) so declarative collapsed macros can derive their
     // pins + rewire boundary edges on pure model state before anything is rendered.
-    for (const node of parsed.nodes) this.#addNodeData(node, parsed.renderOpts.get(String(node.id)) ?? {})
+    for (const node of parsed.nodes) {
+      const schema = this.#registry.get(node.type)
+      // A4 — NodeSchema.migrate. Before any other rehydration: if the on-disk node's version is
+      // below the schema's current version, run the migration hook so downstream code sees the
+      // up-to-date shape. The helper merges the patched payload back over the existing node and
+      // bumps `node.version` to the schema's current. Defensive try/catch — a broken migrate
+      // shouldn't lose the graph.
+      try {
+        const { node: patched } = migrateNodePayload(schema, node)
+        Object.assign(node, patched)
+      } catch { /* keep raw node on user-fn error */ }
+      // G5 — let the registered schema rehydrate state from its custom JSON shape. Mirror of the
+      // serialize override in toJSON. Falls back to the JSON state as-is when no fn is registered.
+      const de = schema?.deserialize
+      if (de) {
+        try {
+          const live = de(node.state as Record<string, unknown>, node)
+          ;(node as { state: Record<string, unknown> }).state = live
+        } catch { /* keep raw state on user-fn error */ }
+      }
+      this.#addNodeData(node, parsed.renderOpts.get(String(node.id)) ?? {})
+    }
     for (const edge of parsed.edges) this.#addEdgeData(edge, parsed.edgeOpts.get(String(edge.id)) ?? {})
     for (const comment of parsed.comments) this.graph._addComment(comment)
     // `#addNodeData` bypasses the command bus, so the macro-parent index hasn't been invalidated
@@ -3942,6 +4264,11 @@ export class XenolithEditor {
    *  the non-virtualized tail of loadJSON, but reads the display graph so it serves dive in/out too. */
   #rebuildDisplay(): void {
     this.#rebuildSpatialGrid()
+    // #teardownDisplay wiped #edgesByNode; without this rebuild, every node materialised below
+    // would call connectedPinIdsFor() against an empty index → every exec pin paints disconnected
+    // (transparent fill) AND every visibility:'whenDisconnected' widget shows when it shouldn't.
+    // First visible regression of templates — see docs/bug-exec-pins-look-disconnected-after-rebuild.md.
+    this.#rebuildEdgeIndex()
     for (const n of this.graph.nodes()) this.#ensureView(n as Node)
     for (const e of this.graph.edges()) if (!this.#edgeRecords.has(e.id)) this.#materializeEdge(e as Edge, this.#edgeOpts.get(e.id) ?? {})
     this.#syncComments()
@@ -4248,7 +4575,15 @@ export class XenolithEditor {
 
   /** Start the per-frame loop: `onTick` subscribers fire on every animation frame with the real frame
    *  delta. No-op visual cost on its own — rendering still happens on demand when a tick mutates the graph. */
-  startLoop(): void { this.#looping = true }
+  /** Begin firing `onTick`. Pass `{fps}` to throttle (e.g. `startLoop({fps: 30})` for 30 ticks/s
+   *  regardless of the actual frame rate). LiteGraph parity — useful for audio-rate / generative
+   *  / simulation nodes where you don't want every browser frame. Omit / pass nothing for the
+   *  default "every animation frame" behaviour. */
+  startLoop(opts: { fps?: number } = {}): void {
+    this.#tickInterval = opts.fps && opts.fps > 0 ? 1000 / opts.fps : 0
+    this.#tickAccum = 0
+    this.#looping = true
+  }
   /** Stop the per-frame loop. `step()` still works while stopped. */
   stopLoop(): void { this.#looping = false }
   get looping(): boolean { return this.#looping }
@@ -4425,6 +4760,21 @@ export class XenolithEditor {
     // toggle their pointer events directly so a locked graph freezes framework widgets too.
     for (const rec of this.#domWidgets.values()) rec.el.style.pointerEvents = interactive ? 'auto' : 'none'
   }
+
+  /** G12 — Live Mode (LiteGraph parity). Freezes all interaction (`setInteractive(false)`) and
+   *  hides editor-managed chrome (breadcrumb). Per-node rendering, plugin runtimes and animated
+   *  edges keep ticking — the graph still LIVES, you just can't edit it. The overlay root gets
+   *  `data-xeno-live="true"` so hosts can hide their own panels via CSS. Fires `livemode:changed`. */
+  setLiveMode(live: boolean): void {
+    if (this.#liveMode === live) return
+    this.#liveMode = live
+    this.setInteractive(!live)
+    this.overlayRoot.setAttribute('data-xeno-live', live ? 'true' : 'false')
+    this.#updateBreadcrumb()                                 // breadcrumb auto-hides in live mode
+    this.#events.emit('livemode:changed', { live })
+  }
+  get liveMode(): boolean { return this.#liveMode }
+  #liveMode = false
   zoomAt(focal: { x: number; y: number }, factor: number): void {
     this.#viewport.zoomAt(focal, factor, this.#zoomBounds)
   }
@@ -4569,6 +4919,8 @@ export class XenolithEditor {
     ;(this.#app.canvas as HTMLCanvasElement | undefined)?.removeEventListener('contextmenu', this.#onContextMenu)
     ;(this.#app.canvas as HTMLCanvasElement | undefined)?.removeEventListener('pointerdown', this.#onRightDown)
     ;(this.#app.canvas as HTMLCanvasElement | undefined)?.removeEventListener('pointerup',   this.#onRightUp)
+    ;(this.#app.canvas as HTMLCanvasElement | undefined)?.removeEventListener('dragover',    this.#onDragOver)
+    ;(this.#app.canvas as HTMLCanvasElement | undefined)?.removeEventListener('drop',        this.#onDrop)
     this.#palette?.destroy()
     this.#interaction?.detach()
     if (this.#freezeTimer) clearTimeout(this.#freezeTimer)
@@ -4580,6 +4932,7 @@ export class XenolithEditor {
     this.#overlayRoot = null
     this.#freezeRT?.destroy(true)
     this.#backdropRT?.destroy(true)
+    this.#destroyed = true
     this.#app.destroy(true, { children: true })
   }
 
@@ -4592,6 +4945,16 @@ export class XenolithEditor {
     // Don't intercept when a text field has focus.
     const target = e.target as { tagName?: string; isContentEditable?: boolean } | null
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+      return
+    }
+
+    // User-registered commands run FIRST so a host that binds `Cmd+Shift+C` for "Copy with
+    // comment" can override (or co-exist with) anything Xenolith does. If the registry's match
+    // executes, swallow the event so we don't also fire a built-in shortcut on the same chord.
+    const matched = this.#commands.lookupByHotkey(e)
+    if (matched) {
+      e.preventDefault()
+      matched.execute()
       return
     }
 
@@ -5310,6 +5673,8 @@ export class XenolithEditor {
       // not #nodesLayer — using the wrong layer would throw and break the drag).
       const layer = view.container.parent ?? this.#nodesLayer
       layer.setChildIndex(view.container, layer.children.length - 1)
+      // Pre-click veto (H7) — plugin can cancel the click and prevent selection + drag init.
+      if (!firePreventable(this.#events, 'node:clicking', { nodeId: id })) return
       if (!this.selection.contains(id)) {
         this.selection.select(id, e.shiftKey ? 'toggle' : 'replace')
       }
@@ -5332,6 +5697,10 @@ export class XenolithEditor {
     const node = this.graph.getNode(nodeId)
     if (!node) return false
     const { spec, rect } = hit
+    // Display-mode widgets (visibility:'always' bound to a wired IN-pin) show LIVE upstream
+    // values — editing makes no sense, the next live update would just overwrite the change.
+    // Swallow the pointer so it doesn't open the DOM overlay; selection / drag bubble normally.
+    if (this.#isDisplayModeWidget(node as Node, spec)) return false
     switch (spec.type) {
       case 'toggle':
         this.setWidgetValue(nodeId, spec.id, !widgetValue(node, spec))
@@ -5543,6 +5912,17 @@ export class XenolithEditor {
       const node = this.graph.getNode(id)
       if (node) initialPositions.set(id, { ...node.position })
     }
+    // H6 — bring picked nodes to the front of #nodesLayer. Without this, dragging a node UNDER
+    // another (e.g. starting a drag from a node that overlaps a freshly-pasted one) keeps the
+    // dragged node visually beneath. Rete `simpleNodesOrder` — small UX polish, big "feels right"
+    // win. Excludes expanded macros (their frame manages its own z-order via #macroOverlayLayer).
+    for (const id of ids) {
+      const v = this.#views.get(id)
+      const n = this.graph.getNode(id)
+      if (v && n && !(isMacro(n) && n.state['collapsed'] === false)) {
+        if (v.container.parent === this.#nodesLayer) this.#nodesLayer.addChild(v.container) // re-add = move to top
+      }
+    }
     const affectedEdges = this.#edgesAttachedTo(new Set(initialPositions.keys()))
     this.#dragState = {
       kind: 'active',
@@ -5652,9 +6032,14 @@ export class XenolithEditor {
           to: { node: inNode.id, pin: inPin.id as PinId },
         }
         const opts: RenderEdgeOptions = { sourceType: String(outPin.type) }
-        this.#edgeOpts.set(edge.id, opts)
-        this.commandBus.apply(new ConnectPins(edge))
-        committed = true
+        // Cancellable hook — a plugin can veto a user-dragged connection by calling cancel().
+        // Same gate the public addEdge() runs through; without it, only programmatic edges would
+        // be vetoable and the interactive drop would silently sneak past.
+        if (firePreventable(this.#events, 'edge:connecting', { edge })) {
+          this.#edgeOpts.set(edge.id, opts)
+          this.commandBus.apply(new ConnectPins(edge))
+          committed = true
+        }
       }
     }
     ghost.parent?.removeChild(ghost)
