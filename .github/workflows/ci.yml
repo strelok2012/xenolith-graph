@@ -45,6 +45,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Build every workspace dep the site imports (e.g. `@xenolith/mcp-server` consumed via
+      # the TOOLS catalog endpoints). Without this the Astro/Vite build can't resolve `dist/index.js`
+      # because the dep was never compiled — workspace links require `tsc -b` to materialise dist.
+      - run: pnpm -r --filter '!@xenolith/playground' --filter '!@xenolith/site' run build
       - run: pnpm --filter @xenolith/site run build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
