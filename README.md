@@ -37,6 +37,8 @@ One async call boots: fonts, PIXI v8 renderer, viewport, grid, pan/zoom, marquee
 - **Live Mode.** `editor.setLiveMode(true)` hides editor chrome (palette, breadcrumb, controls) — perfect for read-only previews and demos.
 - **Perf for real graphs.** Viewport virtualization + 3-tier LOD (full → sprite-baked → flat-batch). Render-on-demand (static graphs idle at 0 fps cost). BitmapText glyph atlas for node/widget text. Shared GPU texture caches. Tested at 58k nodes; ~4–7 ms/frame at 40k+ on M1.
 - **Six framework adapters.** First-party `@xenolith/react`, `@xenolith/vue`, `@xenolith/svelte`, `@xenolith/solid`, `@xenolith/angular`, and `@xenolith/wc` (Web Components). React ships `<XenolithPanel>`/`<XenolithControls>`/`<XenolithMiniMap>`/`<XenolithButton>` + reactive selector hooks; other adapters mirror the surface.
+- **AI-native via MCP.** Ships its own [Model Context Protocol](https://modelcontextprotocol.io) server (`@xenolith/mcp-server`). Start the CLI, click Connect in the editor, and Claude Desktop / Cursor can build graphs directly — `list_node_types` → `add_node` → `connect_pins` → `auto_layout`. Twelve tools + two resources (`graph://current`, `schema://types`). Every mutation flows through the command bus so undo and the live event stream just work. Token-auth + read-only mode supported.
+- **Visual stepping debugger.** `StepDebugger` is part of `@xenolith/editor` — wrap any executor (`StepExecutor`), and you get pause/step/continue, breakpoints, per-node timing, and a live trace. The Step debugger / Time-travel scrubber / Per-node cost heatmap / Graph diff for PR-review showcases all ride this primitive — drop-in observability for any graph runtime.
 
 ## Theming
 
@@ -56,9 +58,12 @@ The shader-heavy backdrop pass is **opt-in per theme** (`theme.needsBackdrop`) �
 
 | Milestone | What |
 |---|---|
-| **shipped** | Core + renderer + editor, Xen + Liquid Glass themes, typed pins + conversions, K2 palette, named commands + hotkeys, undo/redo + history grouping, `xenolith.v1` JSON with schema `migrate` hooks, ComfyUI importer, full-graph PNG/JPEG export, comments, two reroute kinds, edge-midpoint context menu, copy/paste, minimap, in-node widgets (built-in + custom canvas/DOM), conditional widgets (`displayOptions.show`), properties sidebar, macros, live templates with dive-in editing + breadcrumb, palette sidebar (drag-and-drop), per-node file drop, Live mode, cancellable events, plugin host, header glyphs, UE-Blueprint exec-on-header, viewport virtualization + LOD, BitmapText, auto-layout plugin (Dagre + ELK), pluggable edge path styles, framework adapters (React/Vue/Svelte/Solid/Angular/WC). |
-| **v0.6 → v1.0** | `@xenolith/plugin-runtime` (Blueprint VM), touch/mobile (pinch-zoom + long-press), accessibility (ARIA + keyboard nav), public API + format freeze. |
-| **opt-in / on-demand** | Yjs collab adapter, orthogonal edge routing, custom WebGL renderer (PIXI replacement). |
+| **shipped** | Core + renderer + editor, Xen + Liquid Glass themes, typed pins + conversions, K2 palette, named commands + hotkeys, undo/redo + history grouping, `xenolith.v1` JSON with schema `migrate` hooks, ComfyUI importer, full-graph PNG/JPEG export, comments, two reroute kinds, edge-midpoint context menu, copy/paste, minimap, in-node widgets (built-in + custom canvas/DOM), conditional widgets (`displayOptions.show`), properties sidebar, macros, live templates with dive-in editing + breadcrumb, palette sidebar (drag-and-drop), per-node file drop, Live mode, cancellable events, plugin host, header glyphs, UE-Blueprint exec-on-header, viewport virtualization + LOD, BitmapText, auto-layout plugin (Dagre + ELK), pluggable edge path styles, framework adapters (React/Vue/Svelte/Solid/Angular/WC), **MCP server** (`@xenolith/mcp-server` — 12 tools + 2 resources), **`StepDebugger`** core primitive (powers Step debugger / Time-travel / Heatmap / Graph diff showcases). |
+| **v0.6 → v1.0** | `@xenolith/plugin-runtime` (Blueprint VM with exec-push + pure-pull), touch / mobile (pinch-zoom + long-press), accessibility (ARIA + keyboard nav), SSR & bundle-size guidance docs, public API + format freeze. |
+| **v1.x — perf** | Edge rendering on a GPU shader (one draw call for thousands of bezier wires + animated dashes via uniform time). Layout plugins ported to WASM (`dagre-rust` / `elk-rust` in a worker — 3–8× faster, no UI block). Instanced LOD batch (single quad mesh instead of per-node `Graphics` — lifts the ceiling past 100k nodes). |
+| **v1.x — runtime** | `@xenolith/plugin-runtime` v2 — 3 execution backends (baked JS, JS codegen ~215×, AssemblyScript-WASM ~4 200× on Mandelbrot-class benchmarks). `topoOrder` / `reachableFrom` ported to WASM for huge graphs. |
+| **v1.x — collab** | Yjs adapter on the command bus, `Y.Text` for comments / text widgets, awareness markers in the overlay DOM. Shipped on a concrete partner request, not speculatively. |
+| **opt-in / on-demand** | Orthogonal edge routing (collision-avoidance). Custom WebGL renderer (PIXI replacement) — only if PIXI v8 churn forces it. WASM fuzzy-matcher for the palette when registries grow past ~10k schemas. |
 
 ## Packages
 
@@ -72,6 +77,7 @@ The shader-heavy backdrop pass is **opt-in per theme** (`theme.needsBackdrop`) �
 | `@xenolith/demo` | One `xenolith.v1` data graph + ComfyUI importer + topology-reactive runners. Consumed by every demo host. |
 | `@xenolith/adapter-core`, `@xenolith/wc` | Framework-agnostic editor wrapper + universal web component. |
 | `@xenolith/react` | React adapter (`<XenolithPanel>` / `<XenolithControls>` / `<XenolithMiniMap>` / `<XenolithButton>`, reactive selector hooks). |
+| `@xenolith/mcp-server` | MCP server (stdio MCP ↔ WS bridge → browser editor via `editor.connectMCP(url)`). 12 tools + 2 resources, token-auth, read-only mode. |
 | `@xenolith/plugin-runtime` *(in progress)* | Blueprint VM (exec-push + pure-pull, `Allocate` verb). Installs via `editor.use()`. |
 
 ## Develop
