@@ -9,7 +9,8 @@ describe('MCP resources', () => {
   })
 
   it('every resource forwards to a remote tool that actually exists', () => {
-    const toolNames = new Set(Object.values(TOOLS).map((t) => t.name))
+    // Set<string> (not Set<literal-union>) so `.has(r.remoteTool: string)` typechecks under strict.
+    const toolNames = new Set<string>(Object.values(TOOLS).map((t) => t.name))
     for (const r of RESOURCES) {
       expect(toolNames.has(r.remoteTool)).toBe(true)
     }
