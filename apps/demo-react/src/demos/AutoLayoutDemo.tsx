@@ -1,43 +1,45 @@
 import { useState } from 'react'
-import type { XenolithEditor } from '@xenolith/editor'
-import { XenolithGraph, XenolithPanel } from '@xenolith/react'
-import { buildAutoLayout, type AutoLayoutScene } from '@xenolith/demo/auto-layout'
+import { XenolithGraph, XenolithPanel, useEditor } from '@xenolith/react'
+import { setupAutoLayout, runAutoLayout } from '@xenolith/demo/auto-layout'
 import { DemoStage } from '../Layout.js'
 
 type Direction = 'LR' | 'TB'
 
-/** Island: Auto-Layout. Buttons in an in-editor panel re-arrange the messy DAG via the dagre
- *  engine; the LR/TB toggle re-runs the layout in the chosen direction. */
-export function AutoLayoutDemo() {
-  const [scene, setScene] = useState<AutoLayoutScene | null>(null)
+// Canon: direction lives in the panel (only the panel needs it), the panel calls runAutoLayout
+// against `useEditor()` directly. No scene handle, no lifted state, no refs.
+
+function AutoLayoutPanel() {
+  const editor = useEditor()
   const [dir, setDir] = useState<Direction>('LR')
   const [busy, setBusy] = useState(false)
 
-  const onReady = (editor: XenolithEditor): void => {
-    setScene(buildAutoLayout(editor))
-  }
-
-  const run = async (next: Direction = dir): Promise<void> => {
-    if (!scene || busy) return
+  const arrange = async (next: Direction = dir): Promise<void> => {
+    if (busy) return
     setBusy(true)
-    try { await scene.arrange({ direction: next }) } finally { setBusy(false) }
+    try { await runAutoLayout(editor, { direction: next }) } finally { setBusy(false) }
   }
-
   const flip = async (next: Direction): Promise<void> => {
     setDir(next)
-    await run(next)
+    await arrange(next)
   }
 
   return (
+    <XenolithPanel position="top-left" style={{ display: 'flex', gap: 6, padding: 6 }}>
+      <button onClick={() => arrange()} disabled={busy} style={btnStyle(true)}>
+        {busy ? 'Arranging…' : 'Auto-arrange'}
+      </button>
+      <button onClick={() => flip('LR')} disabled={busy} style={btnStyle(dir === 'LR')}>LR</button>
+      <button onClick={() => flip('TB')} disabled={busy} style={btnStyle(dir === 'TB')}>TB</button>
+    </XenolithPanel>
+  )
+}
+
+/** Island: Auto-Layout. */
+export function AutoLayoutDemo() {
+  return (
     <DemoStage>
-      <XenolithGraph className="xeno" resizeToWindow={false} onReady={onReady}>
-        <XenolithPanel position="top-left" style={{ display: 'flex', gap: 6, padding: 6 }}>
-          <button onClick={() => run()} disabled={busy || !scene} style={btnStyle(true)}>
-            {busy ? 'Arranging…' : 'Auto-arrange'}
-          </button>
-          <button onClick={() => flip('LR')} disabled={busy || !scene} style={btnStyle(dir === 'LR')}>LR</button>
-          <button onClick={() => flip('TB')} disabled={busy || !scene} style={btnStyle(dir === 'TB')}>TB</button>
-        </XenolithPanel>
+      <XenolithGraph className="xeno" resizeToWindow={false} onReady={setupAutoLayout}>
+        <AutoLayoutPanel />
       </XenolithGraph>
     </DemoStage>
   )

@@ -29,33 +29,43 @@ function streamText(full: string, onChunk: (s: string) => void): Promise<void> {
   })
 }
 
-export function buildLLMBuilder(editor: XenolithEditor): LLMBuilderHandle {
+/** Load the LLM workflow graph into the editor. Pass to `<XenolithGraph onReady>` so the canvas
+ *  paints with the graph on the first frame. Custom widgets ('prompt-edit', 'output-view') must
+ *  be registered by the host BEFORE this is called (they're framework components). */
+export function loadLLMGraph(editor: XenolithEditor): void {
   editor.loadJSON(graph)
   editor.fitView({ padding: 56, maxZoom: 1 })
+}
 
-  const run = async (): Promise<void> => {
-    editor.clearNodeStatuses()
-    const inputId = [...editor.graph.nodes()].find((n) => n.type === 'Input')?.id
-    const active = inputId ? reachableFrom(editor.graph, inputId) : new Set<NodeId>()
-    const { order } = topoOrder(editor.graph)
-    const out = new Map<NodeId, string>()
-    for (const id of order) {
-      if (!active.has(id)) continue
-      const node = editor.graph.getNode(id)
-      if (!node) continue
-      editor.setNodeStatus(id, 'running')
-      const ins = incomers(editor.graph, id).map((n) => out.get(n.id) ?? '').join('\n').trim()
-      let result = ''
-      if (node.type === 'Input') result = String(node.state['value'] ?? '')
-      else if (node.type === 'Prompt') result = String(node.state['template'] ?? '').replace(/\{[^}]*\}/g, ins || '…')
-      else if (node.type === 'Model') result = fakeComplete(ins, String(node.state['model'] ?? 'model'))
-      else if (node.type === 'Output') result = ins
-      out.set(id, result)
-      if (node.type === 'Output') await streamText(result, (p) => editor.setWidgetValue(id, 'result', p))
-      else await delay(node.type === 'Model' ? 480 : 200)
-      editor.setNodeStatus(id, 'ok')
-    }
+/** Walk the active chain and stream the completion into Output. Pure editor API — no instance,
+ *  no subscriptions, no handle. Call it directly from the panel that owns the Run button. */
+export async function runLLM(editor: XenolithEditor): Promise<void> {
+  editor.clearNodeStatuses()
+  const inputId = [...editor.graph.nodes()].find((n) => n.type === 'Input')?.id
+  const active = inputId ? reachableFrom(editor.graph, inputId) : new Set<NodeId>()
+  const { order } = topoOrder(editor.graph)
+  const out = new Map<NodeId, string>()
+  for (const id of order) {
+    if (!active.has(id)) continue
+    const node = editor.graph.getNode(id)
+    if (!node) continue
+    editor.setNodeStatus(id, 'running')
+    const ins = incomers(editor.graph, id).map((n) => out.get(n.id) ?? '').join('\n').trim()
+    let result = ''
+    if (node.type === 'Input') result = String(node.state['value'] ?? '')
+    else if (node.type === 'Prompt') result = String(node.state['template'] ?? '').replace(/\{[^}]*\}/g, ins || '…')
+    else if (node.type === 'Model') result = fakeComplete(ins, String(node.state['model'] ?? 'model'))
+    else if (node.type === 'Output') result = ins
+    out.set(id, result)
+    if (node.type === 'Output') await streamText(result, (p) => editor.setWidgetValue(id, 'result', p))
+    else await delay(node.type === 'Model' ? 480 : 200)
+    editor.setNodeStatus(id, 'ok')
   }
+}
 
-  return { run }
+/** @deprecated Combined loader+runner for back-compat with non-React hosts. Prefer
+ *  `loadLLMGraph` (in `onReady`) + `runLLM(editor)` called directly from your handler. */
+export function buildLLMBuilder(editor: XenolithEditor): LLMBuilderHandle {
+  loadLLMGraph(editor)
+  return { run: () => runLLM(editor) }
 }

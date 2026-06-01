@@ -105,6 +105,9 @@ export default defineConfig({
         { tag: 'meta', attrs: { property: 'og:image:height', content: '630' } },
         { tag: 'meta', attrs: { name: 'twitter:card',        content: 'summary_large_image' } },
         { tag: 'meta', attrs: { name: 'twitter:image',       content: 'https://xenolithengine.github.io/xenolith-graph/og.png' } },
+        // AI / LLM discovery — https://llmstxt.org
+        { tag: 'link', attrs: { rel: 'alternate', type: 'text/plain', href: 'https://xenolithengine.github.io/xenolith-graph/llms.txt',      title: 'llms.txt (LLM-friendly index)' } },
+        { tag: 'link', attrs: { rel: 'alternate', type: 'text/plain', href: 'https://xenolithengine.github.io/xenolith-graph/llms-full.txt', title: 'llms-full.txt (every guide concatenated)' } },
       ],
     }),
   ],

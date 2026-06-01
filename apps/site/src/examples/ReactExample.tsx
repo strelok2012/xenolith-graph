@@ -9,7 +9,6 @@ import { ThemingDemo } from '../../../demo-react/src/demos/ThemingDemo'
 import { ViewportDemo } from '../../../demo-react/src/demos/ViewportDemo'
 import { CanvasWidgetDemo } from '../../../demo-react/src/demos/CanvasWidgetDemo'
 import { CustomWidgetsDemo } from '../../../demo-react/src/demos/CustomWidgetsDemo'
-import { OverviewDemo } from '../../../demo-react/src/demos/OverviewDemo'
 import { BuiltinWidgetsDemo } from '../../../demo-react/src/demos/BuiltinWidgetsDemo'
 import { TwoWayBindingDemo } from '../../../demo-react/src/demos/TwoWayBindingDemo'
 import { AudioSynthDemo } from '../../../demo-react/src/demos/AudioSynthDemo'
@@ -27,14 +26,18 @@ import { EdgePathsDemo } from '../../../demo-react/src/demos/EdgePathsDemo'
 import { PropertiesSidebarDemo } from '../../../demo-react/src/demos/PropertiesSidebarDemo'
 import { BreadcrumbDiveDemo } from '../../../demo-react/src/demos/BreadcrumbDiveDemo'
 import { ConditionalWidgetsDemo } from '../../../demo-react/src/demos/ConditionalWidgetsDemo'
-// StressTestDemo hidden from the gallery for now (perf trap with mass-clear); file kept for later.
+import { MCPDemo } from '../../../demo-react/src/demos/MCPDemo'
+import { StepDebuggerDemo } from '../../../demo-react/src/demos/StepDebuggerDemo'
+import { TimeTravelDemo } from '../../../demo-react/src/demos/TimeTravelDemo'
+import { GraphDiffDemo } from '../../../demo-react/src/demos/GraphDiffDemo'
+import { HeatmapDemo } from '../../../demo-react/src/demos/HeatmapDemo'
+import { StressTestDemo } from '../../../demo-react/src/demos/StressTestDemo'
 
 const MAP: Record<string, ComponentType> = {
   'llm-builder': LLMBuilderDemo,
   'audio-synth': AudioSynthDemo,
   'save-restore': SaveRestoreDemo,
   'image-pipeline': ImagePipelineDemo,
-  overview: OverviewDemo,
   mount: MountDemo, load: LoadDemo, events: EventsDemo,
   'two-way': TwoWayBindingDemo, theming: ThemingDemo, viewport: ViewportDemo,
   'connection-validation': ConnectionValidationDemo, 'export-image': ExportImageDemo,
@@ -47,7 +50,13 @@ const MAP: Record<string, ComponentType> = {
   'properties-sidebar': PropertiesSidebarDemo,
   'breadcrumb-dive': BreadcrumbDiveDemo,
   'conditional-widgets': ConditionalWidgetsDemo,
+  'mcp-live': MCPDemo,
+  'step-debugger': StepDebuggerDemo,
+  'time-travel': TimeTravelDemo,
+  'graph-diff': GraphDiffDemo,
+  'heatmap': HeatmapDemo,
   'builtin-widgets': BuiltinWidgetsDemo, 'canvas-widget': CanvasWidgetDemo, 'custom-widgets': CustomWidgetsDemo,
+  'stress-test': StressTestDemo,
 }
 
 /** Renders one demo by id, fills its host, and remounts (fresh editor) when a matching `xeno:reset`

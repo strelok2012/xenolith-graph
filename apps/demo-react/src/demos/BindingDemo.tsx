@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { XenolithGraph, XenolithPanel, useXenolithEditor, useSelection } from '@xenolith/react'
+import { XenolithGraph, XenolithPanel, useEditor, useSelection } from '@xenolith/react'
 import type { WidgetSpec } from '@xenolith/editor'
 import { DemoStage } from '../Layout.js'
 import { loadDemo } from '../demo-data.js'
@@ -9,19 +9,17 @@ const SIDE_PANEL = { width: 260, maxHeight: 'calc(100% - 24px)', overflowY: 'aut
 /** Two-way binding inspector — selection comes from `useSelection()`, values are read/written through
  *  the editor. Editing a widget on the canvas fires widget:changed, which re-renders the form. */
 function Inspector() {
-  const editor = useXenolithEditor()
+  const editor = useEditor()
   const selection = useSelection()
   const [, bump] = useState(0)
-  // Re-read widget values when they change on the canvas (no dedicated hook — a tiny subscription).
-  useEffect(() => {
-    if (!editor) return
-    return editor.on('widget:changed', () => bump((n) => n + 1))
-  }, [editor])
+  // Re-read widget values when they change on the canvas (lightweight subscription; a dedicated
+  // hook is overkill for one event).
+  useEffect(() => editor.on('widget:changed', () => bump((n) => n + 1)), [editor])
 
   const nodeId = selection[0] ?? null
-  const node = editor && nodeId ? editor.graph.getNode(nodeId) : undefined
+  const node = nodeId ? editor.graph.getNode(nodeId) : undefined
   const widgets = (node?.widgets ?? []).filter((w) => w.key !== undefined)
-  const set = (w: WidgetSpec, value: unknown): void => { editor?.setWidgetValue(nodeId!, w.id, value); bump((n) => n + 1) }
+  const set = (w: WidgetSpec, value: unknown): void => { editor.setWidgetValue(nodeId!, w.id, value); bump((n) => n + 1) }
 
   return (
     <XenolithPanel position="top-right" style={SIDE_PANEL}>
@@ -29,7 +27,7 @@ function Inspector() {
       {!node && <p className="muted">Select a node to edit its widgets.</p>}
       {node && widgets.length === 0 && <p className="muted">This node has no editable widgets.</p>}
       {node && widgets.map((w) => {
-        const v = editor!.getWidgetValue(nodeId!, w.id)
+        const v = editor.getWidgetValue(nodeId!, w.id)
         return (
           <label key={w.id} className="field">
             <span>{w.label}</span>
@@ -81,9 +79,7 @@ export function BindingDemo() {
   )
 }
 
-/** Editable JSON for a custom widget's value — proves two-way binding works for ANY shape (curve
- *  points, an {x,y} pad, …). Type valid JSON and blur to commit via setWidgetValue; the canvas
- *  widget updates live. While the field is focused, external editor edits don't clobber your text. */
+/** Editable JSON for a custom widget's value. */
 function JsonField({ value, onCommit }: { value: unknown; onCommit: (v: unknown) => void }) {
   const [text, setText] = useState(() => JSON.stringify(value ?? null))
   const [err, setErr] = useState(false)

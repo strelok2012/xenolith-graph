@@ -161,6 +161,84 @@ test('macro-in-macro: nesting collapses correctly', async ({ page }) => {
   expect(result.pairs).toContain(`${result.outerId}->z`)
 })
 
+test('expanding an off-screen macro tweens the viewport to fit its members', async ({ page }) => {
+  await page.goto('/')
+  await page.waitForSelector('canvas')
+  await page.waitForFunction(() => (window as unknown as { __xenoEditor?: unknown }).__xenoEditor !== undefined)
+  type EdVP = Ed & {
+    viewport: { x: number; y: number; zoom: number }
+    setViewport: (s: { x: number; y: number; zoom: number }) => void
+  }
+
+  // Tiny graph FAR from origin (5000,5000) so the expanded members don't fit the default viewport.
+  await page.evaluate(() => {
+    const e = (window as unknown as { __xenoEditor: EdVP }).__xenoEditor
+    const node = (id: string, x: number, y: number) => ({
+      id, type: 'Box', position: { x, y },
+      pins: [
+        { id: `${id}:in`, kind: 'data', direction: 'in', type: 'float', multiple: false },
+        { id: `${id}:out`, kind: 'data', direction: 'out', type: 'float', multiple: true },
+      ],
+    })
+    e.loadJSON({
+      version: 'xenolith.v1',
+      nodes: [node('a', 4800, 5000), node('b', 5000, 5000), node('c', 5200, 5000), node('d', 5400, 5000)],
+      edges: [
+        { id: 'ab', from: { node: 'a', pin: 'a:out' }, to: { node: 'b', pin: 'b:in' } },
+        { id: 'bc', from: { node: 'b', pin: 'b:out' }, to: { node: 'c', pin: 'c:in' } },
+        { id: 'cd', from: { node: 'c', pin: 'c:out' }, to: { node: 'd', pin: 'd:in' } },
+      ],
+    })
+    // pin viewport at origin so the macro at (5000,5000) is far off-screen
+    e.setViewport({ x: 0, y: 0, zoom: 1 })
+  })
+  const macroId = await page.evaluate(() => {
+    const e = (window as unknown as { __xenoEditor: EdVP }).__xenoEditor
+    return e.createMacroFromSelection(['b', 'c'])!
+  })
+
+  const sample = () => page.evaluate(() => {
+    const e = (window as unknown as { __xenoEditor: EdVP }).__xenoEditor
+    return { ...e.viewport }
+  })
+  const v0 = await sample()
+
+  // Kick the expand and immediately sample mid-flight (~70ms in).
+  await page.evaluate((id) => (window as unknown as { __xenoEditor: EdVP }).__xenoEditor.expandMacro(id), macroId)
+  await page.waitForTimeout(70)
+  const vMid = await sample()
+  // Allow the tween to settle.
+  await page.waitForTimeout(500)
+  const vEnd = await sample()
+
+  // Camera actually moved (members were off-screen, viewport must change to fit them).
+  expect(vEnd.x !== v0.x || vEnd.y !== v0.y || vEnd.zoom !== v0.zoom).toBe(true)
+  // Intermediate sample is between start and end — proves a real tween, not an instant jump.
+  const between = (a: number, b: number, c: number) => (a <= c && c <= b) || (b <= c && c <= a)
+  const moved = (a: number, b: number) => Math.abs(a - b) > 0.5
+  expect(
+    (moved(v0.x, vEnd.x) && between(v0.x, vEnd.x, vMid.x) && vMid.x !== v0.x && vMid.x !== vEnd.x)
+    || (moved(v0.y, vEnd.y) && between(v0.y, vEnd.y, vMid.y) && vMid.y !== v0.y && vMid.y !== vEnd.y)
+    || (moved(v0.zoom, vEnd.zoom) && between(v0.zoom, vEnd.zoom, vMid.zoom) && vMid.zoom !== v0.zoom && vMid.zoom !== vEnd.zoom),
+  ).toBe(true)
+})
+
+test('expanding a macro already in view does NOT move the camera', async ({ page }) => {
+  await ready(page)
+  type EdVP = Ed & { viewport: { x: number; y: number; zoom: number } }
+  const macroId = await page.evaluate(() => {
+    const e = (window as unknown as { __xenoEditor: EdVP }).__xenoEditor
+    return e.createMacroFromSelection(['b', 'c'])!
+  })
+  const v0 = await page.evaluate(() => ({ ...(window as unknown as { __xenoEditor: EdVP }).__xenoEditor.viewport }))
+  await page.evaluate((id) => (window as unknown as { __xenoEditor: EdVP }).__xenoEditor.expandMacro(id), macroId)
+  await page.waitForTimeout(500)
+  const v1 = await page.evaluate(() => ({ ...(window as unknown as { __xenoEditor: EdVP }).__xenoEditor.viewport }))
+  expect(v1.x).toBeCloseTo(v0.x, 1)
+  expect(v1.y).toBeCloseTo(v0.y, 1)
+  expect(v1.zoom).toBeCloseTo(v0.zoom, 3)
+})
+
 test('expanding restores the original member edges', async ({ page }) => {
   await ready(page)
   const macroId = await page.evaluate(() => {

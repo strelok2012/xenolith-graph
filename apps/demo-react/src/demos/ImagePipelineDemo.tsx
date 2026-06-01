@@ -1,11 +1,12 @@
-import { useRef } from 'react'
-import { XenolithGraph, XenolithControls, XenolithPanel, XenolithButton, useXenolithEditor, reactWidget, type WidgetProps } from '@xenolith/react'
-import { buildImagePipeline, type ImagePipelineHandle } from '@xenolith/demo/image-pipeline'
+import { XenolithGraph, XenolithControls, XenolithPanel, XenolithButton, useEditor, reactWidget, type WidgetProps } from '@xenolith/react'
+import type { XenolithEditor } from '@xenolith/editor'
+import { buildImagePipeline, downloadImageResult } from '@xenolith/demo/image-pipeline'
 import { DemoStage } from '../Layout.js'
 
 // Showcase: a real WebGL image pipeline. All the framework-agnostic logic (GLSL runner, filter
-// schemas, chain layout, live re-processing, download) lives in @xenolith/demo/image-pipeline —
-// React only supplies the two preview widgets and the panel. Vue/Svelte reuse the same core.
+// schemas, chain layout, live re-processing, download) lives in @xenolith/demo/image-pipeline.
+// Setup runs synchronously in `onReady` (event subscriptions live on the editor — no handle to
+// thread around); the panel's Download button reads the current result via `useEditor()`.
 
 function ImageInput({ value, setValue }: WidgetProps): React.ReactElement {
   const onFile = (file?: File): void => {
@@ -41,12 +42,16 @@ function ImageOutput({ value }: WidgetProps): React.ReactElement {
   )
 }
 
-function PipelinePanel({ handle }: { handle: React.RefObject<ImagePipelineHandle | null> }): React.ReactElement {
-  useXenolithEditor()
+function setupImagePipeline(editor: XenolithEditor): void {
+  buildImagePipeline(editor, { input: reactWidget(ImageInput), output: reactWidget(ImageOutput) })
+}
+
+function PipelinePanel(): React.ReactElement {
+  const editor = useEditor()
   return (
     <XenolithPanel position="top-left" style={{ display: 'flex', flexDirection: 'column', gap: 6, width: 200 }}>
       <p style={{ margin: 0, fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--xeno-muted)' }}>Image pipeline</p>
-      <XenolithButton style={{ width: '100%' }} onClick={() => handle.current?.download()}>↓ Download result.png</XenolithButton>
+      <XenolithButton style={{ width: '100%' }} onClick={() => downloadImageResult(editor)}>↓ Download result.png</XenolithButton>
       <span style={{ color: 'var(--xeno-muted)', fontSize: 11, lineHeight: 1.45 }}>
         Each node is a live GLSL pass. Drag a slider — the result re-renders. Drop your own image on the Source node.
       </span>
@@ -56,18 +61,11 @@ function PipelinePanel({ handle }: { handle: React.RefObject<ImagePipelineHandle
 
 /** Showcase: real WebGL image filters as a node graph. Thin React shell over the shared core. */
 export function ImagePipelineDemo(): React.ReactElement {
-  const handle = useRef<ImagePipelineHandle | null>(null)
   return (
     <DemoStage>
-      <XenolithGraph
-        className="xeno"
-        resizeToWindow={false}
-        onReady={(editor) => {
-          handle.current = buildImagePipeline(editor, { input: reactWidget(ImageInput), output: reactWidget(ImageOutput) })
-        }}
-      >
+      <XenolithGraph className="xeno" resizeToWindow={false} onReady={setupImagePipeline}>
         <XenolithControls position="bottom-left" />
-        <PipelinePanel handle={handle} />
+        <PipelinePanel />
       </XenolithGraph>
     </DemoStage>
   )

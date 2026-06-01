@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { XenolithGraph, XenolithPanel, XenolithControls, useXenolithEditor } from '@xenolith/react'
+import { XenolithGraph, XenolithPanel, XenolithControls } from '@xenolith/react'
 import { buildConnectionValidation, type Attempt } from '@xenolith/demo/connection-validation'
 import { DemoStage } from '../Layout.js'
 
@@ -8,7 +8,6 @@ import { DemoStage } from '../Layout.js'
 // live attempt log fed by the core's `log` callback.
 
 function RulesPanel({ log }: { log: Attempt[] }): React.ReactElement {
-  useXenolithEditor() // ensure mounted inside the editor context
   return (
     <XenolithPanel position="top-right" style={{ display: 'flex', flexDirection: 'column', gap: 8, width: 230 }}>
       <p style={{ margin: 0, fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--xeno-muted)' }}>Connection rules</p>

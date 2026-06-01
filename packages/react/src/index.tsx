@@ -6,7 +6,7 @@ import { XenolithContext } from './context.js'
 
 export type { EventCallbacks } from './events-map.js'
 export { EVENT_PROP } from './events-map.js'
-export { XenolithContext, useXenolithEditor } from './context.js'
+export { XenolithContext, useXenolithEditor, useEditor } from './context.js'
 export {
   XenolithPanel, XenolithButton, XenolithControls, XenolithMiniMap,
   type PanelPosition, type XenolithPanelProps, type XenolithButtonProps,
@@ -87,7 +87,13 @@ export function XenolithGraph(props: XenolithGraphProps): ReactElement {
       className={props.className}
       style={props.style}
     >
-      <XenolithContext.Provider value={editor}>{props.children}</XenolithContext.Provider>
+      <XenolithContext.Provider value={editor}>
+        {/* Render in-editor children ONLY after the editor has finished mounting. Holding
+         *  them back means `useEditor()` (the strict hook) can rely on a non-null editor
+         *  for its entire lifecycle — no race between subscribe and mount. Components that
+         *  must paint a loading/empty state live OUTSIDE <XenolithGraph>. */}
+        {editor ? props.children : null}
+      </XenolithContext.Provider>
     </div>
   )
 }

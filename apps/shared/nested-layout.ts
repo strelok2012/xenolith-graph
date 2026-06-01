@@ -98,6 +98,34 @@ export interface NestedLayoutScene {
   getEngine: () => LayoutEngineId
 }
 
+type EnginePair = { dagre: AutoLayoutPlugin; elk: AutoLayoutPlugin }
+const ENGINES = new WeakMap<XenolithEditor, EnginePair>()
+
+/** Idempotent setup: install both engines (dagre + elk), load the nested graph, fit. */
+export function setupNestedLayout(editor: XenolithEditor): void {
+  const defaults: LayoutOpts = { direction: 'LR', spacing: { node: 60, layer: 120 }, animate: { durationMs: 700 } }
+  const dagrePlugin = autoLayoutPlugin({ engine: dagreEngine(), defaults, name: 'autolayout:dagre' })
+  const elkPlugin   = autoLayoutPlugin({ engine: elkEngine({ algorithm: 'layered' }), defaults, name: 'autolayout:elk' })
+  editor.use(dagrePlugin)
+  editor.use(elkPlugin)
+  ENGINES.set(editor, { dagre: dagrePlugin, elk: elkPlugin })
+  editor.loadJSON({
+    version: 'xenolith.v1',
+    nodes: NODES.map((n) => ({ ...n, position: { ...n.position }, state: { ...n.state } })),
+    edges: EDGES.map((e) => ({ ...e })),
+  })
+  editor.fitView({ padding: 56, maxZoom: 1 })
+}
+
+/** Arrange the graph using the given engine; refits the view afterwards. */
+export async function runNestedLayout(editor: XenolithEditor, engine: LayoutEngineId, opts?: LayoutOpts): Promise<void> {
+  const pair = ENGINES.get(editor)
+  if (!pair) return
+  await pair[engine].arrange(opts)
+  editor.fitView({ padding: 56, maxZoom: 1 })
+}
+
+/** @deprecated Prefer `setupNestedLayout` + `runNestedLayout`. Kept for vanilla examples. */
 export function buildNestedLayout(editor: XenolithEditor): NestedLayoutScene {
   // Per-engine plugin instances — swapping plugin engines on the fly isn't part of the public
   // API, so we just keep two installed and dispatch arrange() to the active one. Both share the

@@ -14,6 +14,19 @@ export interface BreadcrumbDiveScene {
   depth: () => number
 }
 
+/** Dive into a named slug from any depth — pops back to root first so the button works whether
+ *  the user already drilled in or not. Returns true if the dive succeeded. */
+export function diveIntoSlug(editor: XenolithEditor, slug: 'pipeline' | 'stage'): boolean {
+  if (editor.diveDepth !== 0) editor.diveOut(0)
+  if (slug === 'pipeline') return editor.diveInto('main' as never)
+  editor.diveInto('main' as never)
+  return editor.diveInto('p_stage' as never)
+}
+
+/** Idempotent setup: load the nested template graph. Safe to pass to `<XenolithGraph onReady>`. */
+export function setupBreadcrumbDive(editor: XenolithEditor): void { void buildBreadcrumbDive(editor) }
+
+/** @deprecated Prefer `setupBreadcrumbDive` + `diveIntoSlug`. Kept for vanilla examples. */
 export function buildBreadcrumbDive(editor: XenolithEditor): BreadcrumbDiveScene {
   // ── Innermost: a Stage template definition with two primitive members. ────────────────────
   const stageDef = {

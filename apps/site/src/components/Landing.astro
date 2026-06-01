@@ -18,9 +18,9 @@ const examplesLabel = lang === 'ru' ? 'Примеры' : lang === 'zh' ? '示例
 
 const t = (() => {
   if (lang === 'ru') return {
-    eyebrow: ['Node-graph редактор', 'WebGL рендер', 'MIT-лицензия'],
+    eyebrow: ['Node-graph редактор', 'AI-native · отлаживается', 'WebGL · MIT'],
     h1:      'Красивое нодовое редактирование — готово к встраиванию.',
-    sub:     'Полированный node-graph редактор для веба — добавьте его в своё приложение, темизируйте, сохраняйте и восстанавливайте. Перетаскивайте, соединяйте, ныряйте в подграфы, вставляйте по Tab. Всё уже подключено в момент монтирования. Откройте playground или галерею примеров — оцените за минуту.',
+    sub:     'Полированный node-graph редактор для веба — для AI-workflow билдеров, shader-редакторов, audio-конвейеров и любых dataflow-тулов. Визуальный step-debugger, time-travel и MCP-сервер для AI-агентов из коробки. Перетаскивайте, соединяйте, ныряйте в подграфы, вставляйте по Tab — всё работает в момент монтирования.',
     ctaPrimary:   'Открыть документацию',
     ctaSecondary: 'GitHub',
     showcaseA: 'Xen — тема по умолчанию',
@@ -28,7 +28,7 @@ const t = (() => {
     showcaseSub: 'Один и тот же граф, отрисованный двумя совершенно разными способами — переключаются в рантайме одной строкой. Liquid Glass даёт нодам настоящий стеклянный материал с преломлением и размытием фона.',
     metrics: [
       { v: '6',   l: 'фреймворк-адаптеров' },
-      { v: '60', l: 'fps на 500 нодах' },
+      { v: '60', l: 'fps на 10к нодов' },
       { v: 'MIT', l: 'open-source лицензия' },
     ],
     featuresTitle: 'Что внутри',
@@ -50,6 +50,14 @@ const t = (() => {
         p: 'Версионированный xenolith.v1 JSON с per-schema migrate-хуками — старые графы апгрейдятся автоматически. Встроен импортёр workflow ComfyUI. Экспорт ВСЕГО графа (а не viewport) в PNG или JPEG любого разрешения.' },
       { n: '08', h: 'Auto-layout · minimap · большие графы',
         p: 'Plug-in адаптеры для Dagre и ELK раскладывают граф одним вызовом (с анимацией tween). Встроенная мини-карта, виртуализация viewport после 300 нод, level-of-detail рендеринг, встроенная панель свойств которая следует за выборкой.' },
+      { n: '09', h: 'Визуальный step-debugger',
+        p: 'Пауза на любой ноде, шаг вперёд, инспектор инпутов/аутпутов, per-node тайминги. Жёлтое кольцо — пауза, зелёное — выполнено, красное — breakpoint. Chrome DevTools для графа — не игрушка, реальный debugger над любым executor’ом.' },
+      { n: '10', h: 'Time-travel · heatmap',
+        p: 'Перемотайте прогон одного запуска scrubber’ом — каждый шаг подсвечивается заново, инспектор показывает его inputs/outputs. Heatmap красит ноды от cool-blue до hot-red по длительности — drop-in observability layer, который никто из конкурентов не возит.' },
+      { n: '11', h: 'AI-native через MCP',
+        p: 'Встроенный MCP-сервер позволяет Claude Desktop / Cursor строить граф напрямую: list_node_types → add_node → connect_pins → auto_layout. Все мутации идут через command bus — undo бесплатный. «Я описываю — редактор строит.»' },
+      { n: '12', h: 'Diff для PR-review',
+        p: 'Две версии графа рядом, structural diff подсвечен — зелёное добавлено, красное удалено, жёлтое изменено. Code-review для node-графов: нужно командам которые их версионируют (n8n/ComfyUI/LangFlow стайл).' },
     ],
     quickStartTitle: 'Старт за 30 секунд',
     quickStartCode: `import { XenolithEditor } from '@xenolith/editor'
@@ -66,9 +74,9 @@ editor.loadJSON(myGraph)
     finalCta: 'Документация →',
   }
   if (lang === 'zh') return {
-    eyebrow: ['节点图编辑器', 'WebGL 渲染', 'MIT 许可证'],
+    eyebrow: ['节点图编辑器', 'AI 原生 · 可调试', 'WebGL · MIT'],
     h1:      '精美的节点编辑 — 为嵌入而生。',
-    sub:     '面向 Web 的精雕节点图编辑器 — 嵌入任意应用、自定义主题、保存与恢复。拖拽、连线、深入子图、按 Tab 插入节点。编辑器挂载即刻可用。访问 playground 或示例画廊，一分钟内即可上手。',
+    sub:     '面向 Web 的精雕节点图编辑器 — 为 AI 工作流构建器、shader/材质编辑器、音频/dataflow 工具而生。内置可视化 step debugger、time-travel scrubber 与 MCP 服务器。拖拽、连线、深入子图、按 Tab 插入 — 编辑器挂载即刻可用。',
     ctaPrimary:   '查看文档',
     ctaSecondary: 'GitHub',
     showcaseA: 'Xen — 默认主题',
@@ -76,7 +84,7 @@ editor.loadJSON(myGraph)
     showcaseSub: '同一个图，两种截然不同的主题，运行时一行切换。Liquid Glass 为节点赋予真实的玻璃材质，带折射与背景模糊。',
     metrics: [
       { v: '6',   l: '框架适配器' },
-      { v: '60', l: 'fps / 500 节点' },
+      { v: '60', l: 'fps / 10k 节点' },
       { v: 'MIT', l: '开源许可证' },
     ],
     featuresTitle: '内置什么',
@@ -98,6 +106,14 @@ editor.loadJSON(myGraph)
         p: '版本化的 xenolith.v1 JSON，附带每个 schema 的 migrate 钩子 — 旧图自动升级。内置 ComfyUI workflow 导入器。导出整张图（而非视口）为任意分辨率的 PNG 或 JPEG。' },
       { n: '08', h: '自动布局 · 缩略图 · 大图',
         p: 'Dagre 与 ELK 适配器一次调用即可排版（带 tween 动画）。内置 minimap、超过 300 节点后启用视口虚拟化、LOD 渲染、随选区移动的属性面板。' },
+      { n: '09', h: '可视化 step debugger',
+        p: '在任意节点暂停，单步执行，查看每个节点的输入/输出与耗时。黄色环 = 暂停，绿色 = 已执行，红色 = 断点。"节点图版的 Chrome DevTools" — 真实可用的调试器，可叠加在任何执行器上。' },
+      { n: '10', h: 'Time-travel · 热力图',
+        p: '用 scrubber 回放一次执行 — 每一步重新点亮，inspector 显示该步的输入/输出。Heatmap 按耗时把节点染色，从冷蓝到热红 — 一份即插即用的可观测性叠加层，竞品都没有。' },
+      { n: '11', h: 'AI 原生 · MCP 集成',
+        p: '内置 MCP 服务器，让 Claude Desktop / Cursor 直接构建图：list_node_types → add_node → connect_pins → auto_layout。所有变更走 command bus — undo 免费。"我来描述，编辑器来搭。"' },
+      { n: '12', h: 'PR-review 用的 diff',
+        p: '两个版本的图并排显示，结构化 diff 高亮 — 绿色 = 新增，红色 = 删除，黄色 = 修改。节点图版的 code-review — 对版本化 n8n / ComfyUI / LangFlow 风格工作流的团队必备。' },
     ],
     quickStartTitle: '30 秒上手',
     quickStartCode: `import { XenolithEditor } from '@xenolith/editor'
@@ -114,9 +130,9 @@ editor.loadJSON(myGraph)
     finalCta: '文档 →',
   }
   return {
-    eyebrow: ['Node-graph editor', 'WebGL renderer', 'MIT licence'],
+    eyebrow: ['Node-graph editor', 'AI-native · debuggable', 'WebGL · MIT'],
     h1:      'Beautiful node editing. Built to embed.',
-    sub:     'A polished node-graph editor for the web — drop it in your app, theme it, save and restore it. Drag, connect, dive into subgraphs, hit Tab to insert. Everything is already wired the moment the editor mounts. Tour the playground or the example gallery to feel it in under a minute.',
+    sub:     'A polished node-graph editor for the web — built for AI-workflow builders, shader and material editors, audio and dataflow tools. Visual step debugger, time-travel scrubber, and MCP server included out of the box. Drag, connect, dive into subgraphs, hit Tab to insert — everything works the moment the editor mounts.',
     ctaPrimary:   'Open documentation',
     ctaSecondary: 'GitHub',
     showcaseA: 'Xen — the default theme',
@@ -124,8 +140,8 @@ editor.loadJSON(myGraph)
     showcaseSub: 'The same graph rendered two completely different ways — swapped at runtime in a single line. Liquid Glass gives every node a real glass material with refraction and a blurred backdrop.',
     metrics: [
       { v: '6',   l: 'framework adapters' },
-      { v: '60', l: 'fps on 500 nodes' },
-      { v: 'MIT', l: 'open-source licence' },
+      { v: '60', l: 'fps on 10k nodes' },
+      { v: 'MIT', l: 'open-source license' },
     ],
     featuresTitle: 'What is inside',
     featuresSub: 'Everything a real-world graph editor needs out of the box — UX, model, themes, plugins. Pick the parts you want, the rest stays out of the way.',
@@ -146,6 +162,14 @@ editor.loadJSON(myGraph)
         p: 'Versioned xenolith.v1 JSON with per-schema migrate hooks — old graphs upgrade automatically. ComfyUI workflow importer included. Export the entire graph (not just the viewport) to PNG or JPEG at any resolution.' },
       { n: '08', h: 'Auto-layout · minimap · large graphs',
         p: 'Drop-in plugins for Dagre and ELK arrange any graph with one call (animated tweens included). Built-in minimap, viewport virtualisation past 300 nodes, level-of-detail rendering, and an in-editor properties panel that travels with your selection.' },
+      { n: '09', h: 'Visual step debugger',
+        p: 'Pause on any node, step forward, inspect inputs and outputs, per-node timing. Yellow ring = paused, green = executed, red = breakpoint. Chrome DevTools for graphs — a real debugger you can drop on top of any executor, not a demo gimmick.' },
+      { n: '10', h: 'Time-travel · heatmap',
+        p: 'Rewind a run with the scrubber — each step lights back up and the inspector shows its inputs and outputs. The heatmap paints nodes from cool blue to hot red by latency — a drop-in observability layer no competitor ships.' },
+      { n: '11', h: 'AI-native via MCP',
+        p: 'A built-in MCP server lets Claude Desktop or Cursor build the graph directly: list_node_types → add_node → connect_pins → auto_layout. All mutations flow through the command bus — undo is free. "I describe it, the editor builds it."' },
+      { n: '12', h: 'Graph diff for PR review',
+        p: 'Two versions of a graph side by side with structural diff highlights — green added, red removed, yellow modified. Drop-in code review for node-graphs, the missing piece for teams version-controlling n8n / ComfyUI / LangFlow-style workflows.' },
     ],
     quickStartTitle: '30-second start',
     quickStartCode: `import { XenolithEditor } from '@xenolith/editor'
@@ -158,7 +182,7 @@ editor.loadJSON(myGraph)
 
 // Done. Drag, connect, undo, dive, snap, save — they all just work.`,
     finalH:   'Ready to embed',
-    finalP:   'MIT licence, published on npm. Built for AI-workflow front-ends, shader and material editors, dataflow editors, anything node-based. PRs and issues welcome.',
+    finalP:   'MIT license, published on npm. Built for AI-workflow front-ends, shader and material editors, dataflow editors — anything node-based. PRs and issues welcome.',
     finalCta: 'Documentation →',
   }
 })()

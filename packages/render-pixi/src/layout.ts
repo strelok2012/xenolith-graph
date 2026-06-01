@@ -58,6 +58,18 @@ function visiblePins(node: Node, isPinConnected?: (pinKey: string) => boolean): 
   return node.pins.filter((p) => !pinIsHidden(node, p, isPinConnected))
 }
 
+/** Vertical footprint a free-floating widget takes in the body band — covers `text` widgets that
+ *  need an extra row for their label above the field, and multiline text fields that want 3 rows
+ *  for the editor box. Custom widgets honour their declared height. Everyone else fits one row. */
+export function freeFloatingHeight(w: WidgetSpec, rowHeight: number): number {
+  if (w.type === 'custom') return w.height ?? rowHeight
+  if (w.type === 'text') {
+    const field = w.multiline ? rowHeight * 3 : rowHeight
+    return w.label ? field + rowHeight : field
+  }
+  return rowHeight
+}
+
 /** Height of the body band reserved for free-floating widgets that are CURRENTLY visible: leading
  *  gap, each visible widget's declared height, gaps between. Zero when nothing is visible (so a
  *  node with conditional widgets shrinks back to compact when all of them are hidden). */
@@ -68,7 +80,7 @@ function freeWidgetsBandHeight(node: Node, geo: WidgetGeometry | undefined): num
   let h = geo.gap
   for (let i = 0; i < free.length; i++) {
     const w = free[i]!
-    h += (w.type === 'custom' ? (w.height ?? geo.rowHeight) : geo.rowHeight)
+    h += freeFloatingHeight(w, geo.rowHeight)
     if (i < free.length - 1) h += geo.gap
   }
   return h

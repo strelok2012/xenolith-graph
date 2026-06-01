@@ -79,6 +79,7 @@ describe('computeEdgePath — spread scaling', () => {
     expect(path.c2.x).toBeLessThan(path.end.x)
   })
 
+
   it('spread magnitude is symmetric for the two handles when both are bounded by the same dx', () => {
     const path = computeEdgePath(out(100, 0), inp(500, 0), TOKENS)
     const spread1 = path.c1.x - path.start.x

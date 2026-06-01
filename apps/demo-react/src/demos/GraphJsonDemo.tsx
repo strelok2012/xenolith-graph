@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { XenolithGraph, XenolithPanel, XenolithButton, useXenolithEditor, useGraphJSON } from '@xenolith/react'
+import { XenolithGraph, XenolithPanel, XenolithButton, useEditor, useGraphJSON } from '@xenolith/react'
 import { DemoStage } from '../Layout.js'
 import { loadDemo } from '../demo-data.js'
 
@@ -9,7 +9,7 @@ const SIDE_PANEL = { width: 380, height: 'calc(100% - 24px)', display: 'flex', f
  *  xenolith.v1 on any canvas change (move, connect, widget edit, undo/redo); Apply feeds it back via
  *  loadJSON. No manual event wiring — that's the point of the hook. */
 function JsonPanel() {
-  const editor = useXenolithEditor()
+  const editor = useEditor()
   const json = useGraphJSON()
   const [text, setText] = useState('')
   const [err, setErr] = useState(false)
@@ -21,7 +21,6 @@ function JsonPanel() {
   }, [json])
 
   const apply = (): void => {
-    if (!editor) return
     try {
       editor.loadJSON(JSON.parse(text))
       editor.fitView({ padding: 48, maxZoom: 1 })

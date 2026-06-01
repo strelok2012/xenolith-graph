@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { XenolithGraph, XenolithPanel, XenolithButton, XenolithControls, useXenolithEditor } from '@xenolith/react'
+import { XenolithGraph, XenolithPanel, XenolithButton, XenolithControls, useEditor } from '@xenolith/react'
 import { loadDemo } from '@xenolith/demo/scene'
 import { exportGraphImage } from '@xenolith/demo/export-image'
 import { DemoStage } from '../Layout.js'
@@ -8,10 +8,10 @@ import { DemoStage } from '../Layout.js'
 // framework-agnostic core (@xenolith/demo/export-image); this React file is just the button panel.
 
 function ExportPanel(): React.ReactElement {
-  const editor = useXenolithEditor()
+  const editor = useEditor()
   const [busy, setBusy] = useState(false)
   const exportAs = async (format: 'png' | 'jpeg', scale: number): Promise<void> => {
-    if (!editor || busy) return
+    if (busy) return
     setBusy(true)
     try { await exportGraphImage(editor, format, scale) } finally { setBusy(false) }
   }
@@ -33,7 +33,7 @@ function ExportPanel(): React.ReactElement {
 export function ExportImageDemo(): React.ReactElement {
   return (
     <DemoStage>
-      <XenolithGraph className="xeno" resizeToWindow={false} onReady={(editor) => loadDemo(editor)}>
+      <XenolithGraph className="xeno" resizeToWindow={false} onReady={loadDemo}>
         <XenolithControls position="bottom-left" />
         <ExportPanel />
       </XenolithGraph>

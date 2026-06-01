@@ -1,33 +1,39 @@
 import { useEffect, useState } from 'react'
-import type { XenolithEditor } from '@xenolith/editor'
-import { XenolithGraph, XenolithPanel } from '@xenolith/react'
-import { buildPropertiesSidebar, type PropertiesSidebarScene } from '@xenolith/demo/properties-sidebar'
+import { XenolithGraph, XenolithPanel, useEditor } from '@xenolith/react'
+import { setupPropertiesSidebar, PROPERTIES_SIDEBAR_NODE_ID } from '@xenolith/demo/properties-sidebar'
 import { DemoStage } from '../Layout.js'
 
-/** Island: G4 — properties sidebar. The "fat" Material node has 8 widgets all flagged
- *  `showInSidebar`; the toolbar button below pops them out into a docked right panel,
- *  themed via --xeno-* and editable live. The SAME widget renders inline + in the panel. */
-export function PropertiesSidebarDemo() {
-  const [scene, setScene] = useState<PropertiesSidebarScene | null>(null)
-  const [open, setOpen] = useState(false)
-  const onReady = (editor: XenolithEditor): void => { setScene(buildPropertiesSidebar(editor)) }
+// Canon: sidebar open-state lives in the panel — only the panel needs it. Open/close are direct
+// editor calls. The panel mounts AFTER `onReady` (Provider gates children on editor presence), so
+// the auto-open effect runs once with a guaranteed-ready editor.
+
+function SidebarPanel() {
+  const editor = useEditor()
+  const [open, setOpen] = useState(true)
+
   useEffect(() => {
-    if (!scene) return
     // Auto-open on mount so the demo lands with the panel visible — first impression matters.
-    scene.open(); setOpen(true)
-  }, [scene])
+    editor.openSidebar(PROPERTIES_SIDEBAR_NODE_ID)
+  }, [editor])
+
+  const toggle = (): void => {
+    if (open) { editor.closeSidebar(); setOpen(false) }
+    else      { editor.openSidebar(PROPERTIES_SIDEBAR_NODE_ID); setOpen(true) }
+  }
 
   return (
+    <XenolithPanel position="top-left" style={{ display: 'flex', gap: 6, padding: 6 }}>
+      <button onClick={toggle} style={btn(open)}>{open ? 'Close sidebar' : 'Open sidebar'}</button>
+    </XenolithPanel>
+  )
+}
+
+/** Island: G4 — properties sidebar. */
+export function PropertiesSidebarDemo() {
+  return (
     <DemoStage>
-      <XenolithGraph className="xeno" resizeToWindow={false} onReady={onReady}>
-        <XenolithPanel position="top-left" style={{ display: 'flex', gap: 6, padding: 6 }}>
-          <button
-            onClick={() => { if (!scene) return; if (open) { scene.close(); setOpen(false) } else { scene.open(); setOpen(true) } }}
-            style={btn(open)} disabled={!scene}
-          >
-            {open ? 'Close sidebar' : 'Open sidebar'}
-          </button>
-        </XenolithPanel>
+      <XenolithGraph className="xeno" resizeToWindow={false} onReady={setupPropertiesSidebar}>
+        <SidebarPanel />
       </XenolithGraph>
     </DemoStage>
   )

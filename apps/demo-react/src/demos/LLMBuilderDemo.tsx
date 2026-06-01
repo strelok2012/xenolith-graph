@@ -1,12 +1,12 @@
-import { useRef, useState } from 'react'
-import { XenolithGraph, XenolithPanel, XenolithButton, reactWidget, type WidgetProps } from '@xenolith/react'
+import { useState } from 'react'
+import { XenolithGraph, XenolithPanel, XenolithButton, reactWidget, useEditor, type WidgetProps } from '@xenolith/react'
 import type { XenolithEditor } from '@xenolith/editor'
-import { buildLLMBuilder, type LLMBuilderHandle } from '@xenolith/demo/llm-builder'
+import { loadLLMGraph, runLLM } from '@xenolith/demo/llm-builder'
 import { DemoStage } from '../Layout.js'
 
-// An LLM workflow builder (a prettier LangFlow) built ON the graph: Input → Prompt → Model → Output.
-// The graph + the run logic live in the framework-agnostic core (@xenolith/demo/llm-builder); this
-// React file only supplies the two custom widget UIs and a Run button wired to handle.run().
+// LLM workflow builder built on the graph: Input → Prompt → Model → Output.
+// Canon: the Run button owns its own state + side-effect; `useEditor()` gives it the editor;
+// the runner is a pure function over the editor — no handle, no subscriptions, no instance.
 
 const box: React.CSSProperties = {
   width: '100%', height: '100%', boxSizing: 'border-box', font: 'inherit', fontSize: 11,
@@ -25,33 +25,38 @@ function OutputView({ value }: WidgetProps) {
   )
 }
 
+function setupLLM(editor: XenolithEditor): void {
+  editor.registerWidget('prompt-edit', reactWidget(PromptEditor))
+  editor.registerWidget('output-view', reactWidget(OutputView))
+  loadLLMGraph(editor)
+}
+
+function RunPanel() {
+  const editor = useEditor()
+  const [running, setRunning] = useState(false)
+  const onRun = async (): Promise<void> => {
+    if (running) return
+    setRunning(true)
+    try { await runLLM(editor) } finally { setRunning(false) }
+  }
+  return (
+    <XenolithPanel position="top-left" style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 220 }}>
+      <XenolithButton active={running} disabled={running} onClick={() => void onRun()} style={{ width: '100%' }}>
+        {running ? 'Running…' : '▶ Run'}
+      </XenolithButton>
+      <span style={{ color: 'var(--xeno-muted)', fontSize: 11, lineHeight: 1.4 }}>
+        Edit the Input / Prompt / Model, then Run — the active node glows and the completion streams in.
+      </span>
+    </XenolithPanel>
+  )
+}
+
 /** Showcase: an LLM workflow builder driven by the graph. */
 export function LLMBuilderDemo() {
-  const handle = useRef<LLMBuilderHandle | null>(null)
-  const [running, setRunning] = useState(false)
-
-  const onReady = (editor: XenolithEditor): void => {
-    editor.registerWidget('prompt-edit', reactWidget(PromptEditor))
-    editor.registerWidget('output-view', reactWidget(OutputView))
-    handle.current = buildLLMBuilder(editor)
-  }
-  const run = async (): Promise<void> => {
-    if (!handle.current || running) return
-    setRunning(true)
-    try { await handle.current.run() } finally { setRunning(false) }
-  }
-
   return (
     <DemoStage>
-      <XenolithGraph className="xeno" resizeToWindow={false} onReady={onReady}>
-        <XenolithPanel position="top-left" style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 220 }}>
-          <XenolithButton active={running} disabled={running} onClick={() => void run()} style={{ width: '100%' }}>
-            {running ? 'Running…' : '▶ Run'}
-          </XenolithButton>
-          <span style={{ color: 'var(--xeno-muted)', fontSize: 11, lineHeight: 1.4 }}>
-            Edit the Input / Prompt / Model, then Run — the active node glows and the completion streams in.
-          </span>
-        </XenolithPanel>
+      <XenolithGraph className="xeno" resizeToWindow={false} onReady={setupLLM}>
+        <RunPanel />
       </XenolithGraph>
     </DemoStage>
   )

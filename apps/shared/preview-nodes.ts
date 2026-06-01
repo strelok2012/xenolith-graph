@@ -100,6 +100,10 @@ export interface PreviewNodesScene {
   dispose: () => void
 }
 
+/** Idempotent setup: registers the two custom widgets, loads the graph, and installs the poller
+ *  as a plugin so the editor's own destroy cleans up the interval. Safe to pass to `onReady`. */
+export function setupPreviewNodes(editor: XenolithEditor): void { void buildPreviewNodes(editor) }
+
 export function buildPreviewNodes(editor: XenolithEditor): PreviewNodesScene {
   editor.registerWidget('sparkline-preview', sparklineWidget)
   editor.registerWidget('color-preview',     colorPreviewWidget)
@@ -177,9 +181,18 @@ export function buildPreviewNodes(editor: XenolithEditor): PreviewNodesScene {
     const tint = swatchSrc ? String(((swatchSrc.state as Record<string, unknown>)['tint'] ?? '')) : ''
     editor.setWidgetValue(swatchId as never, 'paint', tint, { ephemeral: true })
   }
-  const interval = setInterval(tick, 100)
+  // Install the poller as a tiny plugin so its teardown is owned by the editor — when the React
+  // component unmounts, the editor is destroyed, plugin disposers run, the interval is cleared.
+  // No `dispose()` handle to forward through React state.
+  editor.use({
+    name: 'preview-nodes:poller',
+    install: () => {
+      const interval = setInterval(tick, 100)
+      return () => { clearInterval(interval); SAMPLES_PER_NODE.delete('spark') }
+    },
+  })
 
   return {
-    dispose: () => { clearInterval(interval); SAMPLES_PER_NODE.delete('spark') },
+    dispose: () => { SAMPLES_PER_NODE.delete('spark') },
   }
 }

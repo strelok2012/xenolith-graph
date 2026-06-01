@@ -1,24 +1,28 @@
-import { useState } from 'react'
-import type { XenolithEditor } from '@xenolith/editor'
-import { XenolithGraph, XenolithPanel } from '@xenolith/react'
-import { buildBreadcrumbDive, type BreadcrumbDiveScene } from '@xenolith/demo/breadcrumb-dive'
+import { XenolithGraph, XenolithPanel, useEditor } from '@xenolith/react'
+import { setupBreadcrumbDive, diveIntoSlug } from '@xenolith/demo/breadcrumb-dive'
 import { DemoStage } from '../Layout.js'
 
-/** Island: G7 — subgraph breadcrumb. Nested template-instance graph. Dive in via the panel OR
- *  by double-clicking a $templateInstance node; the breadcrumb in the top-left shows Root ›
- *  Pipeline › Stage and lets you pop any level. Themed via --xeno-*. */
+// Canon: dive operations are pure editor methods + one helper; the panel calls them directly
+// via `useEditor()`. No scene handle held in state.
+
+function BreadcrumbPanel() {
+  const editor = useEditor()
+  return (
+    <XenolithPanel position="top-right" style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 8 }}>
+      <button onClick={() => diveIntoSlug(editor, 'pipeline')} style={btn}>Dive into Pipeline</button>
+      <button onClick={() => diveIntoSlug(editor, 'stage')}    style={btn}>… then into Stage</button>
+      <button onClick={() => editor.diveOut(0)}                style={btn}>Pop to Root</button>
+      <div style={{ fontSize: 11, color: 'var(--xeno-muted, #9a9a9a)' }}>Or double-click any $templateInstance node.</div>
+    </XenolithPanel>
+  )
+}
+
+/** Island: G7 — subgraph breadcrumb. */
 export function BreadcrumbDiveDemo() {
-  const [scene, setScene] = useState<BreadcrumbDiveScene | null>(null)
-  const onReady = (editor: XenolithEditor): void => { setScene(buildBreadcrumbDive(editor)) }
   return (
     <DemoStage>
-      <XenolithGraph className="xeno" resizeToWindow={false} onReady={onReady}>
-        <XenolithPanel position="top-right" style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 8 }}>
-          <button onClick={() => scene?.diveInto('pipeline')} disabled={!scene} style={btn}>Dive into Pipeline</button>
-          <button onClick={() => scene?.diveInto('stage')}    disabled={!scene} style={btn}>… then into Stage</button>
-          <button onClick={() => scene?.diveOut()}            disabled={!scene} style={btn}>Pop to Root</button>
-          <div style={{ fontSize: 11, color: 'var(--xeno-muted, #9a9a9a)' }}>Or double-click any $templateInstance node.</div>
-        </XenolithPanel>
+      <XenolithGraph className="xeno" resizeToWindow={false} onReady={setupBreadcrumbDive}>
+        <BreadcrumbPanel />
       </XenolithGraph>
     </DemoStage>
   )

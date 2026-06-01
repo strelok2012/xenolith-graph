@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { XenolithGraph, XenolithPanel, XenolithButton, useXenolithEditor, useSelection, useGraphJSON } from '@xenolith/react'
+import { XenolithGraph, XenolithPanel, XenolithButton, useEditor, useSelection, useGraphJSON } from '@xenolith/react'
 import type { WidgetSpec } from '@xenolith/editor'
 import { DemoStage } from '../Layout.js'
 import { loadDemo } from '../demo-data.js'
@@ -9,17 +9,14 @@ const note: React.CSSProperties = { margin: 0, fontSize: 11.5, color: 'var(--xen
 /** Widget-level binding via `useSelection`: edit the selected node's widgets; canvas edits flow back
  *  (widget:changed re-renders). */
 function Inspector() {
-  const editor = useXenolithEditor()
+  const editor = useEditor()
   const selection = useSelection()
   const [, bump] = useState(0)
-  useEffect(() => {
-    if (!editor) return
-    return editor.on('widget:changed', () => bump((n) => n + 1))
-  }, [editor])
+  useEffect(() => editor.on('widget:changed', () => bump((n) => n + 1)), [editor])
   const nodeId = selection[0] ?? null
-  const node = editor && nodeId ? editor.graph.getNode(nodeId) : undefined
+  const node = nodeId ? editor.graph.getNode(nodeId) : undefined
   const widgets = (node?.widgets ?? []).filter((w) => w.key !== undefined)
-  const set = (w: WidgetSpec, value: unknown): void => { editor?.setWidgetValue(nodeId!, w.id, value); bump((n) => n + 1) }
+  const set = (w: WidgetSpec, value: unknown): void => { editor.setWidgetValue(nodeId!, w.id, value); bump((n) => n + 1) }
 
   return (
     <XenolithPanel position="top-right" style={{ width: 232, maxHeight: 'calc(100% - 24px)', overflowY: 'auto' }}>
@@ -28,7 +25,7 @@ function Inspector() {
       {!node && <p className="muted">Select a node.</p>}
       {node && widgets.length === 0 && <p className="muted">No editable widgets.</p>}
       {node && widgets.map((w) => {
-        const v = editor!.getWidgetValue(nodeId!, w.id)
+        const v = editor.getWidgetValue(nodeId!, w.id)
         return (
           <label key={w.id} className="field">
             <span>{w.label}</span>
@@ -59,14 +56,13 @@ function Inspector() {
 
 /** Graph-level binding via `useGraphJSON`: the whole graph ⇄ xenolith.v1 JSON; Apply rebuilds it. */
 function JsonPanel() {
-  const editor = useXenolithEditor()
+  const editor = useEditor()
   const json = useGraphJSON()
   const [text, setText] = useState('')
   const [err, setErr] = useState(false)
   const focused = useRef(false)
   useEffect(() => { if (json && !focused.current) { setText(JSON.stringify(json, null, 2)); setErr(false) } }, [json])
   const apply = (): void => {
-    if (!editor) return
     try { editor.loadJSON(JSON.parse(text)); editor.fitView({ padding: 48, maxZoom: 1 }); focused.current = false; setErr(false) }
     catch { setErr(true) }
   }

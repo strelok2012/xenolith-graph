@@ -6,7 +6,7 @@ export interface Filter {
   type: string
   title: string
   /** Slider widgets shown on the node; values live in node.state keyed by `key`. */
-  widgets: { id: string; label: string; type: 'slider'; key: string; min: number; max: number; step: number }[]
+  widgets: { id: string; label: string; type: 'slider'; key: string; min: number; max: number; step: number; freeFloating?: boolean }[]
   /** Default state for a freshly-instantiated node. */
   defaults: Record<string, number>
   /** GLSL declarations (uniforms) injected before main(). */
@@ -28,7 +28,7 @@ function f1(gl: WebGLRenderingContext, prog: WebGLProgram, name: string, v: numb
 export const FILTERS: Record<string, Filter> = {
   Exposure: {
     type: 'Exposure', title: 'Exposure',
-    widgets: [{ id: 'amt', label: 'EV', type: 'slider', key: 'amt', min: -2, max: 2, step: 0.01 }],
+    widgets: [{ id: 'amt', label: 'EV', type: 'slider', key: 'amt', min: -2, max: 2, step: 0.01, freeFloating: true }],
     defaults: { amt: 0.25 },
     uniforms: 'uniform float u_amt;',
     body: 'c.rgb *= exp2(u_amt);',
@@ -36,7 +36,7 @@ export const FILTERS: Record<string, Filter> = {
   },
   Saturation: {
     type: 'Saturation', title: 'Saturation',
-    widgets: [{ id: 'amt', label: 'Amount', type: 'slider', key: 'amt', min: 0, max: 2, step: 0.01 }],
+    widgets: [{ id: 'amt', label: 'Amount', type: 'slider', key: 'amt', min: 0, max: 2, step: 0.01, freeFloating: true }],
     defaults: { amt: 1.45 },
     uniforms: 'uniform float u_amt;',
     body: 'float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722)); c.rgb = mix(vec3(l), c.rgb, u_amt);',
@@ -44,7 +44,7 @@ export const FILTERS: Record<string, Filter> = {
   },
   Hue: {
     type: 'Hue', title: 'Hue rotate',
-    widgets: [{ id: 'amt', label: 'Degrees', type: 'slider', key: 'amt', min: -180, max: 180, step: 1 }],
+    widgets: [{ id: 'amt', label: 'Degrees', type: 'slider', key: 'amt', min: -180, max: 180, step: 1, freeFloating: true }],
     defaults: { amt: 25 },
     uniforms: 'uniform float u_amt;',
     body: [
@@ -60,7 +60,7 @@ export const FILTERS: Record<string, Filter> = {
   },
   Blur: {
     type: 'Blur', title: 'Gaussian blur',
-    widgets: [{ id: 'amt', label: 'Radius', type: 'slider', key: 'amt', min: 0, max: 5, step: 0.1 }],
+    widgets: [{ id: 'amt', label: 'Radius', type: 'slider', key: 'amt', min: 0, max: 5, step: 0.1, freeFloating: true }],
     defaults: { amt: 1.2 },
     uniforms: 'uniform float u_amt;',
     body: [
@@ -80,7 +80,7 @@ export const FILTERS: Record<string, Filter> = {
   },
   Vignette: {
     type: 'Vignette', title: 'Vignette',
-    widgets: [{ id: 'amt', label: 'Amount', type: 'slider', key: 'amt', min: 0, max: 1, step: 0.01 }],
+    widgets: [{ id: 'amt', label: 'Amount', type: 'slider', key: 'amt', min: 0, max: 1, step: 0.01, freeFloating: true }],
     defaults: { amt: 0.55 },
     uniforms: 'uniform float u_amt;',
     body: [
@@ -409,4 +409,16 @@ export function buildImagePipeline(editor: XenolithEditor, widgets: ImagePipelin
   }
 
   return { outputId: String(output.id), process, download }
+}
+
+/** Trigger a PNG download of the current Result node's image. Standalone helper so a host can
+ *  wire a Download button via just `useEditor()` — no need to thread a build-handle around. */
+export function downloadImageResult(editor: XenolithEditor): void {
+  const output = [...editor.graph.nodes()].find((n) => n.type === 'Output')
+  if (!output) return
+  const url = output.state[OUT_RESULT]
+  if (typeof url !== 'string' || !url) return
+  const a = document.createElement('a')
+  a.href = url; a.download = 'result.png'
+  document.body.appendChild(a); a.click(); a.remove()
 }

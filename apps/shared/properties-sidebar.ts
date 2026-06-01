@@ -16,6 +16,13 @@ export interface PropertiesSidebarScene {
 const inPin = (key: string, type: string): { id: PinId; kind: 'data'; direction: 'in'; type: string; multiple: false; label: string } =>
   ({ id: `mat_${key}` as PinId, kind: 'data', direction: 'in', type, multiple: false, label: key })
 
+/** Material node id loaded by this demo. */
+export const PROPERTIES_SIDEBAR_NODE_ID = 'material' as NodeId
+
+/** Idempotent setup: load the fat Material node. */
+export function setupPropertiesSidebar(editor: XenolithEditor): void { void buildPropertiesSidebar(editor) }
+
+/** @deprecated Prefer `setupPropertiesSidebar` + `editor.openSidebar/closeSidebar`. */
 export function buildPropertiesSidebar(editor: XenolithEditor): PropertiesSidebarScene {
   const id = 'material' as NodeId
   editor.loadJSON({

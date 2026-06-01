@@ -1,36 +1,36 @@
 import { useState } from 'react'
-import type { XenolithEditor } from '@xenolith/editor'
-import { XenolithGraph, XenolithPanel } from '@xenolith/react'
-import { buildEdgePaths, type EdgePathsScene } from '@xenolith/demo/edge-paths'
+import { XenolithGraph, XenolithPanel, useEditor } from '@xenolith/react'
+import { setupEdgePaths, setAllEdgePaths, EDGE_PATH_STYLES } from '@xenolith/demo/edge-paths'
 import type { EdgePathStyle } from '@xenolith/render-pixi'
 import { DemoStage } from '../Layout.js'
 
-const STYLES: EdgePathStyle[] = ['bezier', 'smoothstep', 'step', 'linear']
+// Canon: active style lives in the panel; flipping it dispatches through the editor directly.
+// The initial 'each' view (per-row distinct styles) is what `setupEdgePaths` lays down — once
+// the user picks a single style there's no going back without a re-mount, by design.
 
-/** Island: G9 — edge path styles. The default Xenolith bezier still ships untouched; new styles
- *  (step / smoothstep / linear) opt in via `editor.setEdgeOptions(id, { pathStyle })`. */
-export function EdgePathsDemo() {
-  const [scene, setScene] = useState<EdgePathsScene | null>(null)
+function EdgePathsPanel() {
+  const editor = useEditor()
   const [active, setActive] = useState<EdgePathStyle | 'each'>('each')
-  const onReady = (editor: XenolithEditor): void => { setScene(buildEdgePaths(editor)) }
-  const flip = (s: EdgePathStyle | 'each'): void => {
-    if (!scene) return
+  const flip = (s: EdgePathStyle): void => {
     setActive(s)
-    if (s === 'each') { for (const style of STYLES) scene.setAll(style); /* visual: rebuild per-row */ }
-    else scene.setAll(s)
+    setAllEdgePaths(editor, s)
   }
-  // 'each' is the initial view (per-row distinct styles). After clicking a single-style button,
-  // re-clicking 'each' would need a re-mount to restore the per-row palette — keep it simple
-  // and rebuild via the reset button instead.
+  return (
+    <XenolithPanel position="top-left" style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 8, minWidth: 200 }}>
+      <div style={{ fontSize: 11, color: 'var(--xeno-muted, #999)', textTransform: 'uppercase', letterSpacing: 0.6 }}>Apply to all</div>
+      {EDGE_PATH_STYLES.map((s) => (
+        <button key={s} onClick={() => flip(s)} style={btn(active === s)}>{s}</button>
+      ))}
+    </XenolithPanel>
+  )
+}
+
+/** Island: G9 — edge path styles. */
+export function EdgePathsDemo() {
   return (
     <DemoStage>
-      <XenolithGraph className="xeno" resizeToWindow={false} onReady={onReady}>
-        <XenolithPanel position="top-left" style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 8, minWidth: 200 }}>
-          <div style={{ fontSize: 11, color: 'var(--xeno-muted, #999)', textTransform: 'uppercase', letterSpacing: 0.6 }}>Apply to all</div>
-          {STYLES.map((s) => (
-            <button key={s} onClick={() => flip(s)} disabled={!scene} style={btn(active === s)}>{s}</button>
-          ))}
-        </XenolithPanel>
+      <XenolithGraph className="xeno" resizeToWindow={false} onReady={setupEdgePaths}>
+        <EdgePathsPanel />
       </XenolithGraph>
     </DemoStage>
   )

@@ -18,6 +18,13 @@ export interface ConditionalWidgetsScene {
 const inPin = (key: string, type: string): { id: PinId; kind: 'data'; direction: 'in'; type: string; multiple: false; label: string } =>
   ({ id: `req_${key}` as PinId, kind: 'data', direction: 'in', type, multiple: false, label: key })
 
+/** The HTTPRequest node id this demo loads. */
+export const CONDITIONAL_WIDGETS_NODE_ID = 'request' as NodeId
+
+/** Idempotent setup: load the HTTPRequest node. */
+export function setupConditionalWidgets(editor: XenolithEditor): void { void buildConditionalWidgets(editor) }
+
+/** @deprecated Prefer `setupConditionalWidgets` + `editor.setWidgetValue`. Kept for vanilla examples. */
 export function buildConditionalWidgets(editor: XenolithEditor): ConditionalWidgetsScene {
   const id = 'request' as NodeId
   editor.loadJSON({

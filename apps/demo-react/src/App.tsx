@@ -9,6 +9,10 @@ import { Viewport } from './pages/Viewport.js'
 import { CanvasWidget } from './pages/CanvasWidget.js'
 import { Hero } from './pages/Hero.js'
 import { Stress } from './pages/Stress.js'
+import { StepDebug } from './pages/StepDebug.js'
+import { TimeTravel } from './pages/TimeTravel.js'
+import { GraphDiff } from './pages/GraphDiff.js'
+import { Heatmap } from './pages/Heatmap.js'
 
 interface PageDef { id: string; label: string; el: ReactNode }
 
@@ -23,6 +27,10 @@ const PAGES: PageDef[] = [
   { id: 'canvas-widget', label: '6 · Custom widget (canvas)', el: <CanvasWidget /> },
   { id: 'hero', label: '7 · Bring your own UI', el: <Hero /> },
   { id: 'stress', label: '8 · Stress (virtualize)', el: <Stress /> },
+  { id: 'step-debug', label: '9 · Step debugger', el: <StepDebug /> },
+  { id: 'time-travel', label: '10 · Time-travel', el: <TimeTravel /> },
+  { id: 'graph-diff', label: '11 · Graph diff', el: <GraphDiff /> },
+  { id: 'heatmap', label: '12 · Heatmap', el: <Heatmap /> },
 ]
 
 export function App() {

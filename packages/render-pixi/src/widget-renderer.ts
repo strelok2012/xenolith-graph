@@ -1,7 +1,7 @@
 import { BitmapText, Container, Graphics, Sprite, Text, Texture } from 'pixi.js'
 import { comboOptions, widgetValue, widgetVisibility, widgetBindKey, widgetIsVisible, type Node, type WidgetSpec, type WidgetStyle } from '@xenolith/core'
 import type { XenTokens } from '@xenolith/theme-xen'
-import { pinRowCount, pinRowHeights, pinBandHeight, pinRowCenterY, pinRowIndexFor, isFreeFloating } from './layout.js'
+import { pinRowCount, pinRowHeights, pinBandHeight, pinRowCenterY, pinRowIndexFor, isFreeFloating, freeFloatingHeight } from './layout.js'
 
 /** Context handed to a custom widget's draw/pointer callbacks. Coords are widget-local CSS px.
  *  Theme colours (`accent`/`text`/`muted`) come from the resolved widget tokens so a canvas widget
@@ -191,11 +191,13 @@ export function computeWidgetRects(node: Node, width: number, tokens: WidgetLayo
   // declared height. Then the actions row stacks underneath.
   let bandY = tokens.node.headerHeight + tokens.header.toPinsGap + bandH + tokens.widget.gap
   const out: WidgetRect[] = []
-  // Pass 1 — free-floating custom widgets (body band).
+  // Pass 1 — free-floating widgets (body band). Text widgets get extra height for their label
+  // row + field; multiline text grows to 3 rows. Without this a labelled `text` widget collapses
+  // to one row and only the label paints — no visible input area (image #43 regression).
   for (const w of node.widgets) {
     if (!isFreeFloating(node, w)) continue
     if (!widgetIsVisible(w, node)) continue
-    const h = w.type === 'custom' ? (w.height ?? tokens.widget.rowHeight) : tokens.widget.rowHeight
+    const h = freeFloatingHeight(w, tokens.widget.rowHeight)
     out.push({ id: w.id, x: padX, y: bandY, width: width - padX * 2, height: h })
     bandY += h + tokens.widget.gap
   }

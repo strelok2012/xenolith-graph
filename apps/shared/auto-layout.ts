@@ -39,15 +39,33 @@ export interface AutoLayoutScene {
   arrange: (opts?: LayoutOpts) => Promise<void>
 }
 
-export function buildAutoLayout(editor: XenolithEditor): AutoLayoutScene {
+// Per-editor plugin handle. The React panel reads this via `runAutoLayout(editor, opts)` so it
+// doesn't have to keep a scene object around — `setupAutoLayout` is called in `onReady` and the
+// plugin is stashed here for later operations.
+const PLUGINS = new WeakMap<XenolithEditor, AutoLayoutPlugin>()
+
+/** Idempotent setup: install the plugin, load the demo graph, fit the view. Safe to pass directly
+ *  to `<XenolithGraph onReady>` — synchronous, no first-paint flicker. */
+export function setupAutoLayout(editor: XenolithEditor): void {
   const plugin = autoLayoutPlugin({
     engine: dagreEngine(),
-    // animate.durationMs: rAF tween from start positions to target — the whole point of "auto-
-    // arrange" UX is watching the layout settle, not flinching at a jump cut.
     defaults: { direction: 'LR', spacing: { node: 40, layer: 90 }, animate: { durationMs: 600 } },
   })
   editor.use(plugin)
+  PLUGINS.set(editor, plugin)
+  loadAutoLayoutGraph(editor)
+}
 
+/** Run the layout engine in the requested direction and refit. No-op if `setupAutoLayout` hasn't
+ *  run yet on this editor. */
+export async function runAutoLayout(editor: XenolithEditor, opts?: LayoutOpts): Promise<void> {
+  const plugin = PLUGINS.get(editor)
+  if (!plugin) return
+  await plugin.arrange(opts)
+  editor.fitView({ padding: 56, maxZoom: 1 })
+}
+
+function loadAutoLayoutGraph(editor: XenolithEditor): void {
   const nodes: Node[] = NODES.map((n) => ({
     id: n.id as NodeId, type: 'Step', position: { x: n.x, y: n.y }, size: { x: 160, y: 64 },
     state: {},
@@ -64,9 +82,15 @@ export function buildAutoLayout(editor: XenolithEditor): AutoLayoutScene {
   }))
   editor.loadJSON({ version: 'xenolith.v1', nodes, edges })
   editor.fitView({ padding: 56, maxZoom: 1 })
+}
 
+/** @deprecated Prefer `setupAutoLayout(editor)` + `runAutoLayout(editor, opts)`. Kept for the
+ *  vanilla examples; will be removed in a follow-up. */
+export function buildAutoLayout(editor: XenolithEditor): AutoLayoutScene {
+  setupAutoLayout(editor)
+  const plugin = PLUGINS.get(editor)!
   return {
     plugin,
-    arrange: async (opts) => { await plugin.arrange(opts); editor.fitView({ padding: 56, maxZoom: 1 }) },
+    arrange: (opts) => runAutoLayout(editor, opts),
   }
 }

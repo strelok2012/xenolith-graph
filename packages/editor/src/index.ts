@@ -184,6 +184,10 @@ export type { MinimapPosition } from './minimap.js'
 export type { ControlsOptions, ControlsPosition } from './controls.js'
 export type { EditorEvents, PreventablePayload } from './events.js'
 export { CommandRegistry, Commands } from './commands-registry.js'
+export { StepDebugger } from './step-debugger.js'
+export type { StepExecutor, StepRecord, StepDebuggerStatus, StepDebuggerEvents } from './step-debugger.js'
+export { diffGraphs } from './graph-diff.js'
+export type { GraphDiff, DiffSnapshot, DiffSnapshotNode, DiffSnapshotEdge, DiffOptions } from './graph-diff.js'
 export type { CommandSpec, HotkeySpec, CommandId } from './commands-registry.js'
 export { SidebarManager } from './sidebar.js'
 export type { SidebarManagerOpts } from './sidebar.js'
@@ -2770,7 +2774,63 @@ export class XenolithEditor {
     // primes them invisible — otherwise they paint one full frame before the grow-in resets them.
     this.#expandingMacros.add(id)
     this.#setMacroCollapsed(id, false)
+    this.#tweenViewportToMacroIfNeeded(id)
     this.#animateMacroExpand(id)
+  }
+
+  /** If the expanded macro's member bbox doesn't sit comfortably inside the current viewport,
+   *  animate the camera (pan + zoom) to fit it. Mirrors fitView() math but tweens through it
+   *  instead of snapping, so the unfold reads as a continuous gesture. No-op when already in view. */
+  #tweenViewportToMacroIfNeeded(id: NodeId): void {
+    const macro = this.graph.getNode(id)
+    if (!macro || !isMacro(macro)) return
+    const memberIds = macroMembers(macro as Node)
+    if (memberIds.length === 0) return
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    let counted = 0
+    for (const mid of memberIds) {
+      const n = this.graph.getNode(mid)
+      if (!n) continue
+      const b = nodeBounds(n as Node, this.#theme.tokens)
+      minX = Math.min(minX, b.x); minY = Math.min(minY, b.y)
+      maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height)
+      counted++
+    }
+    if (counted === 0) return
+    const bounds = { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+    const screen = { width: Math.max(1, this.#app.screen.width), height: Math.max(1, this.#app.screen.height) }
+    const cur = this.#viewport.state
+    const edgeMargin = 32
+    const tl = worldToScreen({ x: bounds.x, y: bounds.y }, cur)
+    const br = worldToScreen({ x: bounds.x + bounds.width, y: bounds.y + bounds.height }, cur)
+    const fitsCurrent =
+      tl.x >= edgeMargin && tl.y >= edgeMargin &&
+      br.x <= screen.width - edgeMargin && br.y <= screen.height - edgeMargin
+    if (fitsCurrent) return
+    const target = fitView(
+      bounds, screen,
+      { padding: 80, maxZoom: Math.max(cur.zoom, 1), minZoom: this.#zoomBounds[0] },
+    )
+    this.#tweenViewport(target, 260)
+  }
+
+  #viewportTweenRaf: number | null = null
+  #tweenViewport(target: ViewportState, durationMs: number): void {
+    if (this.#viewportTweenRaf !== null) { cancelAnimationFrame(this.#viewportTweenRaf); this.#viewportTweenRaf = null }
+    const from = { ...this.#viewport.state }
+    const start = performance.now()
+    const tick = (): void => {
+      const raw = Math.min(1, (performance.now() - start) / durationMs)
+      const e = 1 - Math.pow(1 - raw, 3) // ease-out cubic — matches the macro grow-in
+      this.#viewport.setState({
+        x: from.x + (target.x - from.x) * e,
+        y: from.y + (target.y - from.y) * e,
+        zoom: from.zoom + (target.zoom - from.zoom) * e,
+      })
+      if (raw < 1) this.#viewportTweenRaf = requestAnimationFrame(tick)
+      else { this.#viewportTweenRaf = null; this.#viewport.setState(target) }
+    }
+    this.#viewportTweenRaf = requestAnimationFrame(tick)
   }
   /** Re-collapse an expanded macro, animating the group shrinking back into the node first. */
   collapseMacro(id: NodeId): void {
@@ -2914,18 +2974,30 @@ export class XenolithEditor {
     const proxyMap = (macro.state['proxyMap'] ?? []) as MacroProxyRecord[]
     this.commandBus.transaction(() => {
       for (const r of proxyMap) {
-        const ext = { node: r.externalNode, pin: r.externalPin }
         const mem = { node: r.memberNode, pin: r.memberPin }
         const macroEnd = { node: id, pin: r.macroPin }
-        // The non-external end is the macro pin when collapsing, the member pin when expanding;
-        // the edge to drop is wired to the opposite end.
         const nextEnd = collapsed ? macroEnd : mem
         const prevEnd = collapsed ? mem : macroEnd
-        const cur = r.direction === 'in' ? this.#findEdge(ext, prevEnd) : this.#findEdge(prevEnd, ext)
-        if (cur) this.commandBus.apply(new DisconnectEdge(cur.id))
+        // RESOLVE THE EXTERNAL ENDPOINT FROM THE CURRENT EDGE, NOT FROM THE PROXY-MAP SNAPSHOT.
+        // The snapshot `r.externalNode/Pin` was recorded at macro-creation time; if the external
+        // node was later wrapped into a template (or any other rewiring touched it), the snapshot
+        // is stale and findEdge against it returns null → we'd create a phantom edge to a node
+        // that no longer exists in the graph. Instead, look up the current edge by prevEnd alone.
+        let cur: Edge | undefined
+        for (const e of this.graph.edges()) {
+          const ee = e as Edge
+          if (r.direction === 'in') {
+            if (ee.to.node === prevEnd.node && String(ee.to.pin) === String(prevEnd.pin)) { cur = ee; break }
+          } else {
+            if (ee.from.node === prevEnd.node && String(ee.from.pin) === String(prevEnd.pin)) { cur = ee; break }
+          }
+        }
+        if (!cur) continue
+        const currentExt = r.direction === 'in' ? cur.from : cur.to
+        this.commandBus.apply(new DisconnectEdge(cur.id))
         const next: Edge = r.direction === 'in'
-          ? { id: createEdgeId(), from: ext, to: nextEnd }
-          : { id: createEdgeId(), from: nextEnd, to: ext }
+          ? { id: createEdgeId(), from: currentExt, to: nextEnd }
+          : { id: createEdgeId(), from: nextEnd, to: currentExt }
         this.commandBus.apply(new ConnectPins(next))
       }
       this.commandBus.apply(new SetNodeState(id, { collapsed }))
@@ -3887,10 +3959,12 @@ export class XenolithEditor {
     const render: RenderNodeOptions = {}
     if (schema.category !== undefined) render.category = schema.category
     if (schema.title !== undefined) render.title = schema.title
-    // Centre the node on worldPos (used when splicing into an edge at its midpoint) rather than
-    // anchoring its top-left there. Needs the resolved size up front.
+    // Always resolve size up front: virtualized off-screen nodes are never materialised into a view
+    // (LOD draws them straight from `node.size`), and a missing size falls back to `headerHeight` only
+    // — they render as squished strips at zoom-out. Centering also needs it, so the same call covers
+    // both paths.
+    this.#ensureSize(node, render)
     if (opts.center) {
-      this.#ensureSize(node, render)
       node.position = { x: worldPos.x - node.size!.x / 2, y: worldPos.y - node.size!.y / 2 }
     }
     this.#renderOpts.set(node.id, render)
@@ -4089,6 +4163,26 @@ export class XenolithEditor {
   /** The current graph serialized to an `xenolith.v1` JSON Blob (for download / save). */
   exportJSON(): Blob {
     return new Blob([JSON.stringify(this.toJSON(), null, 2)], { type: 'application/json' })
+  }
+
+  /** Open a WebSocket connection to a running `@xenolith/mcp-server` so an external MCP client
+   *  (Claude Desktop / Cursor / any) can drive this editor. The server forwards each tool call
+   *  here over the socket; handlers route to `insertNode`/`addEdge`/`fitView`/etc. (already
+   *  undoable via the command bus). Returns a disconnect function. See `mcp.ts` for the protocol. */
+  #mcp: import('./mcp.js').McpClient | null = null
+  async connectMCP(
+    url: string,
+    opts: { onStatus?: (s: 'connecting' | 'open' | 'closed' | 'error') => void } = {},
+  ): Promise<() => void> {
+    const { McpClient } = await import('./mcp.js')
+    this.#mcp?.disconnect()
+    const client = new McpClient(
+      this as unknown as import('./mcp.js').McpEditorSurface,
+      opts.onStatus !== undefined ? { onStatus: opts.onStatus } : {},
+    )
+    await client.connect(url)
+    this.#mcp = client
+    return () => { client.disconnect(); this.#mcp = null }
   }
 
   /** World-space bounding box of all nodes, or null when the graph is empty. */
@@ -4723,6 +4817,10 @@ export class XenolithEditor {
       const node = this.graph.getNode(id)
       const color = colorFor(status)
       if (!view || !node || !color) continue
+      // Skip nodes whose view is hidden (collapsed-macro members, expanded-macro placeholder).
+      // Without this the status ring keeps painting at the last known container position,
+      // leaving an orphan rectangle on the canvas — see step-debugger demo ghost bug.
+      if (!view.container.visible) continue
       const size = node.size ?? { x: this.#theme.tokens.geometry.node.minWidth, y: 40 }
       const pad = 3
       const alpha = status === 'running' ? pulse : 0.95

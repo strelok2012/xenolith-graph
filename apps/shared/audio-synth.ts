@@ -57,10 +57,16 @@ function teardownAudio(map: Map<NodeId, AudioNode> | null): void {
   map.clear()
 }
 
-export function buildAudioSynth(editor: XenolithEditor): AudioSynthHandle {
+/** Load the synth graph into the editor. Pass to `<XenolithGraph onReady>` so the canvas paints
+ *  with the graph on the very first frame — no flicker, no useEffect-after-mount delay. */
+export function loadAudioGraph(editor: XenolithEditor): void {
   editor.loadJSON(graph)
   editor.fitView({ padding: 64, maxZoom: 1 })
+}
 
+/** Spin up the Web Audio engine on top of an already-loaded graph. Returns an imperative handle —
+ *  the engine owns an AudioContext + event subscriptions; `dispose()` releases both. */
+export function createAudioEngine(editor: XenolithEditor): AudioSynthHandle {
   let ctx: AudioContext | null = null
   let map: Map<NodeId, AudioNode> | null = null
   let offs: Array<() => void> = []
@@ -124,4 +130,11 @@ export function buildAudioSynth(editor: XenolithEditor): AudioSynthHandle {
   }
 
   return { play, stop, dispose: stop }
+}
+
+/** @deprecated Combined loader+engine for back-compat with non-React hosts. Prefer
+ *  `loadAudioGraph` (in `onReady`) + `createAudioEngine` (in an effect) in fresh code. */
+export function buildAudioSynth(editor: XenolithEditor): AudioSynthHandle {
+  loadAudioGraph(editor)
+  return createAudioEngine(editor)
 }

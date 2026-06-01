@@ -40,6 +40,7 @@ describe('reactive selector hooks', () => {
     const seen = harness(useNodes)
     await flush()
     state.nodes = [{ id: 'n1' }]; emit('node:added', { nodeId: 'n1' })
+    await flush()
     expect(seen.at(-1)).toEqual([{ id: 'n1' }])
   })
 
@@ -47,6 +48,7 @@ describe('reactive selector hooks', () => {
     const seen = harness(useEdges)
     await flush()
     state.edges = [{ id: 'e1' }]; emit('edge:connected', {})
+    await flush()
     expect(seen.at(-1)).toEqual([{ id: 'e1' }])
   })
 
@@ -54,6 +56,7 @@ describe('reactive selector hooks', () => {
     const seen = harness(useSelection)
     await flush()
     state.sel = ['n1', 'n2']; emit('selection:changed', { nodeIds: ['n1', 'n2'] })
+    await flush()
     expect(seen.at(-1)).toEqual(['n1', 'n2'])
   })
 
@@ -61,6 +64,7 @@ describe('reactive selector hooks', () => {
     const seen = harness(useViewport)
     await flush()
     state.vp = { x: 10, y: 20, zoom: 2 }; emit('viewport:changed', state.vp)
+    await flush()
     expect(seen.at(-1)).toEqual({ x: 10, y: 20, zoom: 2 })
   })
 
@@ -68,6 +72,7 @@ describe('reactive selector hooks', () => {
     const seen = harness(useGraphJSON)
     await flush()
     state.json = { v: 2 }; emit('graph:loaded', {})
+    await flush()
     expect(seen.at(-1)).toEqual({ v: 2 })
   })
 })
